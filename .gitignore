@@ -12,3 +12,6 @@
 .idea
 .jbeval
 .omc
+__pycache__/
+*.py[cod]
+.pytest_cache/
