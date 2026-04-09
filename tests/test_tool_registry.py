@@ -2,6 +2,7 @@ from zzm_agent.core.tool_registry import tool, ToolRegistry
 
 
 def test_tool_decorator_registers_function():
+    """Test that the @tool decorator correctly registers a function in the registry."""
     registry = ToolRegistry()
 
     @registry.tool(description="加两个数")
@@ -13,6 +14,7 @@ def test_tool_decorator_registers_function():
 
 
 def test_schema_generation():
+    """Test that the registry generates the correct JSON Schema for a registered tool."""
     registry = ToolRegistry()
 
     @registry.tool(description="加两个数")
@@ -33,6 +35,7 @@ def test_schema_generation():
 
 
 def test_call_tool():
+    """Test that calling a tool via the registry works as expected."""
     registry = ToolRegistry()
 
     @registry.tool(description="加两个数")
@@ -44,6 +47,7 @@ def test_call_tool():
 
 
 def test_supported_types():
+    """Test that Python types are correctly mapped to JSON Schema types."""
     registry = ToolRegistry()
 
     @registry.tool(description="test")
