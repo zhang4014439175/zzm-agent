@@ -1,0 +1,11 @@
+pyproject.toml
+zzm_agent/__init__.py
+zzm_agent.egg-info/PKG-INFO
+zzm_agent.egg-info/SOURCES.txt
+zzm_agent.egg-info/dependency_links.txt
+zzm_agent.egg-info/requires.txt
+zzm_agent.egg-info/top_level.txt
+zzm_agent/core/__init__.py
+zzm_agent/evolution/__init__.py
+zzm_agent/memory/__init__.py
+zzm_agent/plugins/__init__.py

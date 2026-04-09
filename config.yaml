@@ -1,0 +1,20 @@
+model:
+  base_url: "http://localhost:11434/v1"
+  api_key: "ollama"
+  model_name: "qwen2.5:14b"
+  temperature: 0.7
+  max_tokens: 4096
+
+agent:
+  system_prompt: "你是 zzm-agent，一个简洁高效的个人助理。"
+  plugin_dirs:
+    - "zzm_agent/plugins"
+
+memory:
+  path: "~/.zzm_agent/memory.json"
+  max_history: 50
+
+evolution:
+  enabled: false
+  trigger: "manual"
+  sample_size: 20
