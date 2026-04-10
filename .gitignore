@@ -15,3 +15,7 @@
 __pycache__/
 *.py[cod]
 .pytest_cache/
+.claude
+.zzm_agent
+.tmp_verify_stream
+.tmp_manual

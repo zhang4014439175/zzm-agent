@@ -1,6 +1,7 @@
 import json
 import pytest
 from unittest.mock import MagicMock
+from types import SimpleNamespace
 from zzm_agent.core.agent_loop import AgentLoop
 from zzm_agent.core.tool_registry import ToolRegistry
 from zzm_agent.memory.store import MemoryStore
@@ -40,6 +41,23 @@ def make_response(content=None, tool_calls=None):
     return resp
 
 
+def make_stream_chunk(content=None, tool_calls=None):
+    delta = SimpleNamespace(
+        content=content,
+        tool_calls=tool_calls or [],
+    )
+    choice = SimpleNamespace(delta=delta)
+    return SimpleNamespace(choices=[choice])
+
+
+def make_tool_call_delta(index, tool_call_id=None, name=None, arguments=None):
+    return SimpleNamespace(
+        index=index,
+        id=tool_call_id,
+        function=SimpleNamespace(name=name, arguments=arguments),
+    )
+
+
 def test_simple_reply(registry, store):
     """Test a basic user-assistant exchange without tool calls."""
     loop = AgentLoop(
@@ -52,7 +70,7 @@ def test_simple_reply(registry, store):
     # Mock the API to return a direct string content
     loop.client.chat.completions.create.return_value = make_response(content="Hello!")
     
-    result = loop.run("Hi")
+    result = loop.run("Hi", stream=False)
     
     assert result == "Hello!"
     # Verify history was saved: 1 user msg + 1 assistant msg
@@ -82,7 +100,7 @@ def test_tool_call_then_reply(registry, store):
         make_response(content="Done!"),
     ]
     
-    result = loop.run("call echo")
+    result = loop.run("call echo", stream=False)
     
     assert result == "Done!"
     assert loop.client.chat.completions.create.call_count == 2
@@ -108,7 +126,7 @@ def test_history_loaded_on_run(registry, store):
     )
     loop.client.chat.completions.create.return_value = make_response(content="ok")
     
-    loop.run("new message")
+    loop.run("new message", stream=False)
     
     # Inspect the messages sent to the API
     call_args = loop.client.chat.completions.create.call_args
@@ -118,3 +136,97 @@ def test_history_loaded_on_run(registry, store):
     assert "previous" in contents
     assert "new message" in contents
     assert "sys" in contents
+
+
+def test_stream_simple_reply(registry, store):
+    loop = AgentLoop(
+        client=MagicMock(),
+        model="test-model",
+        system_prompt="You are helpful.",
+        registry=registry,
+        store=store,
+    )
+    loop.client.chat.completions.create.return_value = iter(
+        [
+            make_stream_chunk(content="Hel"),
+            make_stream_chunk(content="lo!"),
+        ]
+    )
+
+    chunks = []
+    result = loop.run("Hi", stream=True, on_text_chunk=chunks.append)
+
+    assert result == "Hello!"
+    assert chunks == ["Hel", "lo!"]
+    assert len(store.load_history()) == 2
+    assert store.load_history()[-1]["content"] == "Hello!"
+    assert loop.client.chat.completions.create.call_args.kwargs["stream"] is True
+
+
+def test_stream_tool_call_then_reply(registry, store):
+    loop = AgentLoop(
+        client=MagicMock(),
+        model="test-model",
+        system_prompt="You are helpful.",
+        registry=registry,
+        store=store,
+    )
+
+    first_stream = iter(
+        [
+            make_stream_chunk(
+                tool_calls=[
+                    make_tool_call_delta(index=0, tool_call_id="call_1", name="ec", arguments='{"te')
+                ]
+            ),
+            make_stream_chunk(
+                tool_calls=[
+                    make_tool_call_delta(index=0, name="ho", arguments='xt":"world"}')
+                ]
+            ),
+        ]
+    )
+    second_stream = iter(
+        [
+            make_stream_chunk(content="Do"),
+            make_stream_chunk(content="ne!"),
+        ]
+    )
+    loop.client.chat.completions.create.side_effect = [first_stream, second_stream]
+
+    chunks = []
+    result = loop.run("call echo", stream=True, on_text_chunk=chunks.append)
+
+    assert result == "Done!"
+    assert chunks == ["Do", "ne!"]
+    assert loop.client.chat.completions.create.call_count == 2
+
+    history = store.load_history()
+    assert len(history) == 4
+    assert history[1]["tool_calls"][0]["function"]["name"] == "echo"
+    assert history[1]["tool_calls"][0]["function"]["arguments"] == '{"text":"world"}'
+    assert history[2]["role"] == "tool"
+    assert history[2]["content"] == "ECHO:world"
+
+
+def test_stream_interruption_returns_partial_text_without_persisting(registry, store):
+    loop = AgentLoop(
+        client=MagicMock(),
+        model="test-model",
+        system_prompt="You are helpful.",
+        registry=registry,
+        store=store,
+    )
+
+    def interrupted_stream():
+        yield make_stream_chunk(content="Par")
+        raise KeyboardInterrupt
+
+    loop.client.chat.completions.create.return_value = interrupted_stream()
+
+    chunks = []
+    result = loop.run("Hi", stream=True, on_text_chunk=chunks.append)
+
+    assert result == "Par"
+    assert chunks == ["Par"]
+    assert store.load_history() == []

@@ -1,0 +1,24 @@
+ChatCompletionChunk(
+  id='chatcmpl-27ed2352-0a07-9cf5-aa8f-e9a33613f3db',
+  choices=[
+      Choice(
+        delta=ChoiceDelta(
+          content='配置决定\n\n',
+              function_call=None,
+              refusal=None,
+              role=None,
+              tool_calls=None,
+              reasoning_content=None
+        ),
+          finish_reason=None,
+          index=0,
+          logprobs=None
+      )
+  ],
+  created=1775803213,
+  model='qwen3.5-plus',
+  object='chat.completion.chunk',
+  service_tier=None,
+  system_fingerprint=None,
+  usage=None
+)

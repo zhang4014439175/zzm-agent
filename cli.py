@@ -102,6 +102,17 @@ def render_reply(console: Any, reply: str) -> None:
     console.print(Markdown(reply))
 
 
+def stream_reply_chunk(console: Any, chunk: str) -> None:
+    """
+    Render streamed plain-text chunks as they arrive.
+
+    Args:
+        console: Console-like object used for output.
+        chunk: Newly received text chunk.
+    """
+    console.print(chunk, end="")
+
+
 def handle_slash(
     cmd: str,
     registry: ToolRegistry,
@@ -226,8 +237,18 @@ def main() -> int:
             continue
 
         try:
-            reply = loop.run(user_input)
-            render_reply(console, reply)
+            streamed = {"seen": False}
+
+            def on_text_chunk(chunk: str) -> None:
+                streamed["seen"] = True
+                stream_reply_chunk(console, chunk)
+
+            reply = loop.run(user_input, stream=False, on_text_chunk=on_text_chunk)
+            if streamed["seen"]:
+                # Streamed output has already been printed chunk-by-chunk above.
+                console.print()
+            else:
+                render_reply(console, reply)
         except Exception as exc:
             console.print(f"[red]Error: {exc}[/red]")
 
