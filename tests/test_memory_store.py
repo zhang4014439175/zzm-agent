@@ -116,3 +116,51 @@ def test_legacy_memory_is_migrated_once(tmp_path):
     assert len(again.list_sessions()) == 1
     assert again.session_id == migrated_session
     assert again.load_history() == legacy_history
+
+
+def test_migration_failure_rolls_back_to_safe_state(tmp_path, monkeypatch):
+    # A partial migration must not leave behind a broken sessions index or a
+    # dangling last-session pointer, otherwise the next startup cannot recover.
+    path = tmp_path / "memory.json"
+    legacy_history = [{"role": "user", "content": "legacy"}]
+    path.write_text(json.dumps(legacy_history), encoding="utf-8")
+
+    original_write_text = MemoryStore._write_text
+
+    def fail_on_last_session(self, target, value):
+        if target == self.last_session_path:
+            raise OSError("simulated write failure")
+        return original_write_text(self, target, value)
+
+    monkeypatch.setattr(MemoryStore, "_write_text", fail_on_last_session)
+
+    with pytest.raises(OSError):
+        MemoryStore(path=path, max_history=50)
+
+    sessions_dir = tmp_path / "sessions"
+    assert not (sessions_dir / "index.json").exists()
+    assert not (sessions_dir / "last_session.txt").exists()
+    assert list(sessions_dir.iterdir()) == []
+    assert json.loads(path.read_text(encoding="utf-8")) == legacy_history
+
+
+def test_startup_cleans_partial_session_state_before_migration(tmp_path):
+    # A previous failed migration can leave behind orphan tmp files or an
+    # incomplete session directory. Startup should clean those artifacts first
+    # so legacy migration can be retried safely.
+    path = tmp_path / "memory.json"
+    legacy_history = [{"role": "user", "content": "legacy"}]
+    path.write_text(json.dumps(legacy_history), encoding="utf-8")
+
+    sessions_dir = tmp_path / "sessions"
+    broken_session = sessions_dir / "migrated-broken"
+    broken_session.mkdir(parents=True)
+    (broken_session / "history.json.tmp").write_text("[]", encoding="utf-8")
+    (sessions_dir / "index.json.tmp").write_text("[]", encoding="utf-8")
+
+    store = MemoryStore(path=path, max_history=50)
+
+    assert not broken_session.exists()
+    assert not (sessions_dir / "index.json.tmp").exists()
+    assert len(store.list_sessions()) == 1
+    assert store.load_history() == legacy_history

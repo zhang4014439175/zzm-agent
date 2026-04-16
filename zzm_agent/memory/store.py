@@ -35,6 +35,7 @@ class MemoryStore:
 
         self.base_dir.mkdir(parents=True, exist_ok=True)
         self.sessions_dir.mkdir(parents=True, exist_ok=True)
+        self._cleanup_partial_state()
 
         # Legacy migration must happen before any session is selected so the
         # first post-upgrade startup can immediately resume migrated history.
@@ -163,6 +164,10 @@ class MemoryStore:
             "updated_at": now,
             "source": str(self.legacy_path),
         }
+        index_existed = self.index_path.exists()
+        last_session_existed = self.last_session_path.exists()
+        previous_index = self._read_bytes(self.index_path)
+        previous_last_session = self._read_bytes(self.last_session_path)
 
         try:
             # Write the migrated session atomically enough that a successful run
@@ -172,10 +177,18 @@ class MemoryStore:
             self._write_json(self.index_path, [meta])
             self._write_text(self.last_session_path, session_id)
         except OSError:
-            if session_dir.exists():
-                for child in session_dir.glob("*"):
-                    child.unlink(missing_ok=True)
-                session_dir.rmdir()
+            self._restore_file(
+                self.index_path,
+                previous_index,
+                existed=index_existed,
+            )
+            self._restore_file(
+                self.last_session_path,
+                previous_last_session,
+                existed=last_session_existed,
+            )
+            self._remove_tree(session_dir)
+            self._cleanup_partial_state()
             raise
 
     def _touch_session(self, session_id: str) -> None:
@@ -259,3 +272,63 @@ class MemoryStore:
         with tmp_path.open("w", encoding="utf-8") as handle:
             handle.write(value)
         tmp_path.replace(path)
+
+    def _read_bytes(self, path: Path) -> bytes | None:
+        if not path.exists():
+            return None
+        try:
+            return path.read_bytes()
+        except OSError:
+            return None
+
+    def _restore_file(self, path: Path, content: bytes | None, existed: bool) -> None:
+        if existed and content is not None:
+            path.parent.mkdir(parents=True, exist_ok=True)
+            tmp_path = path.with_suffix(path.suffix + ".tmp")
+            with tmp_path.open("wb") as handle:
+                handle.write(content)
+            tmp_path.replace(path)
+            return
+
+        try:
+            path.unlink(missing_ok=True)
+        except OSError:
+            pass
+
+    def _remove_tree(self, path: Path) -> None:
+        if not path.exists():
+            return
+        for child in path.iterdir():
+            if child.is_dir():
+                self._remove_tree(child)
+            else:
+                child.unlink(missing_ok=True)
+        path.rmdir()
+
+    def _cleanup_partial_state(self) -> None:
+        for tmp_path in self.sessions_dir.rglob("*.tmp"):
+            try:
+                tmp_path.unlink(missing_ok=True)
+            except OSError:
+                continue
+
+        for session_dir in self.sessions_dir.iterdir():
+            if not session_dir.is_dir():
+                continue
+            has_history = (session_dir / "history.json").exists()
+            has_meta = (session_dir / "meta.json").exists()
+            if has_history and has_meta:
+                continue
+            try:
+                self._remove_tree(session_dir)
+            except OSError:
+                continue
+
+        for path in (
+            self.index_path.with_suffix(self.index_path.suffix + ".tmp"),
+            self.last_session_path.with_suffix(self.last_session_path.suffix + ".tmp"),
+        ):
+            try:
+                path.unlink(missing_ok=True)
+            except OSError:
+                continue
