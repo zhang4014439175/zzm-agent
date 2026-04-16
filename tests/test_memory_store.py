@@ -2,6 +2,7 @@ import json
 
 import pytest
 
+from zzm_agent.memory.io import StorageIO
 from zzm_agent.memory.store import MemoryStore
 
 
@@ -125,14 +126,14 @@ def test_migration_failure_rolls_back_to_safe_state(tmp_path, monkeypatch):
     legacy_history = [{"role": "user", "content": "legacy"}]
     path.write_text(json.dumps(legacy_history), encoding="utf-8")
 
-    original_write_text = MemoryStore._write_text
+    original_write_text = StorageIO.write_text
 
     def fail_on_last_session(self, target, value):
-        if target == self.last_session_path:
+        if target.name == "last_session.txt":
             raise OSError("simulated write failure")
         return original_write_text(self, target, value)
 
-    monkeypatch.setattr(MemoryStore, "_write_text", fail_on_last_session)
+    monkeypatch.setattr(StorageIO, "write_text", fail_on_last_session)
 
     with pytest.raises(OSError):
         MemoryStore(path=path, max_history=50)
