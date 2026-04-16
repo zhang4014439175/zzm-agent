@@ -1,20 +1,28 @@
 model:
-  base_url: "http://localhost:11434/v1"
-  api_key: "ollama"
-  model_name: "qwen2.5:14b"
+  base_url: "https://coding.dashscope.aliyuncs.com/v1"
+  api_key: "sk-sp-0000000000000000000000000000000000"
+  model_name: "qwen3.5-plus"
   temperature: 0.7
   max_tokens: 4096
 
 agent:
   system_prompt: "你是 zzm-agent，一个简洁高效的个人助理。"
+  auto_approve: false
   plugin_dirs:
     - "zzm_agent/plugins"
 
 memory:
-  path: "~/.zzm_agent/memory.json"
+  path: ".zzm_agent/memory.json"
   max_history: 50
+  retrieval_top_k: 3
+  max_context_tokens: 8000
+  compression_keep_recent: 10
 
 evolution:
   enabled: false
   trigger: "manual"
   sample_size: 20
+  history_versions: 5
+  # 预留配置，当前版本不承诺启用
+  auto_interval:
+  threshold:

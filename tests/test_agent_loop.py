@@ -274,3 +274,36 @@ def test_memory_injection_includes_semantic_and_episodic_context(registry, tmp_p
     assert any("User prefers concise answers." in content for content in contents)
     assert any("Episodic memory" in content for content in contents)
     assert any("Build the Python CLI first." in content for content in contents)
+
+
+def test_agent_loop_injects_runtime_compression_summary_when_history_is_large(registry, tmp_path):
+    store = MemoryStore(
+        path=tmp_path / "memory.json",
+        max_history=20,
+        max_context_tokens=45,
+        compression_keep_recent=1,
+    )
+    store.append(
+        [
+            {"role": "user", "content": "first " * 30},
+            {"role": "assistant", "content": "second " * 30},
+            {"role": "user", "content": "latest raw message"},
+        ]
+    )
+
+    loop = AgentLoop(
+        client=MagicMock(),
+        model="test-model",
+        system_prompt="sys",
+        registry=registry,
+        store=store,
+    )
+    loop.client.chat.completions.create.return_value = make_response(content="ok")
+
+    loop.run("new message", stream=False)
+
+    messages = loop.client.chat.completions.create.call_args.kwargs["messages"]
+    contents = [message["content"] for message in messages if message.get("content")]
+    assert any("Runtime compression summary" in content for content in contents)
+    assert any("latest raw message" in content for content in contents)
+    assert any(content == "new message" for content in contents)

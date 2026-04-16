@@ -82,9 +82,25 @@ def handle_slash(
         # `/memory` always reflects the currently selected session rather than a
         # global store, which is why the session id is displayed in the header.
         history = store.load_history()
+        preview = store.preview_context_window()
         console.print(
             f"[yellow]{len(history)} messages in session {store.session_id}.[/yellow]"
         )
+        console.print(
+            "[dim]"
+            f"Estimated history tokens: {preview['raw_tokens']}/{preview['budget_tokens']}."
+            "[/dim]"
+        )
+        if preview["applied"]:
+            console.print(
+                "[yellow]"
+                f"Context compression active. Kept {preview['kept_recent_count']} raw messages."
+                "[/yellow]"
+            )
+            if preview["summary"]:
+                console.print(f"[cyan]summary[/cyan]: {preview['summary']}")
+        else:
+            console.print("[dim]Context compression inactive.[/dim]")
         for message in history[-5:]:
             role = message.get("role", "?")
             content = str(message.get("content", ""))[:80]

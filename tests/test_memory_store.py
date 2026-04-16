@@ -236,3 +236,63 @@ def test_build_memory_messages_respects_injection_limit(tmp_path):
     assert "Project language is Python." in messages[0]["content"]
     assert "User prefers concise answers." not in messages[0]["content"]
     assert "ship session support first" in messages[1]["content"]
+
+
+def test_compress_history_preserves_recent_messages_and_adds_summary(tmp_path):
+    store = MemoryStore(
+        path=tmp_path / "memory.json",
+        max_history=50,
+        max_context_tokens=40,
+        compression_keep_recent=2,
+    )
+    store.append(
+        [
+            {"role": "user", "content": "A" * 80},
+            {"role": "assistant", "content": "B" * 80},
+            {"role": "user", "content": "recent user"},
+            {"role": "assistant", "content": "recent assistant"},
+        ]
+    )
+
+    compressed = store.preview_context_window()
+
+    assert compressed["applied"] is True
+    assert compressed["kept_recent_count"] == 2
+    assert compressed["messages"][0]["role"] == "system"
+    assert "Runtime compression summary" in compressed["messages"][0]["content"]
+    assert compressed["messages"][-2]["content"] == "recent user"
+    assert compressed["messages"][-1]["content"] == "recent assistant"
+
+
+def test_build_turn_messages_respects_context_budget(tmp_path):
+    store = MemoryStore(
+        path=tmp_path / "memory.json",
+        max_history=50,
+        max_context_tokens=45,
+        compression_keep_recent=1,
+    )
+    store.append(
+        [
+            {"role": "user", "content": "first " * 30},
+            {"role": "assistant", "content": "second " * 30},
+            {"role": "user", "content": "latest raw message"},
+        ]
+    )
+
+    messages, compression = store.build_turn_messages(
+        system_prompt="sys",
+        user_input="new input",
+    )
+
+    assert compression["applied"] is True
+    assert messages[0]["content"] == "sys"
+    assert messages[-1]["content"] == "new input"
+    assert any(
+        message["role"] == "system"
+        and "Runtime compression summary" in message["content"]
+        for message in messages[1:-1]
+    )
+    assert any(
+        message["role"] == "user" and message["content"] == "latest raw message"
+        for message in messages[1:-1]
+    )

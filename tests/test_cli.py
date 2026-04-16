@@ -64,6 +64,30 @@ def test_handle_slash_memory_mentions_current_session(tmp_path):
     assert any("alpha" in line for line in console.lines)
 
 
+def test_handle_slash_memory_shows_compression_summary_when_active(tmp_path):
+    store = MemoryStore(
+        path=tmp_path / "memory.json",
+        max_history=50,
+        session_id="alpha",
+        max_context_tokens=35,
+        compression_keep_recent=1,
+    )
+    store.append(
+        [
+            {"role": "user", "content": "A" * 80},
+            {"role": "assistant", "content": "B" * 80},
+            {"role": "user", "content": "recent"},
+        ]
+    )
+    console = DummyConsole()
+
+    handled = handle_slash("/memory", DummyRegistry(), store, DummyOptimizer(), console)
+
+    assert handled is True
+    assert any("Context compression active" in line for line in console.lines)
+    assert any("Runtime compression summary" in line for line in console.lines)
+
+
 def test_handle_slash_remember_and_forget(tmp_path):
     store = MemoryStore(path=tmp_path / "memory.json", max_history=50, session_id="alpha")
     console = DummyConsole()

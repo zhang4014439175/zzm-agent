@@ -106,6 +106,8 @@ def build_runtime(args: argparse.Namespace, cfg: dict[str, Any]) -> dict[str, An
         session_id=args.session_id,
         # This controls how many long-term memory items are injected per turn.
         retrieval_top_k=cfg["memory"].get("retrieval_top_k", 3),
+        max_context_tokens=cfg["memory"].get("max_context_tokens", 8000),
+        compression_keep_recent=cfg["memory"].get("compression_keep_recent", 10),
     )
     optimizer = EvolutionOptimizer(
         client=client,

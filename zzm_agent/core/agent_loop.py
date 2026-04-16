@@ -185,17 +185,13 @@ class AgentLoop:
         Returns:
             The final text response from the assistant.
         """
-        # 1. Load context: System prompt + History + New input
-        history = self.store.load_history()
-        messages = [{"role": "system", "content": self.system_prompt}]
-        # Inject persistent memory between the base instructions and the active
-        # session history so long-term facts stay visible without polluting
-        # stored turn history.
-        messages.extend(
-            self.store.build_memory_messages(limit=self.memory_injection_limit)
+        # 1. Load runtime context: base instructions + long-term memory +
+        # compressed session history + current user input.
+        messages, _compression = self.store.build_turn_messages(
+            system_prompt=self.system_prompt,
+            user_input=user_input,
+            memory_limit=self.memory_injection_limit,
         )
-        messages.extend(history)
-        messages.append({"role": "user", "content": user_input})
 
         # Persist only the current turn once it is safe to do so; this avoids
         # duplicating prior history that was already loaded from disk.

@@ -10,7 +10,7 @@ class SemanticStore:
 
     def __init__(self, io: StorageIO, base_dir: Path):
         self.io = io
-        self.semantic_path = base_dir / "semantic.json" q
+        self.semantic_path = base_dir / "semantic.json"
 
     def load(self) -> list[dict]:
         """Load cross-session semantic memory entries ordered by recency."""
