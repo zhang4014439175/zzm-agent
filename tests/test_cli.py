@@ -91,3 +91,17 @@ def test_handle_slash_remember_and_forget(tmp_path):
         is True
     )
     assert store.load_semantic_memory() == []
+
+
+def test_handle_slash_semantic_lists_all_long_term_memories(tmp_path):
+    store = MemoryStore(path=tmp_path / "memory.json", max_history=50, session_id="alpha")
+    store.remember_fact("User prefers concise answers.")
+    store.remember_fact("Project language is Python.")
+    console = DummyConsole()
+
+    handled = handle_slash("/semantic", DummyRegistry(), store, DummyOptimizer(), console)
+
+    assert handled is True
+    assert any("2 long-term memories" in line for line in console.lines)
+    assert any("Project language is Python." in line for line in console.lines)
+    assert any("User prefers concise answers." in line for line in console.lines)

@@ -185,6 +185,18 @@ def test_remember_and_forget_semantic_memory(tmp_path):
     ]
 
 
+def test_list_semantic_facts_returns_all_long_term_memories(tmp_path):
+    store = MemoryStore(path=tmp_path / "memory.json", max_history=50)
+
+    store.remember_fact("User prefers concise answers.")
+    store.remember_fact("Project language is Python.")
+
+    assert store.list_semantic_facts() == [
+        "Project language is Python.",
+        "User prefers concise answers.",
+    ]
+
+
 def test_switching_sessions_persists_episodic_summary(tmp_path):
     store = MemoryStore(path=tmp_path / "memory.json", max_history=50)
     first_session = store.session_id

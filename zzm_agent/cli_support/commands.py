@@ -113,6 +113,19 @@ def handle_slash(
         console.print(f"[green]Forgot {removed} memory item(s).[/green]")
         return True
 
+    if command == "/semantic":
+        facts = store.list_semantic_facts()
+        if not facts:
+            console.print("[yellow]No long-term memories found.[/yellow]")
+            return True
+
+        console.print(
+            f"[yellow]{len(facts)} long-term memories.[/yellow]"
+        )
+        for index, fact in enumerate(facts, start=1):
+            console.print(f"[cyan]{index}.[/cyan] {fact}")
+        return True
+
     if command == "/evolve":
         history = store.load_history()
         console.print("[yellow]Running evolution optimizer...[/yellow]")
@@ -127,7 +140,7 @@ def handle_slash(
     if command == "/help":
         console.print(
             "Commands: /sessions  /session <id>  /new  /tools  /memory  "
-            "/remember <fact>  /forget <keyword>  /evolve  /help  /exit"
+            "/remember <fact>  /forget <keyword>  /semantic  /evolve  /help  /exit"
         )
         return True
 

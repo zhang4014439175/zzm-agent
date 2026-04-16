@@ -137,6 +137,10 @@ class MemoryStore:
         """Load cross-session semantic memory entries ordered by recency."""
         return self.semantic_store.load()
 
+    def list_semantic_facts(self) -> list[str]:
+        """Return every long-term semantic memory fact ordered by recency."""
+        return self.semantic_store.list_facts()
+
     def remember_fact(self, fact: str) -> dict:
         """Insert or refresh one semantic memory fact."""
         return self.semantic_store.remember(fact, now=self.sessions.utc_now())

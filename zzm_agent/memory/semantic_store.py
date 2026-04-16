@@ -10,7 +10,7 @@ class SemanticStore:
 
     def __init__(self, io: StorageIO, base_dir: Path):
         self.io = io
-        self.semantic_path = base_dir / "semantic.json"
+        self.semantic_path = base_dir / "semantic.json" q
 
     def load(self) -> list[dict]:
         """Load cross-session semantic memory entries ordered by recency."""
@@ -25,6 +25,10 @@ class SemanticStore:
             key=lambda entry: entry.get("updated_at", ""),
             reverse=True,
         )
+
+    def list_facts(self) -> list[str]:
+        """Return every semantic memory fact ordered by recency."""
+        return [entry["fact"] for entry in self.load() if entry.get("fact")]
 
     def remember(self, fact: str, now: str) -> dict:
         """Insert or refresh one semantic memory fact."""
