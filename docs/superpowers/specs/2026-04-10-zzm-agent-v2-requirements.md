@@ -8,7 +8,7 @@
 
 ## 1. 当前状态
 
-**结论：v2 已开始开发，`P1.2/X1` 已验收完成，当前整体处于 `X2 测试与质量` 进行中。**
+**结论：v2 已开始开发，`P1.2/X1/P2.1` 已验收完成，当前整体处于 `X2 测试与质量` 进行中。**
 
 当前仓库已经完成 `P1.1`、`P1.2` 与 `X1`，并继续推进 `X2`。不得再把仓库整体描述为“v2 尚未开始”；后续每次更新时都必须按本文件的状态规则同步修正总览、任务卡片和里程碑。
 
@@ -25,13 +25,13 @@
 ### 尚未完成的 v2 能力
 
 - [x] 多会话管理
-- [ ] 分层记忆
+- [x] 分层记忆
 - [ ] 上下文压缩
 - [ ] 记忆检索
 - [ ] 风险分级与工具确认
 - [ ] 插件热重载命令
 - [x] `/sessions` `/session` `/new`
-- [ ] `/remember` `/forget` `/search`
+- [-] `/remember` `/forget` `/search`
 - [ ] `/evolve status` `/evolve run` `/evolve diff` `/evolve apply` `/evolve rollback`
 - [x] 数据迁移与回滚闭环
 - [-] v2 对应测试
@@ -88,7 +88,7 @@
 
 - [x] P1.1 流式输出
 - [x] P1.2 会话管理
-- [ ] P2.1 分层记忆
+- [x] P2.1 分层记忆
 - [ ] P2.2 上下文压缩
 - [ ] P2.3 记忆检索
 - [ ] P3.1 工具确认
@@ -178,17 +178,17 @@
 
 ---
 
-### P2.1 分层记忆 `[ ]`
+### P2.1 分层记忆 `[x]`
 
-当前状态：未开始  
-说明：当前只有单层历史存储，没有 `episodic` / `semantic`。
+当前状态：已完成  
+说明：已补齐 `episodic` / `semantic` 两层持久化记忆、`/remember` / `/forget` 命令，以及长期记忆注入数量控制；新会话会自动注入上一会话摘要与长期事实。
 
 任务：
-- [ ] `history.json` 保存完整会话历史
-- [ ] 会话摘要写入 `episodic.json`
-- [ ] `/remember <fact>`
-- [ ] `/forget <keyword>`
-- [ ] 支持长期记忆注入数量配置
+- [x] `history.json` 保存完整会话历史
+- [x] 会话摘要写入 `episodic.json`
+- [x] `/remember <fact>`
+- [x] `/forget <keyword>`
+- [x] 支持长期记忆注入数量配置
 
 边界：
 - `Working Memory`: 当前会话原始历史
@@ -198,9 +198,12 @@
 - 同一事实不得被重复注入
 
 验收：
-- [ ] 新会话可引用上一会话关键结论
-- [ ] `/remember` 信息可在后续会话检索到
-- [ ] 长期记忆注入条数受配置控制
+- [x] 新会话可引用上一会话关键结论
+- [x] `/remember` 信息可在后续会话检索到
+- [x] 长期记忆注入条数受配置控制
+
+备注：
+- 当前通过定向自动化验证：`pytest tests/test_memory_store.py tests/test_cli.py tests/test_agent_loop.py -q --basetemp C:\Users\zhangzm\.codex\memories\zzm-agent-pytest`
 
 ---
 
@@ -445,7 +448,7 @@ evolution:
 
 - [x] M1 Streaming + 输出改进
 - [x] M2 Session + 旧数据迁移
-- [ ] M3 分层记忆 + 压缩 + 检索
+- [-] M3 分层记忆 + 压缩 + 检索
 - [ ] M4 工具确认 + 插件热重载
 - [ ] M5 Evolve 最小闭环
 - [ ] M6 集成测试 + 迁移验证 + 文档更新 + 发布

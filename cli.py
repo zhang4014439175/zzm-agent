@@ -212,6 +212,28 @@ def handle_slash(
             console.print(f"[cyan]{role}[/cyan]: {content}")
         return True
 
+    if command.startswith("/remember"):
+        parts = command.split(maxsplit=1)
+        if len(parts) != 2 or not parts[1].strip():
+            console.print("[yellow]Usage: /remember <fact>[/yellow]")
+            return True
+
+        # `/remember` writes cross-session semantic memory, unlike `/memory`
+        # which only inspects the active session transcript.
+        entry = store.remember_fact(parts[1].strip())
+        console.print(f"[green]Remembered:[/green] {entry['fact']}")
+        return True
+
+    if command.startswith("/forget"):
+        parts = command.split(maxsplit=1)
+        if len(parts) != 2 or not parts[1].strip():
+            console.print("[yellow]Usage: /forget <keyword>[/yellow]")
+            return True
+
+        removed = store.forget_fact(parts[1].strip())
+        console.print(f"[green]Forgot {removed} memory item(s).[/green]")
+        return True
+
     if command == "/evolve":
         history = store.load_history()
         console.print("[yellow]Running evolution optimizer...[/yellow]")
@@ -226,7 +248,7 @@ def handle_slash(
     if command == "/help":
         console.print(
             "Commands: /sessions  /session <id>  /new  /tools  /memory  "
-            "/evolve  /help  /exit"
+            "/remember <fact>  /forget <keyword>  /evolve  /help  /exit"
         )
         return True
 
@@ -262,6 +284,8 @@ def main() -> int:
         path=cfg["memory"]["path"],
         max_history=cfg["memory"]["max_history"],
         session_id=args.session_id,
+        # This controls how many long-term memory items are injected per turn.
+        retrieval_top_k=cfg["memory"].get("retrieval_top_k", 3),
     )
     optimizer = EvolutionOptimizer(
         client=client,
@@ -274,6 +298,8 @@ def main() -> int:
         system_prompt=cfg["agent"]["system_prompt"],
         registry=registry,
         store=store,
+        # Keep the agent loop aligned with MemoryStore's retrieval budget.
+        memory_injection_limit=cfg["memory"].get("retrieval_top_k", 3),
     )
 
     console.print("[bold green]zzm-agent[/bold green] started.")

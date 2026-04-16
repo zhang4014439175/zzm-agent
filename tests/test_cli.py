@@ -62,3 +62,32 @@ def test_handle_slash_memory_mentions_current_session(tmp_path):
 
     assert handled is True
     assert any("alpha" in line for line in console.lines)
+
+
+def test_handle_slash_remember_and_forget(tmp_path):
+    store = MemoryStore(path=tmp_path / "memory.json", max_history=50, session_id="alpha")
+    console = DummyConsole()
+
+    assert (
+        handle_slash(
+            "/remember User prefers concise answers.",
+            DummyRegistry(),
+            store,
+            DummyOptimizer(),
+            console,
+        )
+        is True
+    )
+    assert store.load_semantic_memory()[0]["fact"] == "User prefers concise answers."
+
+    assert (
+        handle_slash(
+            "/forget concise",
+            DummyRegistry(),
+            store,
+            DummyOptimizer(),
+            console,
+        )
+        is True
+    )
+    assert store.load_semantic_memory() == []

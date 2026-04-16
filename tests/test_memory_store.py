@@ -164,3 +164,62 @@ def test_startup_cleans_partial_session_state_before_migration(tmp_path):
     assert not (sessions_dir / "index.json.tmp").exists()
     assert len(store.list_sessions()) == 1
     assert store.load_history() == legacy_history
+
+
+def test_remember_and_forget_semantic_memory(tmp_path):
+    store = MemoryStore(path=tmp_path / "memory.json", max_history=50)
+
+    store.remember_fact("User prefers concise answers.")
+    store.remember_fact("User prefers concise answers.")
+    store.remember_fact("Project language is Python.")
+
+    memories = store.load_semantic_memory()
+    assert len(memories) == 2
+    assert memories[0]["fact"] == "Project language is Python."
+
+    removed = store.forget_fact("concise")
+    assert removed == 1
+    assert [entry["fact"] for entry in store.load_semantic_memory()] == [
+        "Project language is Python."
+    ]
+
+
+def test_switching_sessions_persists_episodic_summary(tmp_path):
+    store = MemoryStore(path=tmp_path / "memory.json", max_history=50)
+    first_session = store.session_id
+    store.append(
+        [
+            {"role": "user", "content": "What did we decide?"},
+            {"role": "assistant", "content": "We decided to ship the Python CLI first."},
+        ]
+    )
+
+    store.create_session()
+
+    episodic = store.load_episodic(first_session)
+    assert episodic is not None
+    assert "ship the Python CLI first" in episodic["summary"]
+
+
+def test_build_memory_messages_respects_injection_limit(tmp_path):
+    store = MemoryStore(
+        path=tmp_path / "memory.json",
+        max_history=50,
+        retrieval_top_k=1,
+        session_id="alpha",
+    )
+    store.remember_fact("User prefers concise answers.")
+    store.remember_fact("Project language is Python.")
+    store.append(
+        [
+            {"role": "user", "content": "Summarize the current plan."},
+            {"role": "assistant", "content": "The plan is to ship session support first."},
+        ]
+    )
+    store.create_session(make_current=True)
+
+    messages = store.build_memory_messages()
+    assert len(messages) == 2
+    assert "Project language is Python." in messages[0]["content"]
+    assert "User prefers concise answers." not in messages[0]["content"]
+    assert "ship session support first" in messages[1]["content"]

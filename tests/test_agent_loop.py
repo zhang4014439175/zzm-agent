@@ -238,3 +238,39 @@ def test_stream_interruption_returns_partial_text_without_persisting(registry, s
     assert result == "Par"
     assert chunks == ["Par"]
     assert store.load_history() == []
+
+
+def test_memory_injection_includes_semantic_and_episodic_context(registry, tmp_path):
+    store = MemoryStore(
+        path=tmp_path / "memory.json",
+        max_history=10,
+        retrieval_top_k=1,
+        session_id="alpha",
+    )
+    store.remember_fact("User prefers concise answers.")
+    store.append(
+        [
+            {"role": "user", "content": "What should we build first?"},
+            {"role": "assistant", "content": "Build the Python CLI first."},
+        ]
+    )
+    store.create_session(make_current=True)
+
+    loop = AgentLoop(
+        client=MagicMock(),
+        model="test-model",
+        system_prompt="sys",
+        registry=registry,
+        store=store,
+        memory_injection_limit=1,
+    )
+    loop.client.chat.completions.create.return_value = make_response(content="ok")
+
+    loop.run("new message", stream=False)
+
+    messages = loop.client.chat.completions.create.call_args.kwargs["messages"]
+    contents = [m["content"] for m in messages if m.get("content")]
+    assert any("Semantic memory" in content for content in contents)
+    assert any("User prefers concise answers." in content for content in contents)
+    assert any("Episodic memory" in content for content in contents)
+    assert any("Build the Python CLI first." in content for content in contents)

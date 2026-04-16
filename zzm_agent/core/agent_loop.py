@@ -22,6 +22,7 @@ class AgentLoop:
         system_prompt: str,
         registry: "ToolRegistry",
         store: "MemoryStore",
+        memory_injection_limit: int = 3,
     ):
         """
         Initialize the AgentLoop.
@@ -38,6 +39,7 @@ class AgentLoop:
         self.system_prompt = system_prompt
         self.registry = registry
         self.store = store
+        self.memory_injection_limit = memory_injection_limit
 
     def _build_tool_call_record(
         self,
@@ -186,6 +188,12 @@ class AgentLoop:
         # 1. Load context: System prompt + History + New input
         history = self.store.load_history()
         messages = [{"role": "system", "content": self.system_prompt}]
+        # Inject persistent memory between the base instructions and the active
+        # session history so long-term facts stay visible without polluting
+        # stored turn history.
+        messages.extend(
+            self.store.build_memory_messages(limit=self.memory_injection_limit)
+        )
         messages.extend(history)
         messages.append({"role": "user", "content": user_input})
 
