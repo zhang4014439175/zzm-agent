@@ -39,7 +39,9 @@ class ToolRegistry:
             A decorator function that registers the tool and returns the original function.
         """
         def decorator(fn: Callable) -> Callable:
-            # Introspect the function signature to build the JSON Schema
+            # The schema is derived once at registration time so the runtime can
+            # hand OpenAI-compatible tool metadata to the model without further
+            # reflection during each request.
             sig = inspect.signature(fn)
             properties = {}
             required = []
@@ -108,18 +110,19 @@ class ToolRegistry:
         path = Path(directory).expanduser().resolve()
         if not path.exists():
             return
-            
+
         for py_file in sorted(path.glob("*.py")):
             # Skip hidden files and __init__.py
             if py_file.name.startswith("_"):
                 continue
-            
-            # Create a unique module name to avoid collisions
+
+            # Each plugin is loaded under a synthetic module name so repeated
+            # file basenames from different plugin directories do not collide.
             module_name = f"_zzm_plugin_{py_file.stem}"
             spec = importlib.util.spec_from_file_location(module_name, py_file)
             if spec is None or spec.loader is None:
                 continue
-                
+
             module = importlib.util.module_from_spec(spec)
             sys.modules[module_name] = module
             spec.loader.exec_module(module)
@@ -131,6 +134,8 @@ _active_registry: ToolRegistry | None = None
 def set_active_registry(registry: ToolRegistry) -> None:
     """Set the global active tool registry."""
     global _active_registry
+    # Plugins import the module-level `@tool` decorator, so startup must point
+    # that decorator at the same registry instance the agent loop will query.
     _active_registry = registry
 
 

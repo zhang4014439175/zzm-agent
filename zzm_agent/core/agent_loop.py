@@ -55,6 +55,8 @@ class AgentLoop:
         }
 
     def _extract_tool_calls(self, tool_calls: list[Any]) -> list[dict[str, Any]]:
+        # Non-stream responses already carry complete tool calls, so this path
+        # just normalizes SDK objects into the persisted assistant message shape.
         records = []
         for tc in tool_calls:
             records.append(
@@ -187,7 +189,8 @@ class AgentLoop:
         messages.extend(history)
         messages.append({"role": "user", "content": user_input})
 
-        # Track only the messages from this specific turn for persistence
+        # Persist only the current turn once it is safe to do so; this avoids
+        # duplicating prior history that was already loaded from disk.
         turn_messages = [{"role": "user", "content": user_input}]
         
         # Get available tool schemas
@@ -208,6 +211,8 @@ class AgentLoop:
                 )
 
             if interrupted:
+                # Interrupted turns intentionally do not write partial assistant
+                # or tool state, preserving a resumable conversation history.
                 return assistant_content
 
             # If it's a simple text reply, we are done
@@ -216,8 +221,8 @@ class AgentLoop:
                 assistant_msg = {"role": "assistant", "content": final_reply}
                 messages.append(assistant_msg)
                 turn_messages.append(assistant_msg)
-                
-                # Save the new messages from this turn to persistent memory
+
+                # Only the final assistant reply marks the turn as complete.
                 self.store.append(turn_messages)
                 return final_reply
 
@@ -231,7 +236,8 @@ class AgentLoop:
             messages.append(assistant_intent_msg)
             turn_messages.append(assistant_intent_msg)
 
-            # Execute each tool call requested
+            # Tool results stay inside the same turn so the model can immediately
+            # consume them on the next loop iteration.
             for tc in tool_calls_raw:
                 try:
                     # Parse arguments and call the tool through the registry

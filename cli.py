@@ -9,6 +9,7 @@ project structure.
 
 from __future__ import annotations
 
+import argparse
 import sys
 from pathlib import Path
 from typing import Any
@@ -19,6 +20,20 @@ from zzm_agent.evolution.optimizer import EvolutionOptimizer
 from zzm_agent.memory.store import MemoryStore
 
 CONFIG_PATH = Path("config.yaml")
+
+
+def parse_args(argv: list[str] | None = None) -> argparse.Namespace:
+    # Keep CLI bootstrap flags centralized so session selection happens
+    # before config loading and REPL startup.
+    parser = argparse.ArgumentParser(description="zzm-agent")
+    parser.add_argument(
+        "--session",
+        dest="session_id",
+        # Reuse an existing session when present; otherwise create it so the
+        # rest of the runtime can treat explicit session selection uniformly.
+        help="Resume or create a specific session id.",
+    )
+    return parser.parse_args(argv)
 
 
 def load_config(config_path: str | Path = CONFIG_PATH) -> dict[str, Any]:
@@ -135,6 +150,42 @@ def handle_slash(
     """
     command = cmd.strip()
 
+    if command == "/sessions":
+        # Session listing is read-only state inspection so operators can verify
+        # which conversation the agent will continue before switching.
+        sessions = store.list_sessions()
+        if not sessions:
+            console.print("[yellow]No sessions found.[/yellow]")
+            return True
+
+        for session in sessions:
+            marker = "*" if session["id"] == store.session_id else " "
+            console.print(
+                f"{marker} [cyan]{session['id']}[/cyan]  "
+                f"{session.get('name', session['id'])}  "
+                f"[dim]{session.get('updated_at', '')}[/dim]"
+            )
+        return True
+
+    if command.startswith("/session"):
+        # Switching the active session changes which history file subsequent
+        # user turns and `/memory` reads operate on.
+        parts = command.split(maxsplit=1)
+        if len(parts) != 2 or not parts[1].strip():
+            console.print("[yellow]Usage: /session <id>[/yellow]")
+            return True
+
+        meta = store.switch_session(parts[1].strip())
+        console.print(f"[green]Switched to session:[/green] [cyan]{meta['id']}[/cyan]")
+        return True
+
+    if command == "/new":
+        # New sessions intentionally create a clean conversation boundary while
+        # immediately making it the active target for future turns.
+        meta = store.create_session()
+        console.print(f"[green]Created session:[/green] [cyan]{meta['id']}[/cyan]")
+        return True
+
     if command == "/tools":
         schemas = registry.get_schemas()
         if not schemas:
@@ -149,8 +200,12 @@ def handle_slash(
         return True
 
     if command == "/memory":
+        # `/memory` always reflects the currently selected session rather than a
+        # global store, which is why the session id is displayed in the header.
         history = store.load_history()
-        console.print(f"[yellow]{len(history)} messages in memory.[/yellow]")
+        console.print(
+            f"[yellow]{len(history)} messages in session {store.session_id}.[/yellow]"
+        )
         for message in history[-5:]:
             role = message.get("role", "?")
             content = str(message.get("content", ""))[:80]
@@ -169,7 +224,10 @@ def handle_slash(
         return True
 
     if command == "/help":
-        console.print("Commands: /tools  /memory  /evolve  /help  /exit")
+        console.print(
+            "Commands: /sessions  /session <id>  /new  /tools  /memory  "
+            "/evolve  /help  /exit"
+        )
         return True
 
     if command in {"/exit", "/quit"}:
@@ -191,6 +249,7 @@ def main() -> int:
     except ImportError as exc:
         raise RuntimeError("OpenAI SDK is required to run zzm-agent.") from exc
 
+    args = parse_args()
     cfg = load_config()
     console = build_console()
 
@@ -202,6 +261,7 @@ def main() -> int:
     store = MemoryStore(
         path=cfg["memory"]["path"],
         max_history=cfg["memory"]["max_history"],
+        session_id=args.session_id,
     )
     optimizer = EvolutionOptimizer(
         client=client,
@@ -220,6 +280,7 @@ def main() -> int:
     console.print(
         f"[dim]{len(registry.get_schemas())} tools loaded. Type /help for commands.[/dim]"
     )
+    console.print(f"[dim]Current session: {store.session_id}[/dim]")
 
     while True:
         try:
@@ -243,7 +304,7 @@ def main() -> int:
                 streamed["seen"] = True
                 stream_reply_chunk(console, chunk)
 
-            reply = loop.run(user_input, stream=False, on_text_chunk=on_text_chunk)
+            reply = loop.run(user_input, stream=True, on_text_chunk=on_text_chunk)
             if streamed["seen"]:
                 # Streamed output has already been printed chunk-by-chunk above.
                 console.print()

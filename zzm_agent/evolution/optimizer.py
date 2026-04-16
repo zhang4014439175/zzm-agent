@@ -51,26 +51,25 @@ class EvolutionOptimizer:
         """
         if not new_prompt:
             return
-            
+
         import yaml
-        
+
         try:
-            # Read existing configuration
+            # Evolution only mutates the prompt field; keeping the rest of the
+            # config intact avoids surprising model or memory setting changes.
             if not self.config_path.exists():
                 return
-                
+
             with open(self.config_path, "r", encoding="utf-8") as f:
                 cfg = yaml.safe_load(f)
-            
-            # Update the system_prompt
+
             if "agent" not in cfg:
                 cfg["agent"] = {}
             cfg["agent"]["system_prompt"] = new_prompt
-            
-            # Save the updated configuration back to disk
+
             with open(self.config_path, "w", encoding="utf-8") as f:
                 yaml.dump(cfg, f, allow_unicode=True, sort_keys=False)
-                
+
         except Exception as e:
             # For this MVP, we log errors to stdout (should be replaced with proper logging)
             print(f"Error applying new prompt to config: {e}")

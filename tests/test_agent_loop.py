@@ -42,6 +42,7 @@ def make_response(content=None, tool_calls=None):
 
 
 def make_stream_chunk(content=None, tool_calls=None):
+    # Match the minimal streamed SDK shape consumed by AgentLoop._stream_once.
     delta = SimpleNamespace(
         content=content,
         tool_calls=tool_calls or [],
@@ -51,6 +52,7 @@ def make_stream_chunk(content=None, tool_calls=None):
 
 
 def make_tool_call_delta(index, tool_call_id=None, name=None, arguments=None):
+    # Streamed tool calls may arrive over multiple chunks keyed by the same index.
     return SimpleNamespace(
         index=index,
         id=tool_call_id,
@@ -139,6 +141,8 @@ def test_history_loaded_on_run(registry, store):
 
 
 def test_stream_simple_reply(registry, store):
+    # This guards the user-visible streaming contract: chunks should be emitted
+    # incrementally and still persist as one final assistant message.
     loop = AgentLoop(
         client=MagicMock(),
         model="test-model",
@@ -174,6 +178,8 @@ def test_stream_tool_call_then_reply(registry, store):
 
     first_stream = iter(
         [
+            # The tool name and JSON args are intentionally split across chunks
+            # to verify streamed tool-call reassembly.
             make_stream_chunk(
                 tool_calls=[
                     make_tool_call_delta(index=0, tool_call_id="call_1", name="ec", arguments='{"te')
@@ -219,6 +225,8 @@ def test_stream_interruption_returns_partial_text_without_persisting(registry, s
     )
 
     def interrupted_stream():
+        # Interrupt after a visible chunk to ensure partial output is returned
+        # without committing an incomplete turn to persistent history.
         yield make_stream_chunk(content="Par")
         raise KeyboardInterrupt
 
