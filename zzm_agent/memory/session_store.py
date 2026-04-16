@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import re
 from datetime import datetime, timezone
 from pathlib import Path
 from uuid import uuid4
@@ -190,7 +191,12 @@ class SessionStore:
         normalized = session_id.strip()
         if not normalized:
             raise ValueError("Session id cannot be empty.")
-        return normalized.replace(" ", "-")
+        normalized = normalized.replace(" ", "-")
+        if not re.fullmatch(r"[A-Za-z0-9_-]+", normalized):
+            raise ValueError(
+                "Session id may contain only letters, numbers, '_' and '-'."
+            )
+        return normalized
 
     def session_dir(self, session_id: str) -> Path:
         """Return the directory path used to store one session's files."""

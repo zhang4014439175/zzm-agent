@@ -1,4 +1,4 @@
-from cli import handle_slash, parse_args
+from cli import handle_slash, load_config, parse_args
 from zzm_agent.memory.store import MemoryStore
 
 
@@ -18,14 +18,48 @@ class DummyOptimizer:
 class DummyConsole:
     def __init__(self):
         self.lines = []
+        self.inputs = []
 
     def print(self, *args, **kwargs):
         self.lines.append(" ".join(str(arg) for arg in args))
+
+    def input(self, prompt):
+        self.lines.append(str(prompt))
+        if self.inputs:
+            return self.inputs.pop(0)
+        return ""
 
 
 def test_parse_args_supports_session_flag():
     args = parse_args(["--session", "alpha"])
     assert args.session_id == "alpha"
+    assert args.config_path is None
+
+
+def test_parse_args_supports_config_flag():
+    args = parse_args(["--config", "custom.yaml"])
+    assert args.config_path == "custom.yaml"
+
+
+def test_parse_args_supports_safe_flag():
+    args = parse_args(["--safe"])
+    assert args.safe is True
+
+
+def test_load_config_expands_env_placeholders(tmp_path, monkeypatch):
+    config_path = tmp_path / "config.yaml"
+    config_path.write_text(
+        "model:\n"
+        '  api_key: "${ZZM_AGENT_API_KEY}"\n'
+        '  base_url: "https://example.com"\n'
+        '  model_name: "demo"\n',
+        encoding="utf-8",
+    )
+    monkeypatch.setenv("ZZM_AGENT_API_KEY", "secret")
+
+    cfg = load_config(config_path)
+
+    assert cfg["model"]["api_key"] == "secret"
 
 
 def test_handle_slash_new_and_switch_session(tmp_path):

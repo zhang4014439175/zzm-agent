@@ -60,3 +60,17 @@ def test_supported_types():
     assert props["i"]["type"] == "integer"
     assert props["f"]["type"] == "number"
     assert props["b"]["type"] == "boolean"
+
+
+def test_tool_metadata_exposes_risk_level():
+    registry = ToolRegistry()
+
+    @registry.tool(description="危险操作", risk_level="high")
+    def dangerous() -> str:
+        return "ok"
+
+    assert registry.get_tool_meta("dangerous") == {
+        "name": "dangerous",
+        "description": "危险操作",
+        "risk_level": "high",
+    }

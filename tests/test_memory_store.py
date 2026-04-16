@@ -2,7 +2,7 @@ import json
 
 import pytest
 
-from zzm_agent.memory.io import StorageIO
+from zzm_agent.memory.io import StorageCorruptionError, StorageIO
 from zzm_agent.memory.store import MemoryStore
 
 
@@ -98,6 +98,13 @@ def test_explicit_session_id_resumes_or_creates_target_session(tmp_path):
     assert resumed.load_history()[-1]["content"] == "hello"
 
 
+def test_explicit_session_id_rejects_path_traversal(tmp_path):
+    path = tmp_path / "memory.json"
+
+    with pytest.raises(ValueError):
+        MemoryStore(path=path, max_history=50, session_id="../escape")
+
+
 def test_legacy_memory_is_migrated_once(tmp_path):
     # Migration should preserve the old history and then become a no-op on
     # later startups to avoid duplicated imported sessions.
@@ -165,6 +172,33 @@ def test_startup_cleans_partial_session_state_before_migration(tmp_path):
     assert not (sessions_dir / "index.json.tmp").exists()
     assert len(store.list_sessions()) == 1
     assert store.load_history() == legacy_history
+
+
+def test_corrupt_history_file_is_quarantined_and_restored_from_backup(tmp_path):
+    store = MemoryStore(path=tmp_path / "memory.json", max_history=50, session_id="alpha")
+    store.append([{"role": "user", "content": "hello"}])
+
+    history_path = store.history_path
+    history_path.write_text("{bad json", encoding="utf-8")
+
+    with pytest.raises(StorageCorruptionError):
+        store.load_history()
+
+    quarantined = list(history_path.parent.glob("history.json.corrupt.*"))
+    assert quarantined
+    assert store.load_history() == [{"role": "user", "content": "hello"}]
+
+
+def test_corrupt_semantic_file_is_quarantined_and_reinitialized(tmp_path):
+    store = MemoryStore(path=tmp_path / "memory.json", max_history=50)
+    store.semantic_path.write_text("{bad json", encoding="utf-8")
+
+    with pytest.raises(StorageCorruptionError):
+        store.load_semantic_memory()
+
+    quarantined = list(store.base_dir.glob("semantic.json.corrupt.*"))
+    assert quarantined
+    assert store.load_semantic_memory() == []
 
 
 def test_remember_and_forget_semantic_memory(tmp_path):

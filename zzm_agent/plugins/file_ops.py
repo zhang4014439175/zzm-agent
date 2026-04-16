@@ -1,8 +1,27 @@
+import os
 from pathlib import Path
 from zzm_agent.core.tool_registry import tool
 
 
-@tool(description="读取指定路径的文件内容，并返回文本（最多 8192 字符）")
+def _workspace_root() -> Path:
+    root = os.environ.get("ZZM_AGENT_WORKSPACE_ROOT")
+    if root:
+        return Path(root).expanduser().resolve()
+    return Path.cwd().resolve()
+
+
+def _resolve_workspace_path(path: str) -> Path:
+    candidate = Path(path).expanduser().resolve(strict=False)
+    workspace_root = _workspace_root()
+    if not candidate.is_relative_to(workspace_root):
+        raise ValueError(f"Path escapes workspace root: {workspace_root}")
+    return candidate
+
+
+@tool(
+    description="读取工作区内指定路径的文件内容，并返回文本（最多 8192 字符）",
+    risk_level="low",
+)
 def read_file(path: str) -> str:
     """
     Read the content of a local file.
@@ -15,8 +34,7 @@ def read_file(path: str) -> str:
         If the file is not found, returns an error message.
     """
     try:
-        # Expand user path (e.g., ~/) and resolve to absolute
-        p = Path(path).expanduser().resolve()
+        p = _resolve_workspace_path(path)
         
         if not p.exists():
             return f"Error: File not found: {path}"
@@ -36,7 +54,10 @@ def read_file(path: str) -> str:
         return f"Error reading file: {e}"
 
 
-@tool(description="将文本写入指定文件。如果文件不存在则创建，如果存在则覆盖。")
+@tool(
+    description="将文本写入工作区内指定文件。如果文件不存在则创建，如果存在则覆盖。",
+    risk_level="high",
+)
 def write_file(path: str, content: str) -> str:
     """
     Write content to a local file.
@@ -49,7 +70,7 @@ def write_file(path: str, content: str) -> str:
         A success message indicating how many characters were written.
     """
     try:
-        p = Path(path).expanduser().resolve()
+        p = _resolve_workspace_path(path)
         
         # Automatically create missing parent directories
         p.parent.mkdir(parents=True, exist_ok=True)

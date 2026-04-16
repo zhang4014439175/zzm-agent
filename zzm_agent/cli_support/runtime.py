@@ -1,6 +1,9 @@
 from __future__ import annotations
 
 import argparse
+import json
+import os
+import re
 from pathlib import Path
 from typing import Any
 
@@ -13,9 +16,11 @@ from zzm_agent.cli_support.rendering import (
 from zzm_agent.core.agent_loop import AgentLoop
 from zzm_agent.core.tool_registry import ToolRegistry, set_active_registry
 from zzm_agent.evolution.optimizer import EvolutionOptimizer
+from zzm_agent.memory.io import StorageCorruptionError
 from zzm_agent.memory.store import MemoryStore
 
 CONFIG_PATH = Path("config.yaml")
+_ENV_VALUE_PATTERN = re.compile(r"^\$\{([A-Za-z_][A-Za-z0-9_]*)(?::-(.*))?\}$")
 
 
 def parse_args(argv: list[str] | None = None) -> argparse.Namespace:
@@ -38,10 +43,60 @@ def parse_args(argv: list[str] | None = None) -> argparse.Namespace:
         # rest of the runtime can treat explicit session selection uniformly.
         help="Resume or create a specific session id.",
     )
+    parser.add_argument(
+        "--config",
+        dest="config_path",
+        help="Path to the YAML config file.",
+    )
+    parser.add_argument(
+        "--safe",
+        action="store_true",
+        help="Require confirmation for medium-risk tools in addition to high-risk tools.",
+    )
     return parser.parse_args(argv)
 
 
-def load_config(config_path: str | Path = CONFIG_PATH) -> dict[str, Any]:
+def resolve_config_path(config_path: str | Path | None = None) -> Path:
+    """Resolve the config path without assuming the current working directory."""
+    candidates: list[Path] = []
+    if config_path:
+        candidates.append(Path(config_path).expanduser())
+
+    env_config = os.environ.get("ZZM_AGENT_CONFIG")
+    if env_config:
+        candidates.append(Path(env_config).expanduser())
+
+    candidates.append(Path.cwd() / CONFIG_PATH)
+    candidates.append(Path(__file__).resolve().parents[2] / CONFIG_PATH)
+
+    for candidate in candidates:
+        resolved = candidate.resolve()
+        if resolved.exists():
+            return resolved
+
+    raise FileNotFoundError(
+        "config.yaml not found. Use --config or set ZZM_AGENT_CONFIG."
+    )
+
+
+def _expand_env_value(value: Any) -> Any:
+    """Expand ${VAR} and ${VAR:-default} placeholders in config values."""
+    if isinstance(value, dict):
+        return {key: _expand_env_value(item) for key, item in value.items()}
+    if isinstance(value, list):
+        return [_expand_env_value(item) for item in value]
+    if not isinstance(value, str):
+        return value
+
+    match = _ENV_VALUE_PATTERN.fullmatch(value.strip())
+    if match is None:
+        return value
+
+    env_name, default = match.groups()
+    return os.environ.get(env_name, default or "")
+
+
+def load_config(config_path: str | Path | None = None) -> dict[str, Any]:
     """
     Load the YAML configuration file used to bootstrap the CLI.
 
@@ -59,9 +114,26 @@ def load_config(config_path: str | Path = CONFIG_PATH) -> dict[str, Any]:
     except ImportError as exc:
         raise RuntimeError("PyYAML is required to load config.yaml.") from exc
 
-    path = Path(config_path).expanduser().resolve()
+    path = resolve_config_path(config_path)
     with path.open(encoding="utf-8") as handle:
-        return yaml.safe_load(handle) or {}
+        return _expand_env_value(yaml.safe_load(handle) or {})
+
+
+def build_tool_confirmation_callback(console: Any):
+    """Return an interactive approval callback for tools that require it."""
+    def confirm_tool(name: str, arguments: dict[str, Any], risk_level: str) -> bool:
+        rendered_args = json.dumps(arguments, ensure_ascii=False, sort_keys=True)
+        prompt = (
+            f"[yellow]Approve {risk_level}-risk tool [cyan]{name}[/cyan] "
+            f"with args {rendered_args}? [y/N] [/yellow]"
+        )
+        try:
+            answer = console.input(prompt).strip().lower()
+        except (KeyboardInterrupt, EOFError):
+            return False
+        return answer in {"y", "yes"}
+
+    return confirm_tool
 
 
 def build_registry(cfg: dict[str, Any]) -> ToolRegistry:
@@ -95,9 +167,20 @@ def build_runtime(args: argparse.Namespace, cfg: dict[str, Any]) -> dict[str, An
         raise RuntimeError("OpenAI SDK is required to run zzm-agent.") from exc
 
     console = build_console()
+    os.environ.setdefault("ZZM_AGENT_WORKSPACE_ROOT", str(Path.cwd().resolve()))
+
+    api_key = (
+        cfg["model"].get("api_key")
+        or os.environ.get("ZZM_AGENT_API_KEY")
+        or os.environ.get("OPENAI_API_KEY")
+    )
+    if not api_key:
+        raise RuntimeError(
+            "Model API key is required. Set model.api_key or ZZM_AGENT_API_KEY."
+        )
     client = OpenAI(
         base_url=cfg["model"]["base_url"],
-        api_key=cfg["model"]["api_key"],
+        api_key=api_key,
     )
     registry = build_registry(cfg)
     store = MemoryStore(
@@ -122,6 +205,11 @@ def build_runtime(args: argparse.Namespace, cfg: dict[str, Any]) -> dict[str, An
         store=store,
         # Keep the agent loop aligned with MemoryStore's retrieval budget.
         memory_injection_limit=cfg["memory"].get("retrieval_top_k", 3),
+        temperature=cfg["model"].get("temperature"),
+        max_tokens=cfg["model"].get("max_tokens"),
+        auto_approve=cfg["agent"].get("auto_approve", False),
+        safe_mode=args.safe,
+        confirm_tool=build_tool_confirmation_callback(console),
     )
 
     return {
@@ -179,14 +267,19 @@ def run_repl(runtime: dict[str, Any]) -> int:
             console.print(f"[red]Error: {exc}[/red]")
 
 
-def main() -> int:
+def main(argv: list[str] | None = None) -> int:
     """
     Start the interactive REPL loop.
 
     Returns:
         Process exit code. ``0`` for normal termination.
     """
-    args = parse_args()
-    cfg = load_config()
-    runtime = build_runtime(args, cfg)
-    return run_repl(runtime)
+    try:
+        args = parse_args(argv)
+        cfg = load_config(args.config_path)
+        runtime = build_runtime(args, cfg)
+        return run_repl(runtime)
+    except StorageCorruptionError as exc:
+        console = build_console()
+        console.print(f"[red]Storage corruption: {exc}[/red]")
+        return 1

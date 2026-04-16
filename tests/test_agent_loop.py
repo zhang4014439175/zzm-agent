@@ -240,6 +240,163 @@ def test_stream_interruption_returns_partial_text_without_persisting(registry, s
     assert store.load_history() == []
 
 
+def test_high_risk_tool_requires_approval(tmp_path):
+    registry = ToolRegistry()
+
+    @registry.tool(description="危险工具", risk_level="high")
+    def wipe(target: str) -> str:
+        return f"WIPED:{target}"
+
+    store = MemoryStore(path=tmp_path / "memory.json", max_history=10)
+    tool_call = MagicMock()
+    tool_call.id = "call_1"
+    tool_call.function.name = "wipe"
+    tool_call.function.arguments = json.dumps({"target": "demo"})
+
+    loop = AgentLoop(
+        client=MagicMock(),
+        model="test-model",
+        system_prompt="sys",
+        registry=registry,
+        store=store,
+        auto_approve=False,
+        confirm_tool=lambda name, arguments, risk: False,
+    )
+    loop.client.chat.completions.create.side_effect = [
+        make_response(tool_calls=[tool_call]),
+        make_response(content="Denied handled."),
+    ]
+
+    result = loop.run("run wipe", stream=False)
+
+    assert result == "Denied handled."
+    history = store.load_history()
+    assert history[2]["role"] == "tool"
+    assert history[2]["content"] == "User denied tool execution."
+
+
+def test_medium_risk_tool_runs_without_safe_mode(tmp_path):
+    registry = ToolRegistry()
+
+    @registry.tool(description="中风险工具", risk_level="medium")
+    def edit(target: str) -> str:
+        return f"EDITED:{target}"
+
+    store = MemoryStore(path=tmp_path / "memory.json", max_history=10)
+    tool_call = MagicMock()
+    tool_call.id = "call_1"
+    tool_call.function.name = "edit"
+    tool_call.function.arguments = json.dumps({"target": "demo"})
+
+    confirm_calls = []
+    loop = AgentLoop(
+        client=MagicMock(),
+        model="test-model",
+        system_prompt="sys",
+        registry=registry,
+        store=store,
+        safe_mode=False,
+        confirm_tool=lambda name, arguments, risk: confirm_calls.append((name, risk)),
+    )
+    loop.client.chat.completions.create.side_effect = [
+        make_response(tool_calls=[tool_call]),
+        make_response(content="ok"),
+    ]
+
+    result = loop.run("edit", stream=False)
+
+    assert result == "ok"
+    assert confirm_calls == []
+    assert store.load_history()[2]["content"] == "EDITED:demo"
+
+
+def test_medium_risk_tool_requires_approval_in_safe_mode(tmp_path):
+    registry = ToolRegistry()
+
+    @registry.tool(description="中风险工具", risk_level="medium")
+    def edit(target: str) -> str:
+        return f"EDITED:{target}"
+
+    store = MemoryStore(path=tmp_path / "memory.json", max_history=10)
+    tool_call = MagicMock()
+    tool_call.id = "call_1"
+    tool_call.function.name = "edit"
+    tool_call.function.arguments = json.dumps({"target": "demo"})
+
+    loop = AgentLoop(
+        client=MagicMock(),
+        model="test-model",
+        system_prompt="sys",
+        registry=registry,
+        store=store,
+        safe_mode=True,
+        confirm_tool=lambda name, arguments, risk: False,
+    )
+    loop.client.chat.completions.create.side_effect = [
+        make_response(tool_calls=[tool_call]),
+        make_response(content="Denied handled."),
+    ]
+
+    result = loop.run("edit", stream=False)
+
+    assert result == "Denied handled."
+    assert store.load_history()[2]["content"] == "User denied tool execution."
+
+
+def test_auto_approve_skips_high_risk_confirmation(tmp_path):
+    registry = ToolRegistry()
+
+    @registry.tool(description="危险工具", risk_level="high")
+    def wipe(target: str) -> str:
+        return f"WIPED:{target}"
+
+    store = MemoryStore(path=tmp_path / "memory.json", max_history=10)
+    tool_call = MagicMock()
+    tool_call.id = "call_1"
+    tool_call.function.name = "wipe"
+    tool_call.function.arguments = json.dumps({"target": "demo"})
+
+    confirm_calls = []
+    loop = AgentLoop(
+        client=MagicMock(),
+        model="test-model",
+        system_prompt="sys",
+        registry=registry,
+        store=store,
+        auto_approve=True,
+        confirm_tool=lambda name, arguments, risk: confirm_calls.append((name, risk)),
+    )
+    loop.client.chat.completions.create.side_effect = [
+        make_response(tool_calls=[tool_call]),
+        make_response(content="ok"),
+    ]
+
+    result = loop.run("wipe", stream=False)
+
+    assert result == "ok"
+    assert confirm_calls == []
+    assert store.load_history()[2]["content"] == "WIPED:demo"
+
+
+def test_model_config_is_forwarded_to_chat_completions(registry, store):
+    loop = AgentLoop(
+        client=MagicMock(),
+        model="test-model",
+        system_prompt="sys",
+        registry=registry,
+        store=store,
+        temperature=0.2,
+        max_tokens=256,
+    )
+    loop.client.chat.completions.create.return_value = make_response(content="ok")
+
+    loop.run("hello", stream=False)
+
+    kwargs = loop.client.chat.completions.create.call_args.kwargs
+    assert kwargs["temperature"] == 0.2
+    assert kwargs["max_tokens"] == 256
+
+
 def test_memory_injection_includes_semantic_and_episodic_context(registry, tmp_path):
     store = MemoryStore(
         path=tmp_path / "memory.json",

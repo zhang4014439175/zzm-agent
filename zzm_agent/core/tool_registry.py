@@ -1,5 +1,5 @@
-import importlib
 import importlib.util
+import hashlib
 import inspect
 import sys
 from pathlib import Path
@@ -15,6 +15,8 @@ _TYPE_MAP = {
     dict: "object",
 }
 
+_VALID_RISK_LEVELS = {"low", "medium", "high"}
+
 
 class ToolRegistry:
     """
@@ -28,7 +30,7 @@ class ToolRegistry:
         """Initialize an empty tool registry."""
         self.tools: dict[str, dict] = {}
 
-    def tool(self, description: str) -> Callable:
+    def tool(self, description: str, risk_level: str = "low") -> Callable:
         """
         Decorator to register a function as a tool.
         
@@ -38,6 +40,10 @@ class ToolRegistry:
         Returns:
             A decorator function that registers the tool and returns the original function.
         """
+        normalized_risk = risk_level.strip().lower()
+        if normalized_risk not in _VALID_RISK_LEVELS:
+            raise ValueError(f"Unsupported risk level: {risk_level}")
+
         def decorator(fn: Callable) -> Callable:
             # The schema is derived once at registration time so the runtime can
             # hand OpenAI-compatible tool metadata to the model without further
@@ -69,7 +75,12 @@ class ToolRegistry:
                 },
             }
             # Store both the function reference and its generated schema
-            self.tools[fn.__name__] = {"fn": fn, "schema": schema}
+            self.tools[fn.__name__] = {
+                "fn": fn,
+                "schema": schema,
+                "description": description,
+                "risk_level": normalized_risk,
+            }
             return fn
         return decorator
 
@@ -100,6 +111,17 @@ class ToolRegistry:
             raise KeyError(f"Tool not found: {name}")
         return self.tools[name]["fn"](**arguments)
 
+    def get_tool_meta(self, name: str) -> dict[str, Any]:
+        """Return metadata for one registered tool."""
+        if name not in self.tools:
+            raise KeyError(f"Tool not found: {name}")
+        tool_data = self.tools[name]
+        return {
+            "name": name,
+            "description": tool_data["description"],
+            "risk_level": tool_data["risk_level"],
+        }
+
     def load_plugin_dir(self, directory: str | Path) -> None:
         """
         Dynamically load all Python modules from a directory as plugins.
@@ -118,7 +140,8 @@ class ToolRegistry:
 
             # Each plugin is loaded under a synthetic module name so repeated
             # file basenames from different plugin directories do not collide.
-            module_name = f"_zzm_plugin_{py_file.stem}"
+            digest = hashlib.sha1(str(py_file.resolve()).encode("utf-8")).hexdigest()[:12]
+            module_name = f"_zzm_plugin_{digest}_{py_file.stem}"
             spec = importlib.util.spec_from_file_location(module_name, py_file)
             if spec is None or spec.loader is None:
                 continue
@@ -139,7 +162,7 @@ def set_active_registry(registry: ToolRegistry) -> None:
     _active_registry = registry
 
 
-def tool(description: str) -> Callable:
+def tool(description: str, risk_level: str = "low") -> Callable:
     """
     Convenience decorator that uses the global active ToolRegistry.
     
@@ -154,4 +177,4 @@ def tool(description: str) -> Callable:
     """
     if _active_registry is None:
         raise RuntimeError("Active ToolRegistry is not set")
-    return _active_registry.tool(description)
+    return _active_registry.tool(description, risk_level=risk_level)

@@ -23,6 +23,11 @@ class AgentLoop:
         registry: "ToolRegistry",
         store: "MemoryStore",
         memory_injection_limit: int = 3,
+        temperature: float | None = None,
+        max_tokens: int | None = None,
+        auto_approve: bool = False,
+        safe_mode: bool = False,
+        confirm_tool: Callable[[str, dict[str, Any], str], bool] | None = None,
     ):
         """
         Initialize the AgentLoop.
@@ -40,6 +45,11 @@ class AgentLoop:
         self.registry = registry
         self.store = store
         self.memory_injection_limit = memory_injection_limit
+        self.temperature = temperature
+        self.max_tokens = max_tokens
+        self.auto_approve = auto_approve
+        self.safe_mode = safe_mode
+        self.confirm_tool = confirm_tool
 
     def _build_tool_call_record(
         self,
@@ -79,6 +89,10 @@ class AgentLoop:
             "model": self.model,
             "messages": messages,
         }
+        if self.temperature is not None:
+            kwargs["temperature"] = self.temperature
+        if self.max_tokens is not None:
+            kwargs["max_tokens"] = self.max_tokens
         if tools:
             kwargs["tools"] = tools
             kwargs["tool_choice"] = "auto"
@@ -98,6 +112,10 @@ class AgentLoop:
             "messages": messages,
             "stream": True,
         }
+        if self.temperature is not None:
+            kwargs["temperature"] = self.temperature
+        if self.max_tokens is not None:
+            kwargs["max_tokens"] = self.max_tokens
         if tools:
             kwargs["tools"] = tools
             kwargs["tool_choice"] = "auto"
@@ -164,6 +182,25 @@ class AgentLoop:
         # Tool calls must be replayed in their original order for downstream execution.
         tool_calls = [tool_call_map[i] for i in sorted(tool_call_map)]
         return "".join(text_parts), tool_calls, False
+
+    def _requires_tool_confirmation(self, risk_level: str) -> bool:
+        """Return whether a tool call needs interactive approval."""
+        if self.auto_approve:
+            return False
+        if risk_level == "high":
+            return True
+        if risk_level == "medium":
+            return self.safe_mode
+        return False
+
+    def _is_tool_execution_approved(self, name: str, arguments: dict[str, Any]) -> bool:
+        """Check whether a requested tool call is allowed to execute."""
+        risk_level = self.registry.get_tool_meta(name).get("risk_level", "low")
+        if not self._requires_tool_confirmation(risk_level):
+            return True
+        if self.confirm_tool is None:
+            return False
+        return bool(self.confirm_tool(name, arguments, risk_level))
 
     def run(
         self,
@@ -245,9 +282,13 @@ class AgentLoop:
             for tc in tool_calls_raw:
                 try:
                     # Parse arguments and call the tool through the registry
+                    name = tc["function"]["name"]
                     args = json.loads(tc["function"]["arguments"])
-                    result = self.registry.call(tc["function"]["name"], args)
-                    result_str = str(result)
+                    if not self._is_tool_execution_approved(name, args):
+                        result_str = "User denied tool execution."
+                    else:
+                        result = self.registry.call(name, args)
+                        result_str = str(result)
                 except Exception as e:
                     # Capture tool execution errors and feed them back to the model
                     result_str = f"Error executing tool: {e}"
