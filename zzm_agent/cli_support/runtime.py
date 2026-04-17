@@ -222,17 +222,23 @@ def build_runtime(args: argparse.Namespace, cfg: dict[str, Any]) -> dict[str, An
 
 def run_repl(runtime: dict[str, Any]) -> int:
     """Run the interactive CLI loop using already-assembled runtime objects."""
+    from zzm_agent.cli_support.rendering import render_welcome
+
     console = runtime["console"]
     registry = runtime["registry"]
     store = runtime["store"]
     optimizer = runtime["optimizer"]
     loop = runtime["loop"]
 
-    console.print("[bold green]zzm-agent[/bold green] started.")
-    console.print(
-        f"[dim]{len(registry.get_schemas())} tools loaded. Type /help for commands.[/dim]"
+    # Show professional welcome panel on startup
+    render_welcome(
+        console,
+        session_id=store.session_id,
+        model=loop.model,
+        workspace=os.environ.get("ZZM_AGENT_WORKSPACE_ROOT", os.getcwd()),
+        tool_count=len(registry.get_schemas()),
     )
-    console.print(f"[dim]Current session: {store.session_id}[/dim]")
+    console.print()  # Add an extra newline before the prompt
 
     while True:
         try:

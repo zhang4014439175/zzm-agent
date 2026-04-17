@@ -201,12 +201,8 @@ def handle_slash(
         return True
 
     if command == "/help":
-        console.print(
-            "Commands: /sessions  /session <id>  /new  /tools  /memory  "
-            "/remember <fact>  /forget <keyword>  /search <keyword>  "
-            "/reload  "
-            "/semantic  /evolve  /help  /exit"
-        )
+        from zzm_agent.cli_support.rendering import render_help
+        render_help(console)
         return True
 
     if command in {"/exit", "/quit"}:

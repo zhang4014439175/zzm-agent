@@ -228,11 +228,8 @@ class MemoryStore:
 
         reserved_messages = messages + [{"role": "user", "content": user_input}]
         reserved_tokens = self.estimate_messages_tokens(reserved_messages)
-        print("====== 当前会话token数量为:%d ======" % reserved_tokens)
         history_budget = max(self.max_context_tokens - reserved_tokens, 0)
-        print("====== 历史token预算为:%d ======" % history_budget)
         compression = self.compress_history(history=history, budget_tokens=history_budget)
-        print("====== 压缩后为:%s ======" % compression)
         messages.extend(compression["messages"])
         messages.append({"role": "user", "content": user_input})
 
