@@ -7,6 +7,7 @@ from typing import Any
 from zzm_agent.memory.episodic_store import EpisodicStore
 from zzm_agent.memory.history_store import HistoryStore
 from zzm_agent.memory.io import StorageIO
+from zzm_agent.memory.retriever import KeywordMemoryRetriever, MemoryRetriever
 from zzm_agent.memory.semantic_store import SemanticStore
 from zzm_agent.memory.session_store import SessionStore
 
@@ -37,6 +38,7 @@ class MemoryStore:
         )
         self.episodic_store = EpisodicStore(self.io, self.sessions)
         self.semantic_store = SemanticStore(self.io, self.sessions.base_dir)
+        self.retriever: MemoryRetriever = KeywordMemoryRetriever()
         self.sessions.initialize(session_id=session_id)
 
     @property
@@ -155,7 +157,24 @@ class MemoryStore:
         """Remove semantic memory entries whose text matches the keyword."""
         return self.semantic_store.forget(keyword)
 
-    def build_memory_messages(self, limit: int | None = None) -> list[dict[str, str]]:
+    def search_memories(self, keyword: str, limit: int | None = None) -> dict[str, list[dict]]:
+        """Search semantic and episodic memory entries related to one keyword."""
+        max_items = limit if limit is not None else self.retrieval_top_k
+        if max_items <= 0:
+            return {"semantic": [], "episodic": []}
+
+        return self.retriever.search(
+            query=keyword,
+            semantic_entries=self.load_semantic_memory(),
+            episodic_entries=self.list_episodic(exclude_session_id=self.session_id),
+            limit=max_items,
+        )
+
+    def build_memory_messages(
+        self,
+        query: str | None = None,
+        limit: int | None = None,
+    ) -> list[dict[str, str]]:
         """Build system messages used to inject long-term memory into a turn."""
         max_items = limit if limit is not None else self.retrieval_top_k
         if max_items <= 0:
@@ -163,8 +182,13 @@ class MemoryStore:
 
         # Memory injection is bounded so retrieval cannot silently overwhelm the
         # current conversation context.
-        semantic_entries = self.load_semantic_memory()[:max_items]
-        episodic_entries = self.list_episodic(exclude_session_id=self.session_id)[:max_items]
+        if query is not None:
+            retrieved = self.search_memories(query, limit=max_items)
+            semantic_entries = retrieved["semantic"]
+            episodic_entries = retrieved["episodic"]
+        else:
+            semantic_entries = self.load_semantic_memory()[:max_items]
+            episodic_entries = self.list_episodic(exclude_session_id=self.session_id)[:max_items]
 
         semantic_lines = [entry["fact"] for entry in semantic_entries if entry.get("fact")]
         episodic_lines = []
@@ -200,7 +224,7 @@ class MemoryStore:
         """Assemble one model turn, compressing older history when needed."""
         history = self.load_history()
         messages: list[dict[str, Any]] = [{"role": "system", "content": system_prompt}]
-        messages.extend(self.build_memory_messages(limit=memory_limit))
+        messages.extend(self.build_memory_messages(query=user_input, limit=memory_limit))
 
         reserved_messages = messages + [{"role": "user", "content": user_input}]
         reserved_tokens = self.estimate_messages_tokens(reserved_messages)

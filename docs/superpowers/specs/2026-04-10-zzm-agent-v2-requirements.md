@@ -8,9 +8,9 @@
 
 ## 1. 当前状态
 
-**结论：v2 已开始开发，`P1.2/X1/P2.1/P2.2` 已验收完成，当前整体处于 `X2 测试与质量` 进行中。**
+**结论：v2 已开始开发，`P1.2/X1/P2.1/P2.2/P3.1` 已验收完成，当前整体处于 `P2.3/X2` 进行中。**
 
-当前仓库已经完成 `P1.1`、`P1.2`、`P2.1`、`P2.2` 与 `X1`，并继续推进 `X2`。不得再把仓库整体描述为“v2 尚未开始”；后续每次更新时都必须按本文件的状态规则同步修正总览、任务卡片和里程碑。
+当前仓库已经完成 `P1.1`、`P1.2`、`P2.1`、`P2.2`、`P3.1` 与 `X1`，并继续推进 `P2.3` 和 `X2`。不得再把仓库整体描述为“v2 尚未开始”；后续每次更新时都必须按本文件的状态规则同步修正总览、任务卡片和里程碑。
 
 ### 已有基础能力
 
@@ -27,11 +27,11 @@
 - [x] 多会话管理
 - [x] 分层记忆
 - [x] 上下文压缩
-- [ ] 记忆检索
-- [ ] 风险分级与工具确认
+- [-] 记忆检索
+- [x] 风险分级与工具确认
 - [ ] 插件热重载命令
 - [x] `/sessions` `/session` `/new`
-- [-] `/remember` `/forget` `/search`
+- [x] `/remember` `/forget` `/search`
 - [ ] `/evolve status` `/evolve run` `/evolve diff` `/evolve apply` `/evolve rollback`
 - [x] 数据迁移与回滚闭环
 - [-] v2 对应测试
@@ -90,8 +90,8 @@
 - [x] P1.2 会话管理
 - [x] P2.1 分层记忆
 - [x] P2.2 上下文压缩
-- [ ] P2.3 记忆检索
-- [ ] P3.1 工具确认
+- [-] P2.3 记忆检索
+- [x] P3.1 工具确认
 - [ ] P3.2 插件热重载
 - [ ] P4.1 对话评估记录
 - [ ] P4.2 Prompt 候选闭环
@@ -102,7 +102,7 @@
 
 - [ ] 输出折叠显示
 - [ ] `/rename`
-- [ ] `/search`
+- [x] `/search`
 - [x] `/memory` 增强展示
 
 ### Not in v2
@@ -232,16 +232,16 @@
 
 ---
 
-### P2.3 记忆检索 `[ ]`
+### P2.3 记忆检索 `[-]`
 
-当前状态：未开始  
-说明：当前没有 `episodic/semantic` 检索，也没有 `/search`。
+当前状态：进行中  
+说明：已补齐基于关键词的 `episodic/semantic` 检索、`MemoryRetriever` 接口和 `/search <keyword>` 命令，运行时长期记忆注入也已改为按 `user_input` 检索相关项；当前剩余缺口是 1000 条样本 benchmark 与目标阈值验证尚未补完，因此该卡保持 `[-]`。
 
 任务：
-- [ ] 用关键词匹配检索 `episodic` 与 `semantic`
-- [ ] 支持 `memory.retrieval_top_k`
-- [ ] 支持 `/search <keyword>`
-- [ ] 预留 `MemoryRetriever` 接口
+- [x] 用关键词匹配检索 `episodic` 与 `semantic`
+- [x] 支持 `memory.retrieval_top_k`
+- [x] 支持 `/search <keyword>`
+- [x] 预留 `MemoryRetriever` 接口
 
 注入顺序：
 - system prompt
@@ -250,23 +250,23 @@
 - 用户输入
 
 验收：
-- [ ] 固定样本下 top-K 包含预期条目
+- [x] 固定样本下 top-K 包含预期条目
 - [ ] 1000 条样本 benchmark 满足目标阈值
 
 ---
 
-### P3.1 工具确认 `[ ]`
+### P3.1 工具确认 `[x]`
 
-当前状态：未开始  
-说明：当前工具 schema 没有 `risk_level`，也没有确认流程。
+当前状态：已完成  
+说明：已为 `@tool` 增加 `risk_level`，支持默认高风险确认、`--safe` 下中风险确认、`agent.auto_approve` 全自动放行，并在拒绝执行时回写固定 tool message；相关自动化测试已通过。
 
 任务：
-- [ ] `@tool` 支持 `risk_level`
-- [ ] `high` 风险执行前强制确认
-- [ ] `medium` 风险在 `--safe` 下确认
-- [ ] `low` 风险默认自动执行
-- [ ] 支持 `agent.auto_approve: true`
-- [ ] 拒绝后回写固定 tool message
+- [x] `@tool` 支持 `risk_level`
+- [x] `high` 风险执行前强制确认
+- [x] `medium` 风险在 `--safe` 下确认
+- [x] `low` 风险默认自动执行
+- [x] 支持 `agent.auto_approve: true`
+- [x] 拒绝后回写固定 tool message
 
 交互：
 - streaming 中触发高风险工具时先暂停渲染
@@ -275,9 +275,9 @@
 - 拒绝后返回 `User denied tool execution.`
 
 验收：
-- [ ] 默认模式下高风险工具会确认
-- [ ] 用户拒绝后工具不执行且结果写回链路
-- [ ] `auto_approve: true` 行为等价旧自动执行路径
+- [x] 默认模式下高风险工具会确认
+- [x] 用户拒绝后工具不执行且结果写回链路
+- [x] `auto_approve: true` 行为等价旧自动执行路径
 
 ---
 
@@ -370,15 +370,15 @@
 ### X2 测试与质量 `[-]`
 
 当前状态：进行中  
-说明：已补充 session / migration / CLI 基础测试，并新增 streaming mock、迁移失败回滚、启动前清理残留，以及上下文压缩与 `/memory` 展示相关测试；但 retrieval / tool confirmation / evolve 闭环测试仍未完成，因此不能判定该项完成。
+说明：已补充 session / migration / CLI 基础测试，并新增 streaming mock、迁移失败回滚、启动前清理残留、上下文压缩与 `/memory` 展示、tool confirmation，以及 retrieval 相关测试；但 evolve 闭环测试仍未完成，因此不能判定该项完成。
 
 任务：
 - [-] 新增核心模块补充单元测试
 - [x] streaming mock 测试
 - [x] session 测试
 - [x] migration 测试
-- [ ] retrieval 测试
-- [ ] tool confirmation 测试
+- [x] retrieval 测试
+- [x] tool confirmation 测试
 - [ ] evolve 最小闭环测试
 
 验收：
@@ -452,6 +452,6 @@ evolution:
 - [x] M1 Streaming + 输出改进
 - [x] M2 Session + 旧数据迁移
 - [-] M3 分层记忆 + 压缩 + 检索
-- [ ] M4 工具确认 + 插件热重载
+- [-] M4 工具确认 + 插件热重载
 - [ ] M5 Evolve 最小闭环
 - [ ] M6 集成测试 + 迁移验证 + 文档更新 + 发布

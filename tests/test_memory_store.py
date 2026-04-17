@@ -272,6 +272,60 @@ def test_build_memory_messages_respects_injection_limit(tmp_path):
     assert "ship session support first" in messages[1]["content"]
 
 
+def test_search_memories_returns_related_semantic_and_episodic_entries(tmp_path):
+    store = MemoryStore(
+        path=tmp_path / "memory.json",
+        max_history=50,
+        retrieval_top_k=2,
+        session_id="alpha",
+    )
+    store.remember_fact("Project language is Python.")
+    store.remember_fact("User prefers concise answers.")
+    store.append(
+        [
+            {"role": "user", "content": "What should we build?"},
+            {"role": "assistant", "content": "Build the Python CLI first."},
+        ]
+    )
+    store.create_session(make_current=True)
+
+    results = store.search_memories("python cli")
+
+    assert [entry["fact"] for entry in results["semantic"]] == [
+        "Project language is Python."
+    ]
+    assert len(results["episodic"]) == 1
+    assert "Python CLI" in results["episodic"][0]["summary"]
+
+
+def test_build_turn_messages_uses_related_memory_retrieval(tmp_path):
+    store = MemoryStore(
+        path=tmp_path / "memory.json",
+        max_history=50,
+        retrieval_top_k=2,
+        session_id="alpha",
+    )
+    store.remember_fact("Project language is Python.")
+    store.remember_fact("User prefers concise answers.")
+    store.append(
+        [
+            {"role": "user", "content": "What should we build?"},
+            {"role": "assistant", "content": "Build the Python CLI first."},
+        ]
+    )
+    store.create_session(make_current=True)
+
+    messages, _compression = store.build_turn_messages(
+        system_prompt="sys",
+        user_input="Need the Python CLI plan",
+    )
+
+    contents = [message["content"] for message in messages if message.get("content")]
+    assert any("Project language is Python." in content for content in contents)
+    assert any("Build the Python CLI first." in content for content in contents)
+    assert not any("User prefers concise answers." in content for content in contents)
+
+
 def test_compress_history_preserves_recent_messages_and_adds_summary(tmp_path):
     store = MemoryStore(
         path=tmp_path / "memory.json",

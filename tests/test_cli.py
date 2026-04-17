@@ -163,3 +163,23 @@ def test_handle_slash_semantic_lists_all_long_term_memories(tmp_path):
     assert any("2 long-term memories" in line for line in console.lines)
     assert any("Project language is Python." in line for line in console.lines)
     assert any("User prefers concise answers." in line for line in console.lines)
+
+
+def test_handle_slash_search_lists_memory_matches(tmp_path):
+    store = MemoryStore(path=tmp_path / "memory.json", max_history=50, session_id="alpha")
+    store.remember_fact("Project language is Python.")
+    store.append(
+        [
+            {"role": "user", "content": "What should we build?"},
+            {"role": "assistant", "content": "Build the Python CLI first."},
+        ]
+    )
+    store.create_session(make_current=True)
+    console = DummyConsole()
+
+    handled = handle_slash("/search python", DummyRegistry(), store, DummyOptimizer(), console)
+
+    assert handled is True
+    assert any("Memory matches for 'python'" in line for line in console.lines)
+    assert any("Project language is Python." in line for line in console.lines)
+    assert any("Python CLI first" in line for line in console.lines)

@@ -404,7 +404,7 @@ def test_memory_injection_includes_semantic_and_episodic_context(registry, tmp_p
         retrieval_top_k=1,
         session_id="alpha",
     )
-    store.remember_fact("User prefers concise answers.")
+    store.remember_fact("Project language is Python.")
     store.append(
         [
             {"role": "user", "content": "What should we build first?"},
@@ -423,12 +423,12 @@ def test_memory_injection_includes_semantic_and_episodic_context(registry, tmp_p
     )
     loop.client.chat.completions.create.return_value = make_response(content="ok")
 
-    loop.run("new message", stream=False)
+    loop.run("Need the Python CLI plan", stream=False)
 
     messages = loop.client.chat.completions.create.call_args.kwargs["messages"]
     contents = [m["content"] for m in messages if m.get("content")]
     assert any("Semantic memory" in content for content in contents)
-    assert any("User prefers concise answers." in content for content in contents)
+    assert any("Project language is Python." in content for content in contents)
     assert any("Episodic memory" in content for content in contents)
     assert any("Build the Python CLI first." in content for content in contents)
 

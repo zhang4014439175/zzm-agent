@@ -129,6 +129,33 @@ def handle_slash(
         console.print(f"[green]Forgot {removed} memory item(s).[/green]")
         return True
 
+    if command.startswith("/search"):
+        parts = command.split(maxsplit=1)
+        if len(parts) != 2 or not parts[1].strip():
+            console.print("[yellow]Usage: /search <keyword>[/yellow]")
+            return True
+
+        keyword = parts[1].strip()
+        results = store.search_memories(keyword)
+        semantic = results["semantic"]
+        episodic = results["episodic"]
+        if not semantic and not episodic:
+            console.print(f"[yellow]No memory matches for:[/yellow] {keyword}")
+            return True
+
+        console.print(
+            "[yellow]"
+            f"Memory matches for '{keyword}': {len(semantic)} semantic, {len(episodic)} episodic."
+            "[/yellow]"
+        )
+        for index, entry in enumerate(semantic, start=1):
+            console.print(f"[cyan]semantic {index}.[/cyan] {entry['fact']}")
+        for index, entry in enumerate(episodic, start=1):
+            summary = entry.get("summary", "")
+            session_id = entry.get("session_id", "unknown-session")
+            console.print(f"[cyan]episodic {index}.[/cyan] {session_id}: {summary}")
+        return True
+
     if command == "/semantic":
         facts = store.list_semantic_facts()
         if not facts:
@@ -156,7 +183,8 @@ def handle_slash(
     if command == "/help":
         console.print(
             "Commands: /sessions  /session <id>  /new  /tools  /memory  "
-            "/remember <fact>  /forget <keyword>  /semantic  /evolve  /help  /exit"
+            "/remember <fact>  /forget <keyword>  /search <keyword>  "
+            "/semantic  /evolve  /help  /exit"
         )
         return True
 
