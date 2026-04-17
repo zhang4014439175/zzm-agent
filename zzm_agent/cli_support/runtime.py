@@ -152,9 +152,8 @@ def build_registry(cfg: dict[str, Any]) -> ToolRegistry:
     """
     registry = ToolRegistry()
     set_active_registry(registry)
-
-    for plugin_dir in cfg.get("agent", {}).get("plugin_dirs", []):
-        registry.load_plugin_dir(plugin_dir)
+    registry.configure_plugin_dirs(cfg.get("agent", {}).get("plugin_dirs", []))
+    registry.load_configured_plugins()
 
     return registry
 

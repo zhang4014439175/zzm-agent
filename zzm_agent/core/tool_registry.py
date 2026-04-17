@@ -29,6 +29,7 @@ class ToolRegistry:
     def __init__(self):
         """Initialize an empty tool registry."""
         self.tools: dict[str, dict] = {}
+        self.plugin_dirs: list[Path] = []
 
     def tool(self, description: str, risk_level: str = "low") -> Callable:
         """
@@ -122,6 +123,33 @@ class ToolRegistry:
             "risk_level": tool_data["risk_level"],
         }
 
+    def configure_plugin_dirs(self, plugin_dirs: list[str | Path]) -> None:
+        """Store the plugin directories that should participate in reloads."""
+        self.plugin_dirs = [Path(directory).expanduser().resolve() for directory in plugin_dirs]
+
+    def load_configured_plugins(self) -> None:
+        """Load every plugin directory previously configured on this registry."""
+        # Plugin modules import the module-level `@tool` decorator, so reloads
+        # must point that decorator at this registry before executing plugins.
+        set_active_registry(self)
+        for plugin_dir in self.plugin_dirs:
+            self.load_plugin_dir(plugin_dir)
+
+    def reload_plugins(self) -> dict[str, list[str]]:
+        """Reload configured plugin directories and report registry changes."""
+        previous = self._snapshot_tools()
+
+        reloaded = ToolRegistry()
+        reloaded.configure_plugin_dirs(self.plugin_dirs)
+        set_active_registry(reloaded)
+        reloaded.load_configured_plugins()
+
+        self.tools = reloaded.tools
+        set_active_registry(self)
+
+        current = self._snapshot_tools()
+        return self._diff_tool_snapshots(previous, current)
+
     def load_plugin_dir(self, directory: str | Path) -> None:
         """
         Dynamically load all Python modules from a directory as plugins.
@@ -149,6 +177,39 @@ class ToolRegistry:
             module = importlib.util.module_from_spec(spec)
             sys.modules[module_name] = module
             spec.loader.exec_module(module)
+
+    def _snapshot_tools(self) -> dict[str, dict[str, str]]:
+        """Capture the comparable tool metadata used to diff reload results."""
+        snapshot: dict[str, dict[str, str]] = {}
+        for name, entry in self.tools.items():
+            snapshot[name] = {
+                "description": entry["description"],
+                "risk_level": entry["risk_level"],
+                "schema": repr(entry["schema"]),
+            }
+        return snapshot
+
+    def _diff_tool_snapshots(
+        self,
+        previous: dict[str, dict[str, str]],
+        current: dict[str, dict[str, str]],
+    ) -> dict[str, list[str]]:
+        """Return added, removed, and updated tool names after one reload."""
+        previous_names = set(previous)
+        current_names = set(current)
+
+        added = sorted(current_names - previous_names)
+        removed = sorted(previous_names - current_names)
+        updated = sorted(
+            name
+            for name in previous_names & current_names
+            if previous[name] != current[name]
+        )
+        return {
+            "added": added,
+            "removed": removed,
+            "updated": updated,
+        }
 
 # Global registry instance management for simplified decorator usage
 _active_registry: ToolRegistry | None = None

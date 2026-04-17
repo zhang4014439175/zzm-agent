@@ -228,9 +228,11 @@ class MemoryStore:
 
         reserved_messages = messages + [{"role": "user", "content": user_input}]
         reserved_tokens = self.estimate_messages_tokens(reserved_messages)
+        print("====== 当前会话token数量为:%d ======" % reserved_tokens)
         history_budget = max(self.max_context_tokens - reserved_tokens, 0)
+        print("====== 历史token预算为:%d ======" % history_budget)
         compression = self.compress_history(history=history, budget_tokens=history_budget)
-
+        print("====== 压缩后为:%s ======" % compression)
         messages.extend(compression["messages"])
         messages.append({"role": "user", "content": user_input})
 
@@ -287,6 +289,18 @@ class MemoryStore:
             }
 
         recent_count = min(self.compression_keep_recent, len(current_history))
+        
+        # Adjust recent_count to avoid slicing between assistant(tool_calls) and tool messages
+        while recent_count < len(current_history):
+            # Check the first message in our potential 'recent' slice
+            first_in_slice = current_history[-recent_count]
+            if first_in_slice.get("role") == "tool":
+                # If it's a tool message, we must include the preceding messages 
+                # until we find the assistant message that triggered it.
+                recent_count += 1
+            else:
+                break
+
         recent_messages = current_history[-recent_count:] if recent_count else []
         older_messages = current_history[:-recent_count] if recent_count else current_history
 

@@ -238,6 +238,7 @@ class AgentLoop:
         tools = self.registry.get_schemas()
 
         # 2. Start the thinking-action loop
+        # print(messages)
         while True:
             if stream:
                 assistant_content, tool_calls_raw, interrupted = self._stream_once(
@@ -271,7 +272,7 @@ class AgentLoop:
             # Record the assistant's intent to call tools
             assistant_intent_msg = {
                 "role": "assistant",
-                "content": assistant_content,
+                "content": assistant_content or None,  # Use None if empty for tool calls
                 "tool_calls": tool_calls_raw,
             }
             messages.append(assistant_intent_msg)

@@ -78,6 +78,26 @@ def handle_slash(
             )
         return True
 
+    if command == "/reload":
+        changes = registry.reload_plugins()
+        total_changes = sum(len(items) for items in changes.values())
+        if total_changes == 0:
+            console.print("[dim]Plugins reloaded. No tool changes detected.[/dim]")
+            return True
+
+        console.print(
+            "[green]Plugins reloaded.[/green] "
+            f"Added {len(changes['added'])}, removed {len(changes['removed'])}, "
+            f"updated {len(changes['updated'])} tools."
+        )
+        for label in ("added", "removed", "updated"):
+            if not changes[label]:
+                continue
+            console.print(
+                f"[cyan]{label}[/cyan]: " + ", ".join(changes[label])
+            )
+        return True
+
     if command == "/memory":
         # `/memory` always reflects the currently selected session rather than a
         # global store, which is why the session id is displayed in the header.
@@ -184,6 +204,7 @@ def handle_slash(
         console.print(
             "Commands: /sessions  /session <id>  /new  /tools  /memory  "
             "/remember <fact>  /forget <keyword>  /search <keyword>  "
+            "/reload  "
             "/semantic  /evolve  /help  /exit"
         )
         return True
