@@ -49,6 +49,67 @@ def stream_reply_chunk(console: Any, chunk: str) -> None:
     console.print(chunk, end="")
 
 
+def render_help(console: Any) -> None:
+    """
+    Render a structured help message with available commands.
+    """
+    try:
+        from rich.table import Table
+        from rich.panel import Panel
+    except ImportError:
+        help_text = """
+Available Commands:
+/help         - Show this help message
+/tools        - List all registered tools
+/reload       - Reload plugin tools from disk
+/memory       - Show recent conversation history and compression state
+/sessions     - List all known conversation sessions
+/session <id> - Switch to a specific session
+/new          - Start a clean conversation session
+/remember <f> - Add a long-term semantic memory fact
+/forget <k>   - Remove long-term memories matching a keyword
+/search <k>   - Search across semantic and episodic memories
+/semantic     - List all long-term semantic memories
+/evolve       - Run prompt optimization based on session history
+/exit, /quit  - Terminate the session
+        """
+        console.print(help_text)
+        return
+
+    table = Table(show_header=True, header_style="bold blue", box=None)
+    table.add_column("Command", style="cyan", no_wrap=True)
+    table.add_column("Description", style="white")
+
+    commands = [
+        ("/help", "Show this help message"),
+        ("/tools", "List all registered tools"),
+        ("/reload", "Reload plugin tools from disk"),
+        ("/memory", "Show recent history and compression state"),
+        ("/sessions", "List all known conversation sessions"),
+        ("/session <id>", "Switch to a specific session"),
+        ("/new", "Start a clean conversation session"),
+        ("/remember <f>", "Add a long-term semantic memory fact"),
+        ("/forget <k>", "Remove memories matching a keyword"),
+        ("/search <k>", "Search semantic and episodic memories"),
+        ("/semantic", "List all long-term semantic memories"),
+        ("/evolve", "Run prompt optimization based on history"),
+        ("/exit, /quit", "Terminate the session"),
+    ]
+
+    for cmd, desc in commands:
+        table.add_row(cmd, desc)
+
+    console.print(
+        Panel(
+            table,
+            title="[bold blue]zzm-agent Help[/bold blue]",
+            title_align="left",
+            border_style="blue",
+            expand=False
+        )
+    )
+
+
 def render_welcome(console: Any, session_id: str, model: str, workspace: str, tool_count: int) -> None:
     """
     Render a professional welcome panel with a logo and runtime information.
