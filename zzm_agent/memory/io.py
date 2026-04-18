@@ -38,7 +38,7 @@ class StorageIO:
         if not path.exists():
             return default
         try:
-            with path.open("r", encoding="utf-8") as handle:
+            with path.open("r", encoding="utf-8", errors="replace") as handle:
                 return json.load(handle)
         except json.JSONDecodeError as exc:
             raise self._recover_from_corrupt_json(path, default) from exc
@@ -49,8 +49,14 @@ class StorageIO:
         """Write one JSON file atomically enough for local persistence."""
         path.parent.mkdir(parents=True, exist_ok=True)
         tmp_path = path.with_suffix(path.suffix + ".tmp")
-        with tmp_path.open("w", encoding="utf-8") as handle:
-            json.dump(data, handle, ensure_ascii=False, indent=2)
+        
+        # Generate JSON string first
+        json_str = json.dumps(data, ensure_ascii=False, indent=2)
+        # Encode to bytes manually with 'replace' to avoid surrogate character errors
+        json_bytes = json_str.encode("utf-8", errors="replace")
+        
+        with tmp_path.open("wb") as handle:
+            handle.write(json_bytes)
         tmp_path.replace(path)
         self._write_backup(path)
 
@@ -58,8 +64,12 @@ class StorageIO:
         """Write one text file via a temporary file and replace."""
         path.parent.mkdir(parents=True, exist_ok=True)
         tmp_path = path.with_suffix(path.suffix + ".tmp")
-        with tmp_path.open("w", encoding="utf-8") as handle:
-            handle.write(value)
+        
+        # Encode to bytes manually with 'replace' to avoid surrogate character errors
+        text_bytes = value.encode("utf-8", errors="replace")
+        
+        with tmp_path.open("wb") as handle:
+            handle.write(text_bytes)
         tmp_path.replace(path)
         self._write_backup(path)
 

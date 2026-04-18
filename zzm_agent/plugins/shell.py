@@ -38,13 +38,15 @@ def run_shell(command: str) -> str:
             argv,
             shell=False,
             capture_output=True,
-            text=True,
+            text=False, # Get raw bytes to handle encoding manually
             timeout=30,
             cwd=_workspace_root(),
         )
         
-        # Combine stdout and stderr
-        output = (result.stdout or "") + (result.stderr or "")
+        # Decode stdout and stderr with 'replace' to avoid surrogate characters
+        stdout = (result.stdout or b"").decode("utf-8", errors="replace")
+        stderr = (result.stderr or b"").decode("utf-8", errors="replace")
+        output = stdout + stderr
         
         if not output:
             return "(no output)"
