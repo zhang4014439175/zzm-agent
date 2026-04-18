@@ -1,4 +1,5 @@
-from cli import handle_slash, load_config, parse_args
+from zzm_agent.cli_support.commands import handle_slash
+from zzm_agent.cli_support.runtime import load_config, parse_args
 from zzm_agent.core.tool_registry import ToolRegistry
 from zzm_agent.memory.store import MemoryStore
 

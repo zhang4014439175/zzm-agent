@@ -190,14 +190,48 @@ def handle_slash(
         return True
 
     if command == "/evolve":
+        # /evolve without arguments runs a full optimization turn.
         history = store.load_history()
         console.print("[yellow]Running evolution optimizer...[/yellow]")
+        
+        # Trigger an evaluation as part of the optimization process
+        optimizer.evaluate(history)
+        
         new_prompt = optimizer.optimize(history)
         if new_prompt:
             optimizer.apply(new_prompt)
             console.print("[green]System prompt updated.[/green]")
         else:
             console.print("[dim]Optimizer stub: no changes.[/dim]")
+        return True
+
+    if command == "/evolve status":
+        # Show the most recent evaluation record stored in evaluations.json
+        latest = optimizer.get_latest_evaluation()
+        if not latest:
+            # If no evaluations exist, try to run one on the current history
+            history = store.load_history()
+            if not history:
+                console.print("[yellow]No history available to evaluate.[/yellow]")
+                return True
+            
+            console.print("[yellow]No prior evaluations found. Evaluating current history...[/yellow]")
+            latest = optimizer.evaluate(history)
+            if not latest:
+                console.print("[red]Evaluation failed.[/red]")
+                return True
+
+        console.print("[bold blue]Latest Evolution Status[/bold blue]")
+        console.print(f"Timestamp: [dim]{latest.get('timestamp', 'unknown')}[/dim]")
+        console.print(f"Relevance: [green]{latest.get('relevance_score', 0)}/10[/green]")
+        
+        tool_score = latest.get('tool_usage_score')
+        tool_display = f"[green]{tool_score}/10[/green]" if tool_score is not None else "[dim]N/A[/dim]"
+        console.print(f"Tool Usage: {tool_display}")
+        
+        console.print(f"Conciseness: [green]{latest.get('conciseness_score', 0)}/10[/green]")
+        console.print(f"Reasoning: {latest.get('reasoning', 'N/A')}")
+        console.print(f"Conclusion: {latest.get('conclusion', 'N/A')}")
         return True
 
     if command == "/help":

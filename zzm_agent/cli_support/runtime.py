@@ -193,6 +193,7 @@ def build_runtime(args: argparse.Namespace, cfg: dict[str, Any]) -> dict[str, An
     )
     optimizer = EvolutionOptimizer(
         client=client,
+        model=cfg["model"]["model_name"],
         config_path=CONFIG_PATH,
         sample_size=cfg["evolution"]["sample_size"],
     )

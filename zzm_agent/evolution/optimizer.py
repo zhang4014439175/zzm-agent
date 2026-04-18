@@ -1,9 +1,29 @@
 from __future__ import annotations
+
+import json
+from datetime import datetime, timezone
 from pathlib import Path
-from typing import TYPE_CHECKING
+from typing import TYPE_CHECKING, Any
 
 if TYPE_CHECKING:
     from openai import OpenAI
+
+EVALUATION_PROMPT = """
+You are an expert AI evaluator. Your task is to evaluate the following conversation trajectory between a user and an AI agent.
+Analyze how well the agent performed based on the provided history.
+
+Provide your evaluation in the following JSON format:
+{{
+  "relevance_score": (1-10),
+  "tool_usage_score": (1-10, or null if no tools used),
+  "conciseness_score": (1-10),
+  "reasoning": "A short explanation of your scoring",
+  "conclusion": "A summary of the agent's performance"
+}}
+
+Conversation History:
+{history}
+"""
 
 
 class EvolutionOptimizer:
@@ -14,18 +34,108 @@ class EvolutionOptimizer:
     generating improved system prompts, and applying them back to the configuration.
     """
 
-    def __init__(self, client: "OpenAI", config_path: str | Path, sample_size: int = 20):
+    def __init__(self, client: "OpenAI", model: str, config_path: str | Path, sample_size: int = 20):
         """
         Initialize the evolution optimizer.
         
         Args:
             client: An OpenAI client instance used for self-reflection.
+            model: The model name to use for evaluations and optimizations.
             config_path: Path to the 'config.yaml' file to be updated.
             sample_size: Number of recent messages to analyze during optimization.
         """
         self.client = client
+        self.model = model
         self.config_path = Path(config_path).expanduser().resolve()
         self.sample_size = sample_size
+        self.eval_path = self.config_path.parent / ".zzm_agent" / "evolution" / "evaluations.json"
+
+    def evaluate(self, history: list[dict[str, Any]]) -> dict[str, Any] | None:
+        """
+        Perform a self-evaluation of a conversation trajectory.
+        
+        Args:
+            history: The conversation history to evaluate.
+            
+        Returns:
+            A dictionary containing the evaluation results, or None if evaluation fails.
+        """
+        if not history:
+            return None
+
+        # Truncate history to avoid token limits if necessary
+        sample = history[-self.sample_size :]
+        history_text = json.dumps(sample, ensure_ascii=False, indent=2)
+
+        try:
+            response = self.client.chat.completions.create(
+                model=self.model,
+                messages=[
+                    {"role": "system", "content": "You are a helpful assistant."},
+                    {"role": "user", "content": EVALUATION_PROMPT.format(history=history_text)},
+                ],
+                response_format={"type": "json_object"},
+            )
+            
+            content = response.choices[0].message.content
+            if not content:
+                return None
+                
+            eval_result = json.loads(content)
+            eval_result["timestamp"] = datetime.now(timezone.utc).isoformat()
+            
+            self._save_evaluation(eval_result)
+            return eval_result
+        except Exception as e:
+            print(f"Error during evaluation: {e}")
+            return None
+
+    def _save_evaluation(self, eval_result: dict[str, Any]) -> None:
+        """
+        Append the evaluation result to the local storage.
+        
+        Args:
+            eval_result: The evaluation record to save.
+        """
+        try:
+            self.eval_path.parent.mkdir(parents=True, exist_ok=True)
+            
+            evals = []
+            if self.eval_path.exists():
+                with open(self.eval_path, "r", encoding="utf-8") as f:
+                    try:
+                        evals = json.load(f)
+                    except json.JSONDecodeError:
+                        evals = []
+            
+            evals.append(eval_result)
+            
+            # Keep only the last 100 evaluations to prevent file bloat
+            evals = evals[-100:]
+            
+            with open(self.eval_path, "w", encoding="utf-8") as f:
+                json.dump(evals, f, ensure_ascii=False, indent=2)
+        except Exception as e:
+            print(f"Error saving evaluation: {e}")
+
+    def get_latest_evaluation(self) -> dict[str, Any] | None:
+        """
+        Retrieve the most recent evaluation record.
+        
+        Returns:
+            The latest evaluation record, or None if none exist.
+        """
+        if not self.eval_path.exists():
+            return None
+            
+        try:
+            with open(self.eval_path, "r", encoding="utf-8") as f:
+                evals = json.load(f)
+                if evals:
+                    return evals[-1]
+        except Exception:
+            pass
+        return None
 
     def optimize(self, history: list[dict]) -> str:
         """

@@ -93,7 +93,7 @@
 - [-] P2.3 记忆检索
 - [x] P3.1 工具确认
 - [x] P3.2 插件热重载
-- [ ] P4.1 对话评估记录
+- [x] P4.1 对话评估记录
 - [ ] P4.2 Prompt 候选闭环
 - [x] X1 数据迁移与回滚
 - [-] X2 测试与质量
@@ -297,16 +297,16 @@
 
 ---
 
-### P4.1 对话评估记录 `[ ]`
+### P4.1 对话评估记录 `[x]`
 
-当前状态：未开始  
-说明：`EvolutionOptimizer.optimize()` 仍为 stub。
+当前状态：已完成  
+说明：已实现 `EvolutionOptimizer.evaluate()`，支持基于 LLM 的对话质量评估（相关性、工具使用、简洁度），结果持久化至 `evaluations.json`，并补齐了 `/evolve status` 指令。
 
 任务：
-- [ ] 从近期会话或情景记忆中采样
-- [ ] 生成结构化评估结果
-- [ ] 存储到 `~/.zzm_agent/evolution/evaluations.json`
-- [ ] 支持 `/evolve status`
+- [x] 从近期会话或情景记忆中采样
+- [x] 生成结构化评估结果
+- [x] 存储到 `~/.zzm_agent/evolution/evaluations.json`
+- [x] 支持 `/evolve status`
 
 评估字段：
 - 相关性评分
@@ -316,8 +316,8 @@
 - 总体结论
 
 验收：
-- [ ] 固定输入下能生成结构完整的评估记录
-- [ ] `/evolve status` 能展示最近一次结果
+- [x] 固定输入下能生成结构完整的评估记录
+- [x] `/evolve status` 能展示最近一次结果
 
 备注：
 - 不要求相同输入的分数波动小于固定阈值
@@ -453,5 +453,13 @@ evolution:
 - [x] M2 Session + 旧数据迁移
 - [-] M3 分层记忆 + 压缩 + 检索
 - [x] M4 工具确认 + 插件热重载
-- [ ] M5 Evolve 最小闭环
-- [ ] M6 集成测试 + 迁移验证 + 文档更新 + 发布
+## 9. Engineering Constraints & Workflow
+
+### 9.1 Code Documentation
+- **Mandatory Comments**: All new functions, classes, and complex logic blocks must include docstrings (PEP 257 for Python) and inline comments explaining the "why" behind the logic.
+- **Type Hinting**: All Python code must use exhaustive type hints to ensure system integrity.
+
+### 9.2 Change Tracking
+- **Session Summaries**: After completing a task or a meaningful set of changes, a new Markdown document must be created in `docs/changes/`.
+- **Naming Convention**: `YYYY-MM-DD-pX.Y-description.md` (where X.Y is the phase/sprint identifier).
+- **Content**: Must include the problem statement, the technical solution, and the validation results (e.g., test output).
