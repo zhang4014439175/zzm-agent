@@ -5,6 +5,8 @@ from datetime import datetime, timezone
 from pathlib import Path
 from typing import TYPE_CHECKING, Any
 
+from zzm_agent.constants import EVALUATIONS_PATH
+
 if TYPE_CHECKING:
     from openai import OpenAI
 
@@ -48,7 +50,7 @@ class EvolutionOptimizer:
         self.model = model
         self.config_path = Path(config_path).expanduser().resolve()
         self.sample_size = sample_size
-        self.eval_path = self.config_path.parent / ".zzm_agent" / "evolution" / "evaluations.json"
+        self.eval_path = self.config_path.parent / EVALUATIONS_PATH
 
     def evaluate(self, history: list[dict[str, Any]]) -> dict[str, Any] | None:
         """
