@@ -194,6 +194,78 @@ def test_tool_exception_is_returned_as_structured_error(tmp_path):
     assert "recovery_hint" in payload
 
 
+def test_retryable_tool_error_is_retried_before_returning_to_model(tmp_path):
+    registry = ToolRegistry()
+    calls = {"count": 0}
+
+    @registry.tool(description="flaky")
+    def flaky() -> str:
+        calls["count"] += 1
+        if calls["count"] == 1:
+            raise TimeoutError("temporary timeout")
+        return "ok after retry"
+
+    store = MemoryStore(path=tmp_path / "memory.json", max_history=10)
+    tool_call = MagicMock()
+    tool_call.id = "call_1"
+    tool_call.function.name = "flaky"
+    tool_call.function.arguments = json.dumps({})
+
+    loop = AgentLoop(
+        client=MagicMock(),
+        model="test-model",
+        system_prompt="sys",
+        registry=registry,
+        store=store,
+        max_tool_retries=1,
+    )
+    loop.client.chat.completions.create.side_effect = [
+        make_response(tool_calls=[tool_call]),
+        make_response(content="handled"),
+    ]
+
+    result = loop.run("run flaky", stream=False)
+
+    assert result == "handled"
+    assert calls["count"] == 2
+    assert store.load_history()[2]["content"] == "ok after retry"
+
+
+def test_retryable_tool_error_reports_retry_exhaustion(tmp_path):
+    registry = ToolRegistry()
+
+    @registry.tool(description="always timeout")
+    def always_timeout() -> str:
+        raise TimeoutError("still down")
+
+    store = MemoryStore(path=tmp_path / "memory.json", max_history=10)
+    tool_call = MagicMock()
+    tool_call.id = "call_1"
+    tool_call.function.name = "always_timeout"
+    tool_call.function.arguments = json.dumps({})
+
+    loop = AgentLoop(
+        client=MagicMock(),
+        model="test-model",
+        system_prompt="sys",
+        registry=registry,
+        store=store,
+        max_tool_retries=1,
+    )
+    loop.client.chat.completions.create.side_effect = [
+        make_response(tool_calls=[tool_call]),
+        make_response(content="handled"),
+    ]
+
+    result = loop.run("run failing tool", stream=False)
+
+    assert result == "handled"
+    payload = json.loads(store.load_history()[2]["content"])
+    assert payload["error_type"] == "CommandTimeoutError"
+    assert payload["retryable"] is True
+    assert "Automatic retry exhausted" in payload["recovery_hint"]
+
+
 def test_history_loaded_on_run(registry, store):
     """Test that existing history is included in the prompt for context."""
     # Pre-populate history

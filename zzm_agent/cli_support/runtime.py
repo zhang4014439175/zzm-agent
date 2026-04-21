@@ -152,7 +152,10 @@ def build_registry(cfg: dict[str, Any]) -> ToolRegistry:
     """
     registry = ToolRegistry()
     set_active_registry(registry)
-    registry.configure_plugin_dirs(cfg.get("agent", {}).get("plugin_dirs", []))
+    registry.configure_plugin_dirs(
+        cfg.get("agent", {}).get("plugin_dirs", []),
+        plugin_config=cfg.get("plugins", {}),
+    )
     registry.load_configured_plugins()
 
     return registry
@@ -169,6 +172,10 @@ def get_agent_loop_policy(cfg: dict[str, Any]) -> dict[str, int]:
         "duplicate_tool_call_limit": max(
             1,
             int(agent_cfg.get("duplicate_tool_call_limit", 3)),
+        ),
+        "max_tool_retries": max(
+            0,
+            int(agent_cfg.get("max_tool_retries", 1)),
         ),
     }
 
@@ -230,6 +237,7 @@ def build_runtime(args: argparse.Namespace, cfg: dict[str, Any]) -> dict[str, An
         confirm_tool=build_tool_confirmation_callback(console),
         max_tool_iterations=loop_policy["max_tool_iterations"],
         duplicate_tool_call_limit=loop_policy["duplicate_tool_call_limit"],
+        max_tool_retries=loop_policy["max_tool_retries"],
     )
 
     return {

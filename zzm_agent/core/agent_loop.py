@@ -1,7 +1,7 @@
 import json
 from typing import TYPE_CHECKING, Any, Callable
 
-from zzm_agent.core.errors import tool_error_from_exception
+from zzm_agent.core.errors import ToolError, tool_error_from_exception
 
 if TYPE_CHECKING:
     from openai import OpenAI
@@ -32,6 +32,7 @@ class AgentLoop:
         confirm_tool: Callable[[str, dict[str, Any], str], bool] | None = None,
         max_tool_iterations: int = 20,
         duplicate_tool_call_limit: int = 3,
+        max_tool_retries: int = 1,
     ):
         """
         Initialize the AgentLoop.
@@ -44,6 +45,7 @@ class AgentLoop:
             store: The memory store for persisting history.
             max_tool_iterations: Maximum model tool-call rounds before stopping.
             duplicate_tool_call_limit: Consecutive identical calls before stopping.
+            max_tool_retries: Automatic retries for retryable tool execution errors.
         """
         self.client = client
         self.model = model
@@ -58,6 +60,7 @@ class AgentLoop:
         self.confirm_tool = confirm_tool
         self.max_tool_iterations = max(1, max_tool_iterations)
         self.duplicate_tool_call_limit = max(1, duplicate_tool_call_limit)
+        self.max_tool_retries = max(0, max_tool_retries)
 
     def _build_tool_call_record(
         self,
@@ -240,6 +243,42 @@ class AgentLoop:
             "or continue with a more specific instruction."
         )
 
+    def _format_retried_error(self, error: ToolError, attempts: int) -> str:
+        """Annotate the final retryable error with retry context."""
+        if attempts <= 1:
+            return error.to_json()
+        retries = attempts - 1
+        error.recovery_hint = (
+            f"{error.recovery_hint} Automatic retry exhausted after "
+            f"{retries} retry attempt(s)."
+        )
+        return error.to_json()
+
+    def _execute_tool_with_retries(self, name: str, args: dict[str, Any]) -> str:
+        """Execute a tool with bounded retries for structured retryable errors."""
+        attempts = 0
+        last_error: ToolError | None = None
+        max_attempts = self.max_tool_retries + 1
+
+        while attempts < max_attempts:
+            attempts += 1
+            try:
+                return str(self.registry.call(name, args))
+            except Exception as exc:
+                last_error = tool_error_from_exception(exc)
+                if not last_error.retryable or attempts >= max_attempts:
+                    return self._format_retried_error(last_error, attempts)
+
+        # This is defensive; the loop always returns on success or final error.
+        if last_error is None:
+            return ToolError(
+                error_type="ToolExecutionError",
+                message="Tool execution failed without an exception payload.",
+                recovery_hint="Inspect tool execution logs before retrying.",
+                retryable=False,
+            ).to_json()
+        return self._format_retried_error(last_error, attempts)
+
     def run(
         self,
         user_input: str,
@@ -361,8 +400,7 @@ class AgentLoop:
                     if not self._is_tool_execution_approved(name, args):
                         result_str = "User denied tool execution."
                     else:
-                        result = self.registry.call(name, args)
-                        result_str = str(result)
+                        result_str = self._execute_tool_with_retries(name, args)
                 except Exception as e:
                     # Capture tool execution errors and feed them back to the model
                     result_str = tool_error_from_exception(e).to_json()

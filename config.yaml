@@ -10,6 +10,7 @@ agent:
   auto_approve: false
   max_tool_iterations: 20
   duplicate_tool_call_limit: 3
+  max_tool_retries: 1
   plugin_dirs:
     - "zzm_agent/plugins"
 

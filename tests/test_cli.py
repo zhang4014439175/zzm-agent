@@ -94,6 +94,7 @@ def test_agent_loop_policy_uses_defaults_for_legacy_config():
     assert policy == {
         "max_tool_iterations": 20,
         "duplicate_tool_call_limit": 3,
+        "max_tool_retries": 1,
     }
 
 
@@ -102,12 +103,14 @@ def test_agent_loop_policy_reads_configured_values():
         "agent": {
             "max_tool_iterations": 8,
             "duplicate_tool_call_limit": 2,
+            "max_tool_retries": 4,
         }
     })
 
     assert policy == {
         "max_tool_iterations": 8,
         "duplicate_tool_call_limit": 2,
+        "max_tool_retries": 4,
     }
 
 
@@ -116,12 +119,14 @@ def test_agent_loop_policy_clamps_values_to_at_least_one():
         "agent": {
             "max_tool_iterations": 0,
             "duplicate_tool_call_limit": -5,
+            "max_tool_retries": -1,
         }
     })
 
     assert policy == {
         "max_tool_iterations": 1,
         "duplicate_tool_call_limit": 1,
+        "max_tool_retries": 0,
     }
 
 

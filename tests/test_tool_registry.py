@@ -152,3 +152,103 @@ def test_reload_plugins_reports_added_removed_and_updated_tools(tmp_path):
         "updated": [],
     }
     assert set(registry.tools) == {"beta"}
+
+
+def test_plugin_load_failure_is_isolated(tmp_path):
+    plugin_dir = tmp_path / "plugins"
+    plugin_dir.mkdir()
+    (plugin_dir / "bad.py").write_text(
+        "raise RuntimeError('boom during import')\n",
+        encoding="utf-8",
+    )
+    (plugin_dir / "good.py").write_text(
+        "from zzm_agent.core.tool_registry import tool\n\n"
+        '@tool(description="good tool")\n'
+        "def good() -> str:\n"
+        '    return "ok"\n',
+        encoding="utf-8",
+    )
+
+    registry = ToolRegistry()
+    registry.configure_plugin_dirs([plugin_dir])
+    registry.load_configured_plugins()
+
+    assert registry.call("good", {}) == "ok"
+    errors = registry.get_plugin_errors()
+    assert len(errors) == 1
+    assert errors[0]["plugin"] == "bad"
+    assert errors[0]["error_type"] == "RuntimeError"
+
+
+def test_failed_plugin_does_not_leave_partially_registered_tools(tmp_path):
+    plugin_dir = tmp_path / "plugins"
+    plugin_dir.mkdir()
+    (plugin_dir / "partial.py").write_text(
+        "from zzm_agent.core.tool_registry import tool\n\n"
+        '@tool(description="partial tool")\n'
+        "def partial() -> str:\n"
+        '    return "bad"\n\n'
+        "raise RuntimeError('failed after registration')\n",
+        encoding="utf-8",
+    )
+    (plugin_dir / "good.py").write_text(
+        "from zzm_agent.core.tool_registry import tool\n\n"
+        '@tool(description="good tool")\n'
+        "def good() -> str:\n"
+        '    return "ok"\n',
+        encoding="utf-8",
+    )
+
+    registry = ToolRegistry()
+    registry.configure_plugin_dirs([plugin_dir])
+    registry.load_configured_plugins()
+
+    assert set(registry.tools) == {"good"}
+    assert registry.call("good", {}) == "ok"
+
+
+def test_manifest_plugin_supports_namespace_config_and_lifecycle(tmp_path):
+    plugin_dir = tmp_path / "demo_plugin"
+    plugin_dir.mkdir()
+    (plugin_dir / "plugin.json").write_text(
+        "{"
+        '"name": "demo",'
+        '"version": "1.2.3",'
+        '"entry": "main.py",'
+        '"namespace": "demo",'
+        '"group": "examples",'
+        '"risk_level": "medium",'
+        '"config_key": "demo"'
+        "}",
+        encoding="utf-8",
+    )
+    (plugin_dir / "main.py").write_text(
+        "from pathlib import Path\n"
+        "from zzm_agent.core.plugin import BasePlugin\n\n"
+        "class DemoPlugin(BasePlugin):\n"
+        "    def initialize(self, context):\n"
+        "        self.root = context.root\n"
+        "        self.suffix = context.config['suffix']\n"
+        "        (self.root / 'initialized.txt').write_text(context.name, encoding='utf-8')\n\n"
+        "    def register_tools(self, registry):\n"
+        "        suffix = self.suffix\n"
+        "        @registry.tool(description='echo with configured suffix')\n"
+        "        def echo(text: str) -> str:\n"
+        "            return text + suffix\n\n"
+        "    def shutdown(self):\n"
+        "        (self.root / 'shutdown.txt').write_text('closed', encoding='utf-8')\n\n"
+        "plugin = DemoPlugin()\n",
+        encoding="utf-8",
+    )
+
+    registry = ToolRegistry()
+    registry.configure_plugin_dirs([plugin_dir], plugin_config={"demo": {"suffix": "!"}})
+    registry.load_configured_plugins()
+
+    assert (plugin_dir / "initialized.txt").read_text(encoding="utf-8") == "demo"
+    assert registry.call("demo.echo", {"text": "hi"}) == "hi!"
+    assert registry.get_tool_meta("demo.echo")["risk_level"] == "medium"
+
+    registry.shutdown_plugins()
+
+    assert (plugin_dir / "shutdown.txt").read_text(encoding="utf-8") == "closed"
