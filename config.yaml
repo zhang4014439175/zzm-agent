@@ -8,6 +8,8 @@ model:
 agent:
   system_prompt: "你是 zzm-agent，一个简洁高效的个人助理。"
   auto_approve: false
+  max_tool_iterations: 20
+  duplicate_tool_call_limit: 3
   plugin_dirs:
     - "zzm_agent/plugins"
 

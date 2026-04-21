@@ -1,5 +1,5 @@
 from zzm_agent.cli_support.commands import handle_slash
-from zzm_agent.cli_support.runtime import load_config, parse_args
+from zzm_agent.cli_support.runtime import get_agent_loop_policy, load_config, parse_args
 from zzm_agent.core.tool_registry import ToolRegistry
 from zzm_agent.memory.store import MemoryStore
 
@@ -86,6 +86,43 @@ def test_load_config_expands_env_placeholders(tmp_path, monkeypatch):
     cfg = load_config(config_path)
 
     assert cfg["model"]["api_key"] == "secret"
+
+
+def test_agent_loop_policy_uses_defaults_for_legacy_config():
+    policy = get_agent_loop_policy({"agent": {}})
+
+    assert policy == {
+        "max_tool_iterations": 20,
+        "duplicate_tool_call_limit": 3,
+    }
+
+
+def test_agent_loop_policy_reads_configured_values():
+    policy = get_agent_loop_policy({
+        "agent": {
+            "max_tool_iterations": 8,
+            "duplicate_tool_call_limit": 2,
+        }
+    })
+
+    assert policy == {
+        "max_tool_iterations": 8,
+        "duplicate_tool_call_limit": 2,
+    }
+
+
+def test_agent_loop_policy_clamps_values_to_at_least_one():
+    policy = get_agent_loop_policy({
+        "agent": {
+            "max_tool_iterations": 0,
+            "duplicate_tool_call_limit": -5,
+        }
+    })
+
+    assert policy == {
+        "max_tool_iterations": 1,
+        "duplicate_tool_call_limit": 1,
+    }
 
 
 def test_handle_slash_new_and_switch_session(tmp_path):

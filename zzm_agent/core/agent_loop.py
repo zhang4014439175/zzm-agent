@@ -1,6 +1,8 @@
 import json
 from typing import TYPE_CHECKING, Any, Callable
 
+from zzm_agent.core.errors import tool_error_from_exception
+
 if TYPE_CHECKING:
     from openai import OpenAI
     from zzm_agent.core.tool_registry import ToolRegistry
@@ -28,6 +30,8 @@ class AgentLoop:
         auto_approve: bool = False,
         safe_mode: bool = False,
         confirm_tool: Callable[[str, dict[str, Any], str], bool] | None = None,
+        max_tool_iterations: int = 20,
+        duplicate_tool_call_limit: int = 3,
     ):
         """
         Initialize the AgentLoop.
@@ -38,6 +42,8 @@ class AgentLoop:
             system_prompt: The initial system instructions for the agent.
             registry: The tool registry containing available functions.
             store: The memory store for persisting history.
+            max_tool_iterations: Maximum model tool-call rounds before stopping.
+            duplicate_tool_call_limit: Consecutive identical calls before stopping.
         """
         self.client = client
         self.model = model
@@ -50,6 +56,8 @@ class AgentLoop:
         self.auto_approve = auto_approve
         self.safe_mode = safe_mode
         self.confirm_tool = confirm_tool
+        self.max_tool_iterations = max(1, max_tool_iterations)
+        self.duplicate_tool_call_limit = max(1, duplicate_tool_call_limit)
 
     def _build_tool_call_record(
         self,
@@ -202,6 +210,36 @@ class AgentLoop:
             return False
         return bool(self.confirm_tool(name, arguments, risk_level))
 
+    def _tool_call_signature(self, tool_call: dict[str, Any]) -> tuple[str, str]:
+        """Return a stable signature used to detect repeated tool calls."""
+        function = tool_call.get("function", {})
+        name = str(function.get("name", ""))
+        arguments = str(function.get("arguments", ""))
+        try:
+            parsed = json.loads(arguments)
+        except json.JSONDecodeError:
+            normalized_args = arguments
+        else:
+            normalized_args = json.dumps(parsed, sort_keys=True, ensure_ascii=False)
+        return name, normalized_args
+
+    def _repetition_stop_message(self, signature: tuple[str, str]) -> str:
+        """Build the final response when the model repeats the same tool blindly."""
+        name, arguments = signature
+        return (
+            "Stopped tool execution because the model repeatedly requested the "
+            f"same tool call: {name}({arguments}). Please adjust the approach "
+            "or provide more specific input."
+        )
+
+    def _iteration_stop_message(self) -> str:
+        """Build the final response when the tool loop reaches its safety limit."""
+        return (
+            "Stopped tool execution because the maximum tool iteration limit "
+            f"({self.max_tool_iterations}) was reached. Please narrow the task "
+            "or continue with a more specific instruction."
+        )
+
     def run(
         self,
         user_input: str,
@@ -239,7 +277,18 @@ class AgentLoop:
 
         # 2. Start the thinking-action loop
         # print(messages)
+        tool_iterations = 0
+        consecutive_signature: tuple[str, str] | None = None
+        consecutive_count = 0
         while True:
+            if tool_iterations >= self.max_tool_iterations:
+                final_reply = self._iteration_stop_message()
+                assistant_msg = {"role": "assistant", "content": final_reply}
+                messages.append(assistant_msg)
+                turn_messages.append(assistant_msg)
+                self.store.append(turn_messages)
+                return final_reply
+
             if stream:
                 assistant_content, tool_calls_raw, interrupted = self._stream_once(
                     messages=messages,
@@ -269,6 +318,29 @@ class AgentLoop:
                 return final_reply
 
             # If the model wants to call tools
+            current_signatures = [self._tool_call_signature(tc) for tc in tool_calls_raw]
+            if len(current_signatures) == 1 and current_signatures[0] == consecutive_signature:
+                consecutive_count += 1
+            elif len(current_signatures) == 1:
+                consecutive_signature = current_signatures[0]
+                consecutive_count = 1
+            else:
+                consecutive_signature = None
+                consecutive_count = 0
+
+            if (
+                consecutive_signature is not None
+                and consecutive_count >= self.duplicate_tool_call_limit
+            ):
+                final_reply = self._repetition_stop_message(consecutive_signature)
+                assistant_msg = {"role": "assistant", "content": final_reply}
+                messages.append(assistant_msg)
+                turn_messages.append(assistant_msg)
+                self.store.append(turn_messages)
+                return final_reply
+
+            tool_iterations += 1
+
             # Record the assistant's intent to call tools
             assistant_intent_msg = {
                 "role": "assistant",
@@ -281,6 +353,7 @@ class AgentLoop:
             # Tool results stay inside the same turn so the model can immediately
             # consume them on the next loop iteration.
             for tc in tool_calls_raw:
+
                 try:
                     # Parse arguments and call the tool through the registry
                     name = tc["function"]["name"]
@@ -292,7 +365,7 @@ class AgentLoop:
                         result_str = str(result)
                 except Exception as e:
                     # Capture tool execution errors and feed them back to the model
-                    result_str = f"Error executing tool: {e}"
+                    result_str = tool_error_from_exception(e).to_json()
 
                 tool_result_msg = {
                     "role": "tool",

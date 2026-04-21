@@ -34,6 +34,28 @@ def test_schema_generation():
     assert "b" in schema["function"]["parameters"]["required"]
 
 
+def test_schema_includes_docstring_arg_descriptions():
+    registry = ToolRegistry()
+
+    @registry.tool(description="read a file")
+    def read(path: str, limit: int = 10) -> str:
+        """
+        Read part of a file.
+
+        Args:
+            path: File path to read.
+            limit: Maximum number of lines to return.
+
+        Returns:
+            Text content.
+        """
+        return path
+
+    props = registry.get_schemas()[0]["function"]["parameters"]["properties"]
+    assert props["path"]["description"] == "File path to read."
+    assert props["limit"]["description"] == "Maximum number of lines to return."
+
+
 def test_call_tool():
     """Test that calling a tool via the registry works as expected."""
     registry = ToolRegistry()

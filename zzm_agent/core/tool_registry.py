@@ -1,6 +1,7 @@
 import importlib.util
 import hashlib
 import inspect
+import re
 import sys
 from pathlib import Path
 from typing import Any, Callable
@@ -16,6 +17,7 @@ _TYPE_MAP = {
 }
 
 _VALID_RISK_LEVELS = {"low", "medium", "high"}
+_DOCSTRING_ARG_PATTERN = re.compile(r"^\s*(\w+)\s*:\s*(.+?)\s*$")
 
 
 class ToolRegistry:
@@ -50,6 +52,7 @@ class ToolRegistry:
             # hand OpenAI-compatible tool metadata to the model without further
             # reflection during each request.
             sig = inspect.signature(fn)
+            arg_descriptions = self._extract_arg_descriptions(fn)
             properties = {}
             required = []
             
@@ -58,6 +61,8 @@ class ToolRegistry:
                 # Map Python types to JSON types, defaulting to "string"
                 json_type = _TYPE_MAP.get(annotation, "string")
                 properties[name] = {"type": json_type}
+                if name in arg_descriptions:
+                    properties[name]["description"] = arg_descriptions[name]
                 
                 # If there's no default value, the parameter is required
                 if param.default is inspect.Parameter.empty:
@@ -84,6 +89,37 @@ class ToolRegistry:
             }
             return fn
         return decorator
+
+    def _extract_arg_descriptions(self, fn: Callable) -> dict[str, str]:
+        """Extract Args-section parameter descriptions from a tool docstring."""
+        doc = inspect.getdoc(fn) or ""
+        descriptions: dict[str, str] = {}
+        in_args = False
+        current_name = ""
+
+        for raw_line in doc.splitlines():
+            line = raw_line.rstrip()
+            stripped = line.strip()
+            if stripped == "Args:":
+                in_args = True
+                current_name = ""
+                continue
+            if not in_args:
+                continue
+            if stripped in {"Returns:", "Raises:", "Examples:"}:
+                break
+            if not stripped:
+                current_name = ""
+                continue
+
+            match = _DOCSTRING_ARG_PATTERN.match(line)
+            if match:
+                current_name = match.group(1)
+                descriptions[current_name] = match.group(2).strip()
+            elif current_name and raw_line.startswith((" ", "\t")):
+                descriptions[current_name] += " " + stripped
+
+        return descriptions
 
     def get_schemas(self) -> list[dict]:
         """

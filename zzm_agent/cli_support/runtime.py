@@ -158,6 +158,21 @@ def build_registry(cfg: dict[str, Any]) -> ToolRegistry:
     return registry
 
 
+def get_agent_loop_policy(cfg: dict[str, Any]) -> dict[str, int]:
+    """Return configurable AgentLoop safety policy with stable defaults."""
+    agent_cfg = cfg.get("agent", {})
+    return {
+        "max_tool_iterations": max(
+            1,
+            int(agent_cfg.get("max_tool_iterations", 20)),
+        ),
+        "duplicate_tool_call_limit": max(
+            1,
+            int(agent_cfg.get("duplicate_tool_call_limit", 3)),
+        ),
+    }
+
+
 def build_runtime(args: argparse.Namespace, cfg: dict[str, Any]) -> dict[str, Any]:
     """Assemble the runtime objects used by the interactive CLI loop."""
     try:
@@ -199,6 +214,7 @@ def build_runtime(args: argparse.Namespace, cfg: dict[str, Any]) -> dict[str, An
         history_versions=cfg["evolution"].get("history_versions", 5),
     )
     system_prompt = optimizer.get_current_prompt() or cfg["agent"]["system_prompt"]
+    loop_policy = get_agent_loop_policy(cfg)
     loop = AgentLoop(
         client=client,
         model=cfg["model"]["model_name"],
@@ -212,6 +228,8 @@ def build_runtime(args: argparse.Namespace, cfg: dict[str, Any]) -> dict[str, An
         auto_approve=cfg["agent"].get("auto_approve", False),
         safe_mode=args.safe,
         confirm_tool=build_tool_confirmation_callback(console),
+        max_tool_iterations=loop_policy["max_tool_iterations"],
+        duplicate_tool_call_limit=loop_policy["duplicate_tool_call_limit"],
     )
 
     return {

@@ -114,6 +114,86 @@ def test_tool_call_then_reply(registry, store):
     assert history[2]["content"] == "ECHO:world"
 
 
+def test_agent_loop_stops_at_max_tool_iterations(registry, store):
+    tool_call = MagicMock()
+    tool_call.id = "call_1"
+    tool_call.function.name = "echo"
+    tool_call.function.arguments = json.dumps({"text": "again"})
+
+    loop = AgentLoop(
+        client=MagicMock(),
+        model="test-model",
+        system_prompt="sys",
+        registry=registry,
+        store=store,
+        max_tool_iterations=1,
+    )
+    loop.client.chat.completions.create.return_value = make_response(tool_calls=[tool_call])
+
+    result = loop.run("repeat", stream=False)
+
+    assert "maximum tool iteration limit" in result
+    assert loop.client.chat.completions.create.call_count == 1
+    assert store.load_history()[-1]["content"] == result
+
+
+def test_agent_loop_stops_repeated_identical_tool_calls(registry, store):
+    tool_call = MagicMock()
+    tool_call.id = "call_1"
+    tool_call.function.name = "echo"
+    tool_call.function.arguments = json.dumps({"text": "loop"})
+
+    loop = AgentLoop(
+        client=MagicMock(),
+        model="test-model",
+        system_prompt="sys",
+        registry=registry,
+        store=store,
+        duplicate_tool_call_limit=2,
+    )
+    loop.client.chat.completions.create.return_value = make_response(tool_calls=[tool_call])
+
+    result = loop.run("repeat", stream=False)
+
+    assert "repeatedly requested the same tool call" in result
+    assert loop.client.chat.completions.create.call_count == 2
+    assert store.load_history()[-1]["content"] == result
+
+
+def test_tool_exception_is_returned_as_structured_error(tmp_path):
+    registry = ToolRegistry()
+
+    @registry.tool(description="explode")
+    def explode(value: str) -> str:
+        raise ValueError(f"bad value: {value}")
+
+    store = MemoryStore(path=tmp_path / "memory.json", max_history=10)
+    tool_call = MagicMock()
+    tool_call.id = "call_1"
+    tool_call.function.name = "explode"
+    tool_call.function.arguments = json.dumps({"value": "x"})
+
+    loop = AgentLoop(
+        client=MagicMock(),
+        model="test-model",
+        system_prompt="sys",
+        registry=registry,
+        store=store,
+    )
+    loop.client.chat.completions.create.side_effect = [
+        make_response(tool_calls=[tool_call]),
+        make_response(content="handled"),
+    ]
+
+    result = loop.run("explode", stream=False)
+
+    assert result == "handled"
+    payload = json.loads(store.load_history()[2]["content"])
+    assert payload["error_type"] == "ValueError"
+    assert payload["message"] == "bad value: x"
+    assert "recovery_hint" in payload
+
+
 def test_history_loaded_on_run(registry, store):
     """Test that existing history is included in the prompt for context."""
     # Pre-populate history
