@@ -194,13 +194,15 @@ def build_runtime(args: argparse.Namespace, cfg: dict[str, Any]) -> dict[str, An
     optimizer = EvolutionOptimizer(
         client=client,
         model=cfg["model"]["model_name"],
-        config_path=CONFIG_PATH,
+        config_path=resolve_config_path(args.config_path),
         sample_size=cfg["evolution"]["sample_size"],
+        history_versions=cfg["evolution"].get("history_versions", 5),
     )
+    system_prompt = optimizer.get_current_prompt() or cfg["agent"]["system_prompt"]
     loop = AgentLoop(
         client=client,
         model=cfg["model"]["model_name"],
-        system_prompt=cfg["agent"]["system_prompt"],
+        system_prompt=system_prompt,
         registry=registry,
         store=store,
         # Keep the agent loop aligned with MemoryStore's retrieval budget.

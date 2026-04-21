@@ -70,7 +70,10 @@ Available Commands:
 /forget <k>   - Remove long-term memories matching a keyword
 /search <k>   - Search across semantic and episodic memories
 /semantic     - List all long-term semantic memories
-/evolve       - Run prompt optimization based on session history
+/evolve run   - Generate a prompt candidate
+/evolve diff  - Show pending prompt candidate diff
+/evolve apply - Apply the pending prompt candidate
+/evolve rollback - Restore the previous prompt
 /exit, /quit  - Terminate the session
         """
         console.print(help_text)
@@ -92,7 +95,10 @@ Available Commands:
         ("/forget <k>", "Remove memories matching a keyword"),
         ("/search <k>", "Search semantic and episodic memories"),
         ("/semantic", "List all long-term semantic memories"),
-        ("/evolve", "Run prompt optimization based on history"),
+        ("/evolve run", "Generate a prompt candidate"),
+        ("/evolve diff", "Show pending prompt candidate diff"),
+        ("/evolve apply", "Apply the pending prompt candidate"),
+        ("/evolve rollback", "Restore the previous prompt"),
         ("/exit, /quit", "Terminate the session"),
     ]
 

@@ -8,9 +8,9 @@
 
 ## 1. 当前状态
 
-**结论：v2 已开始开发，`P1.2/X1/P2.1/P2.2/P3.1/P3.2` 已验收完成，当前整体处于 `P2.3/X2` 进行中。**
+**结论：v2 已开始开发，`P1.2/X1/P2.1/P2.2/P3.1/P3.2/P4.2` 已验收完成，当前整体处于 `P2.3/X2` 进行中。**
 
-当前仓库已经完成 `P1.1`、`P1.2`、`P2.1`、`P2.2`、`P3.1` 与 `X1`，并继续推进 `P2.3` 和 `X2`。不得再把仓库整体描述为“v2 尚未开始”；后续每次更新时都必须按本文件的状态规则同步修正总览、任务卡片和里程碑。
+当前仓库已经完成 `P1.1`、`P1.2`、`P2.1`、`P2.2`、`P3.1`、`P4.2` 与 `X1`，并继续推进 `P2.3` 和 `X2`。不得再把仓库整体描述为“v2 尚未开始”；后续每次更新时都必须按本文件的状态规则同步修正总览、任务卡片和里程碑。
 
 ### 已有基础能力
 
@@ -32,7 +32,7 @@
 - [x] 插件热重载命令
 - [x] `/sessions` `/session` `/new`
 - [x] `/remember` `/forget` `/search`
-- [ ] `/evolve status` `/evolve run` `/evolve diff` `/evolve apply` `/evolve rollback`
+- [x] `/evolve status` `/evolve run` `/evolve diff` `/evolve apply` `/evolve rollback`
 - [x] 数据迁移与回滚闭环
 - [-] v2 对应测试
 
@@ -94,7 +94,7 @@
 - [x] P3.1 工具确认
 - [x] P3.2 插件热重载
 - [x] P4.1 对话评估记录
-- [ ] P4.2 Prompt 候选闭环
+- [x] P4.2 Prompt 候选闭环
 - [x] X1 数据迁移与回滚
 - [-] X2 测试与质量
 
@@ -324,26 +324,26 @@
 
 ---
 
-### P4.2 Prompt 候选闭环 `[ ]`
+### P4.2 Prompt 候选闭环 `[x]`
 
-当前状态：未开始  
-说明：当前只有简化版 `/evolve`，没有 run/diff/apply/rollback 闭环。
+当前状态：已完成  
+说明：已实现 `/evolve run`、`/evolve diff`、`/evolve apply`、`/evolve rollback` 与 prompt 历史闭环；候选生成只持久化 pending candidate，不会自动修改当前配置；应用和回滚都必须由用户显式触发，并写入运行时 active prompt 状态而不是回写 `config.yaml`。
 
 任务：
-- [ ] `/evolve run`
-- [ ] `/evolve diff`
-- [ ] `/evolve apply`
-- [ ] `/evolve rollback`
-- [ ] 保留最近 N 版 prompt 历史
+- [x] `/evolve run`
+- [x] `/evolve diff`
+- [x] `/evolve apply`
+- [x] `/evolve rollback`
+- [x] 保留最近 N 版 prompt 历史
 
 约束：
 - 自动生成不自动生效
 - 应用动作必须由用户显式触发
 
 验收：
-- [ ] `/evolve run` 可生成候选或明确返回“无候选”
-- [ ] diff / apply / rollback 流程可走通
-- [ ] prompt 历史可追溯
+- [x] `/evolve run` 可生成候选或明确返回“无候选”
+- [x] diff / apply / rollback 流程可走通
+- [x] prompt 历史可追溯
 
 备注：
 - 不要求连续多次运行后平均分持续提升
@@ -370,7 +370,7 @@
 ### X2 测试与质量 `[-]`
 
 当前状态：进行中  
-说明：已补充 session / migration / CLI 基础测试，并新增 streaming mock、迁移失败回滚、启动前清理残留、上下文压缩与 `/memory` 展示、tool confirmation，以及 retrieval 相关测试；但 evolve 闭环测试仍未完成，因此不能判定该项完成。
+说明：已补充 session / migration / CLI 基础测试，并新增 streaming mock、迁移失败回滚、启动前清理残留、上下文压缩与 `/memory` 展示、tool confirmation、retrieval，以及 evolve 闭环相关测试；但 P2.3 的 1000 条样本 benchmark 仍未完成，因此不能判定该项完成。
 
 任务：
 - [-] 新增核心模块补充单元测试
@@ -379,7 +379,7 @@
 - [x] migration 测试
 - [x] retrieval 测试
 - [x] tool confirmation 测试
-- [ ] evolve 最小闭环测试
+- [x] evolve 最小闭环测试
 
 验收：
 - [ ] 核心链路均有自动化测试覆盖

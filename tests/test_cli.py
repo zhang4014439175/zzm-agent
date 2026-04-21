@@ -10,10 +10,34 @@ class DummyRegistry:
 
 
 class DummyOptimizer:
+    def __init__(self):
+        self.candidate = None
+        self.diff_text = ""
+        self.applied = None
+        self.restored = None
+
+    def run(self, history):
+        return self.candidate
+
     def optimize(self, history):
         return ""
 
     def apply(self, new_prompt):
+        return None
+
+    def apply_candidate(self, candidate_id=None):
+        return self.applied
+
+    def diff(self, candidate_id=None):
+        return self.diff_text
+
+    def rollback(self):
+        return self.restored
+
+    def get_latest_evaluation(self):
+        return None
+
+    def evaluate(self, history):
         return None
 
 
@@ -257,3 +281,39 @@ def test_tools_command_reflects_updated_plugin_description_after_reload(tmp_path
 
     assert handle_slash("/tools", registry, store, DummyOptimizer(), console) is True
     assert any("updated version" in line for line in console.lines)
+
+
+def test_handle_slash_evolve_run_generates_candidate(tmp_path):
+    store = MemoryStore(path=tmp_path / "memory.json", max_history=50, session_id="alpha")
+    store.append([{"role": "user", "content": "help"}])
+    optimizer = DummyOptimizer()
+    optimizer.candidate = {
+        "id": "candidate-1",
+        "candidate_prompt": "new prompt",
+        "rationale": "better boundaries",
+    }
+    console = DummyConsole()
+
+    handled = handle_slash("/evolve run", DummyRegistry(), store, optimizer, console)
+
+    assert handled is True
+    assert any("candidate-1" in line for line in console.lines)
+    assert any("better boundaries" in line for line in console.lines)
+
+
+def test_handle_slash_evolve_diff_apply_and_rollback(tmp_path):
+    store = MemoryStore(path=tmp_path / "memory.json", max_history=50, session_id="alpha")
+    optimizer = DummyOptimizer()
+    optimizer.diff_text = "--- current\n+++ candidate\n-new\n+old\n"
+    optimizer.applied = {"id": "candidate-1"}
+    optimizer.restored = {"id": "prompt-1"}
+    console = DummyConsole()
+
+    assert handle_slash("/evolve diff", DummyRegistry(), store, optimizer, console) is True
+    assert any("+++ candidate" in line for line in console.lines)
+
+    assert handle_slash("/evolve apply", DummyRegistry(), store, optimizer, console) is True
+    assert any("candidate-1" in line for line in console.lines)
+
+    assert handle_slash("/evolve rollback", DummyRegistry(), store, optimizer, console) is True
+    assert any("prompt-1" in line for line in console.lines)

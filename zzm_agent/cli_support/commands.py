@@ -189,20 +189,23 @@ def handle_slash(
             console.print(f"[cyan]{index}.[/cyan] {fact}")
         return True
 
-    if command == "/evolve":
-        # /evolve without arguments runs a full optimization turn.
+    if command in {"/evolve", "/evolve run"}:
+        # Candidate generation is intentionally separated from apply so an
+        # optimizer run cannot silently mutate the active system prompt.
         history = store.load_history()
-        console.print("[yellow]Running evolution optimizer...[/yellow]")
-        
-        # Trigger an evaluation as part of the optimization process
-        optimizer.evaluate(history)
-        
-        new_prompt = optimizer.optimize(history)
-        if new_prompt:
-            optimizer.apply(new_prompt)
-            console.print("[green]System prompt updated.[/green]")
-        else:
-            console.print("[dim]Optimizer stub: no changes.[/dim]")
+        console.print("[yellow]Running evolution candidate generation...[/yellow]")
+        candidate = optimizer.run(history)
+        if not candidate:
+            console.print("[dim]No prompt candidate generated.[/dim]")
+            return True
+
+        console.print(
+            "[green]Prompt candidate generated:[/green] "
+            f"[cyan]{candidate['id']}[/cyan]"
+        )
+        if candidate.get("rationale"):
+            console.print(f"[dim]{candidate['rationale']}[/dim]")
+        console.print("[dim]Review with /evolve diff, apply with /evolve apply.[/dim]")
         return True
 
     if command == "/evolve status":
@@ -232,6 +235,43 @@ def handle_slash(
         console.print(f"Conciseness: [green]{latest.get('conciseness_score', 0)}/10[/green]")
         console.print(f"Reasoning: {latest.get('reasoning', 'N/A')}")
         console.print(f"Conclusion: {latest.get('conclusion', 'N/A')}")
+        return True
+
+    if command.startswith("/evolve diff"):
+        parts = command.split(maxsplit=2)
+        candidate_id = parts[2].strip() if len(parts) == 3 else None
+        diff = optimizer.diff(candidate_id)
+        if not diff:
+            console.print("[yellow]No prompt candidate available for diff.[/yellow]")
+            return True
+
+        console.print(diff)
+        return True
+
+    if command.startswith("/evolve apply"):
+        parts = command.split(maxsplit=2)
+        candidate_id = parts[2].strip() if len(parts) == 3 else None
+        candidate = optimizer.apply_candidate(candidate_id)
+        if not candidate:
+            console.print("[yellow]No prompt candidate available to apply.[/yellow]")
+            return True
+
+        console.print(
+            "[green]Applied prompt candidate as active prompt:[/green] "
+            f"[cyan]{candidate['id']}[/cyan]"
+        )
+        return True
+
+    if command == "/evolve rollback":
+        restored = optimizer.rollback()
+        if not restored:
+            console.print("[yellow]No prompt history available to roll back.[/yellow]")
+            return True
+
+        console.print(
+            "[green]Rolled back active prompt from history:[/green] "
+            f"[cyan]{restored['id']}[/cyan]"
+        )
         return True
 
     if command == "/help":

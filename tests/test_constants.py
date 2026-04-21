@@ -18,6 +18,15 @@ def test_internal_paths_are_relative_to_agent_dir():
     assert constants.EVALUATIONS_PATH == (
         Path(".zzm_agent") / "evolution" / "evaluations.json"
     )
+    assert constants.EVOLUTION_CANDIDATES_PATH == (
+        Path(".zzm_agent") / "evolution" / "candidates.json"
+    )
+    assert constants.PROMPT_HISTORY_PATH == (
+        Path(".zzm_agent") / "evolution" / "prompt_history.json"
+    )
+    assert constants.ACTIVE_PROMPT_PATH == (
+        Path(".zzm_agent") / "evolution" / "active_prompt.json"
+    )
     assert constants.AUDIT_LOG_PATH == Path(".zzm_agent") / "audit.log"
 
 
