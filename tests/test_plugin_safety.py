@@ -32,4 +32,5 @@ def test_read_file_can_access_workspace_file(tmp_path, monkeypatch):
 
     result = registry.call("read_file", {"path": str(target)})
 
-    assert result == "hello"
+    assert "hello" in result
+    assert "note.txt" in result
