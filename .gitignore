@@ -20,3 +20,4 @@ __pycache__/
 .tmp_verify_stream
 .tmp_manual
 /zzm_agent.egg-info/
+.env

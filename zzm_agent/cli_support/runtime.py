@@ -110,6 +110,12 @@ def load_config(config_path: str | Path | None = None) -> dict[str, Any]:
         RuntimeError: If PyYAML is not installed in the current interpreter.
     """
     try:
+        from dotenv import load_dotenv
+        load_dotenv()
+    except ImportError:
+        pass
+
+    try:
         import yaml
     except ImportError as exc:
         raise RuntimeError("PyYAML is required to load config.yaml.") from exc

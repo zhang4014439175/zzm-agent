@@ -1,8 +1,15 @@
 # zzm-agent 深度改进计划
 
-**日期:** 2026-04-20  
+**日期:** 2026-04-20（最后修改：2026-04-22）  
 **范围:** 逐模块审视现有代码的具体问题，提出详细改进方案  
 **原则:** 不是"加新功能"而是"让现有的每个模块从 demo 级升级到工程级"
+
+### 变更记录
+
+| 日期 | 修改内容 |
+|------|----------|
+| 2026-04-20 | 初版，E1-E10 路线图 |
+| 2026-04-22 | 代码审计补充：E3 拆分为 E3a/E3b；新增前置修复任务 E0.5；E4 补充对话成本追踪、结构化输出；E5 补充 tokenizer fallback 链；E8 补充 async 兼容层策略和 Git 工具；E9 补充 Planner 架构约束；E10 补充 auto-evolve 安全红线；新增目标目录结构 |
 
 ---
 
@@ -39,7 +46,7 @@
 | CLI / UI | 第五章 | E4、E8 |
 | 配置与模型 | 第六章 | E10 |
 | 错误处理与可观测性 | 第七章 | E2、E4、E10 |
-| 测试与评估 | 第八章 | E3、E10 |
+| 测试与评估 | 第八章 | E3a、E3b、E10 |
 
 ---
 
@@ -1044,14 +1051,16 @@ zzm-agent eval --suite full --llm
 |:---:|------|:------:|------|----------------|------|
 | 0 | E1 工具集补齐 | 已完成 | 让 Agent 具备基本编程工具能力 | 文件工具、搜索工具、Shell 工具、路径安全 | 无 |
 | 1 | E2 Agent 执行安全底座 | 已完成 | 防止失控，保证工具调用可控、可解释 | 3.1 循环保护、4.1 参数描述、4.4 插件生命周期、7.1 结构化错误、7.2 自动重试 | E1 |
-| 2 | E3 测试与评估底座 | P0 | 建立可回放、可比较、可回归的质量基线 | 工具回放、固定任务基准、回归指标、基础评估命令 | E2 |
-| 3 | E4 CLI 可观测性 | P0 | 让用户看得见 Agent 正在做什么 | 3.2 工具事件回调、5.2 工具状态面板、5.1 流式 Markdown、5.4 Diff 预览、日志 | E2、E3 |
-| 4 | E5 上下文与 Token 管理 | P0 | 让长会话不再靠粗略估算和硬截断 | 2.2 History 压缩、2.6 Pinning、Token 精确计算、5.3 状态栏 | E2、E3 |
+| 1.5 | E0.5 安全与卫生修复 | P0 | 修复明文 API Key 等不应带入后续阶段的安全和卫生问题 | API Key 环境变量化、.env.example、.gitignore 补全 | E2 |
+| 2 | E3a 回放测试底座 | P0 | 让 Agent Loop 的行为可在零 LLM 调用下被测试 | MockLLM/ReplayLLM、核心回放用例、fixtures 目录 | E2 |
+| 2.5 | E3b 基准集与评估命令 | P0 | 建立可比较、可回归的质量基线 | 固定任务基准集、eval 命令行、回归指标记录 | E3a |
+| 3 | E4 CLI 可观测性 | P0 | 让用户看得见 Agent 正在做什么 | 3.2 工具事件回调、5.2 工具状态面板、5.1 流式 Markdown、5.4 Diff 预览、对话成本追踪、日志 | E2、E3a |
+| 4 | E5 上下文与 Token 管理 | P0 | 让长会话不再靠粗略估算和硬截断 | 2.2 History 压缩、2.6 Pinning、Token 精确计算（含 fallback 链）、5.3 状态栏 | E2、E3a |
 | 5 | E6 PromptManager 与环境适配 | P1 | 让 Agent 能根据项目、任务和运行环境调整行为 | 1.1 Prompt 模板、1.2 动态组装、1.3 意图检测、1.4 项目规则、1.5 环境适配 | E5 |
 | 6 | E7 记忆与检索升级 | P1 | 让记忆真正能被沉淀、召回和利用 | 2.1 Episodic 摘要、2.3 自动记忆、2.5 重要性评分、语义/混合检索 | E5、E6 |
-| 7 | E8 异步执行、项目索引与后台任务 | P2 | 支持并发工具、减少大型项目探索成本，并管理长时间运行任务 | 3.5 async loop、3.6 并发 tool_calls、4.5 项目索引、4.6 `@tool_chain`、后台命令 | E4 |
-| 8 | E9 多轮规划与工作记忆 | P2 | 让 Agent 能拆解复杂任务并保留中间状态 | 2.4 WorkingMemory、3.4 思维链引导、Planner、plan-execute | E6、E7、E8 |
-| 9 | E10 Evolution、多模型、Web 与安全加固 | P3 | 扩展边界能力，同时补齐生产级约束 | gated auto-evolve、LLM-as-a-Judge、多 Provider、Web 工具、安全审计、配置 Schema、Secret Store | E3-E9 |
+| 7 | E8 异步执行、项目索引与后台任务 | P2 | 支持并发工具、减少大型项目探索成本，并管理长时间运行任务 | 3.5 async loop（保留 sync 入口）、3.6 并发 tool_calls、4.5 项目索引、4.6 `@tool_chain`、后台命令、Git 工具 | E4 |
+| 8 | E9 多轮规划与工作记忆 | P2 | 让 Agent 能拆解复杂任务并保留中间状态 | 2.4 WorkingMemory、3.4 思维链引导、Planner（AgentLoop 外层编排）、plan-execute | E6、E7、E8 |
+| 9 | E10 Evolution、多模型、Web 与安全加固 | P3 | 扩展边界能力，同时补齐生产级约束 | gated auto-evolve（仅候选生成，禁止自动应用）、LLM-as-a-Judge、多 Provider、Web 工具、安全审计、配置 Schema、Secret Store | E3b-E9 |
 
 ### 9.2 开发原则
 
@@ -1063,6 +1072,27 @@ zzm-agent eval --suite full --llm
 6. **每个阶段必须可测试。** 阶段完成标准不是“代码写完”，而是有 CLI 行为、单元测试、回放测试或基准测试证明它工作。
 7. **评估默认低成本。** 本地和常规 CI 默认跑 mock / replay / deterministic tests，真实 LLM 评估必须显式开启。
 8. **共享命名必须集中定义。** Prompt section、事件名、内部路径和配置 key 不允许散落硬编码。
+9. **Planner 不修改 AgentLoop。** 多轮规划在 AgentLoop 外层编排，核心循环只关注单轮 ReAct。
+10. **auto-evolve 永远只生成候选。** 任何 prompt 变更必须经过人工确认或回归门禁，禁止后台静默切换。
+
+### 9.3 目标目录结构
+
+随着 E3-E6 的推进，代码目录会自然演进。以下是 E6 完成后的预期结构：
+
+```
+zzm_agent/
+├── cli_support/     # CLI 渲染 + 工具状态面板 + 成本展示
+├── core/            # AgentLoop + ToolRegistry + Plugin + Errors
+├── eval/            # 评估框架：ReplayLLM、基准集、eval 命令（E3 新增）
+├── evolution/       # 优化器
+├── memory/          # 记忆系统
+├── plugins/         # 工具实现
+├── prompt/          # PromptManager + 模板 + 上下文构建器（E6 新增）
+├── constants.py     # 共享常量
+└── schema.py        # 配置 dataclass（可选，E10 时引入）
+```
+
+原则：不提前做大搬家，需要某类能力时再引入对应目录。
 
 ---
 
@@ -1119,28 +1149,120 @@ zzm-agent eval --suite full --llm
 
 ---
 
-### E3: 测试与评估底座
+### E0.5: 安全与卫生修复
 
-**目标:** 在继续增强 Agent 之前，先建立可回放、可比较、可回归的质量基线。  
-**为什么现在做:** 后续 Prompt、Memory、Planner 的改动都会改变行为，没有评估基线就无法判断是否退化。  
-**关联章节:** 第八章测试与评估体系。  
+**目标:** 修复不应带入后续开发阶段的安全和卫生问题。  
+**为什么现在做:** `config.yaml` 中 API Key 明文暴露，如果仓库公开或被其他人 fork 会立刻泄漏。这个问题不需要等 E10 的 Secret Store，现在就应该修复。  
 **依赖:** E2。
 
 任务清单：
 
-- [ ] 建立 `tests/fixtures/agent_cases/`，存放工具回放和固定任务用例
-- [ ] 实现工具回放测试 harness，模拟工具返回并断言下一步行为
-- [ ] 建立第一批固定任务基准集：代码阅读、精确修改、错误恢复、长上下文、项目规则、安全策略
-- [ ] 增加评估命令，例如 `zzm-agent eval --suite smoke`
-- [ ] 区分 replay / smoke / full 评估套件，默认评估不访问真实 LLM
+- [x] 将 `config.yaml` 中的 `api_key` 改为 `${OPENAI_API_KEY}` 或 `${DASHSCOPE_API_KEY}` 环境变量引用
+- [x] 在配置加载逻辑中实现 `${ENV_VAR}` 占位符解析（如尚未支持）
+- [x] 创建 `.env.example` 文件，说明需要设置的环境变量
+- [x] 确认 `.gitignore` 已包含 `.env`、`.zzm_agent/` 等敏感路径
+- [x] 已提交的历史中如有明文 Key，在文档中记录并建议用户轮换 Key
+
+验收标准：
+
+- [x] `config.yaml` 中不再包含任何明文 API Key
+- [x] 新用户 clone 后，根据 `.env.example` 设置环境变量即可启动
+- [x] CI 环境可通过注入环境变量运行测试
+
+---
+
+### E3a: 回放测试底座
+
+**目标:** 让 Agent Loop 的核心行为（工具调用、循环保护、错误恢复）在零 LLM 调用下可被确定性测试。  
+**为什么拆分:** 原 E3 范围过大，MockLLM 是后续所有测试的地基，应优先独立交付。  
+**关联章节:** 第八章 8.1-8.2。  
+**依赖:** E2。
+
+#### MockLLM / ReplayLLM 设计
+
+回放测试的核心是一个可替代真实 LLM client 的 mock 对象。它按预定义的 turn 序列返回固定 response，从而让 Agent Loop 的行为完全确定。
+
+```python
+@dataclass
+class ReplayTurn:
+    """One model response in a replay sequence."""
+    content: str = ""                       # 模型文本回复
+    tool_calls: list[dict] | None = None    # 模型请求的工具调用（可选）
+
+class ReplayLLM:
+    """Replays a fixed sequence of LLM responses for deterministic testing."""
+
+    def __init__(self, turns: list[ReplayTurn]):
+        self.turns = turns
+        self._cursor = 0
+
+    def create(self, **kwargs) -> MockResponse:
+        """Compatible with `client.chat.completions.create()`."""
+        if self._cursor >= len(self.turns):
+            return MockResponse(content="(no more replay turns)")
+        turn = self.turns[self._cursor]
+        self._cursor += 1
+        return turn.to_response(stream=kwargs.get("stream", False))
+```
+
+关键设计约束：
+
+- ReplayLLM 必须同时兼容 `stream=True` 和 `stream=False` 两种调用路径
+- 工具调用结果通过 `ToolRegistry.call()` 真实执行或通过 fixture mock
+- 每个测试用例是一个 `(ReplayLLM turns, mock tool results, assertions)` 三元组
+
+任务清单：
+
+- [ ] 建立 `tests/fixtures/agent_cases/` 目录
+- [ ] 实现 `ReplayTurn` 和 `ReplayLLM`，兼容 `client.chat.completions.create()` 的流式和非流式接口
+- [ ] 实现工具结果 mock 机制：给定 `(tool_name, args) → result` 映射表
+- [ ] 编写第一批核心回放测试用例：
+
+| # | 用例名 | 验证点 |
+|---|--------|--------|
+| 1 | `test_normal_tool_flow` | LLM 请求 `read_file` → 工具返回结果 → LLM 给出最终回复 |
+| 2 | `test_tool_error_recovery` | `read_file` 返回 ToolError → LLM 换用 `grep_search` |
+| 3 | `test_duplicate_call_stop` | 连续 3 次相同 `grep_search` → 被截断并输出提示 |
+| 4 | `test_iteration_limit` | 超过 `max_tool_iterations` → 被截断 |
+| 5 | `test_user_deny_high_risk` | `run_shell(rm ...)` 被拦截 → LLM 收到 "User denied" |
+
+- [ ] 所有回放测试可通过 `pytest tests/` 直接运行，不需要网络或 API Key
+
+验收标准：
+
+- `ReplayLLM` 可以替代 `OpenAI` client 驱动 `AgentLoop.run()`
+- 5 个核心回放用例全部通过
+- 任何修改 Agent Loop 工具调用逻辑的 PR 都可以靠这些测试快速回归
+- 测试运行耗时 < 5 秒，无外部依赖
+
+---
+
+### E3b: 基准集与评估命令
+
+**目标:** 在回放测试之上，建立可比较、可回归的质量基线和评估入口。  
+**为什么单独拆:** 基准集涉及真实 LLM 调用，与 E3a 的零成本测试有本质区别；eval 命令行是独立的 CLI 入口，适合单独交付。  
+**关联章节:** 第八章 8.3-8.7。  
+**依赖:** E3a。
+
+任务清单：
+
+- [ ] 建立第一批固定任务基准集（YAML 格式）：
+  - 代码阅读：给定文件，回答函数职责
+  - 精确修改：修改一个小函数并保持其他内容不变
+  - 错误恢复：工具失败后换一种方法继续
+  - 长上下文：历史压缩后仍记得用户原始目标
+  - 项目规则：`.zzm_agent/rules.md` 生效
+  - 安全策略：高风险 shell 命令被拦截或要求确认
+- [ ] 增加评估命令入口：`zzm-agent eval --suite replay|smoke|full`
+- [ ] `replay` 套件默认不访问真实 LLM，`smoke` 和 `full` 需要 `--llm` 显式开启
 - [ ] 真实 LLM 评估必须显式传入 `--llm` 或由发布流程触发
-- [ ] 记录回归指标：成功率、工具调用次数、重复调用次数、失败恢复率、pinned 信息保留率
+- [ ] 记录回归指标：成功率、工具调用次数、重复调用次数、失败恢复率
 - [ ] 在 CI 或本地测试命令中区分 deterministic tests 和 LLM evals
 
 验收标准：
 
-- 不依赖真实 LLM 的回放测试可以稳定运行
-- 每次修改 Agent Loop 或工具执行逻辑后，都能运行 smoke 基准集
+- `zzm-agent eval --suite replay` 可以稳定运行，运行成本为零
+- 每次修改 Agent Loop 或工具执行逻辑后，都能运行 replay 套件
 - `zzm-agent eval --suite smoke` 默认不产生真实模型调用成本
 - 评估输出包含可比较的指标，而不是只有自然语言总结
 
@@ -1148,10 +1270,10 @@ zzm-agent eval --suite full --llm
 
 ### E4: CLI 可观测性
 
-**目标:** 让用户清楚看到 Agent 当前正在执行什么、是否成功、耗时多久。  
+**目标:** 让用户清楚看到 Agent 当前正在执行什么、是否成功、耗时多久、花了多少钱。  
 **为什么现在做:** Agent 一旦具备执行能力，静默执行就是最影响信任感的问题。  
 **关联章节:** 3.2、5.1、5.2、5.4、7.1。  
-**依赖:** E2、E3。
+**依赖:** E2、E3a。
 
 任务清单：
 
@@ -1159,7 +1281,11 @@ zzm-agent eval --suite full --llm
 - [ ] CLI 层用 Rich `Live` 渲染工具执行状态面板
 - [ ] 流式输出改为缓冲型 Markdown 渲染，避免默认模式显示原始 `**bold**`
 - [ ] `file_edit` 执行后显示彩色 diff 预览
+- [ ] 多文件修改场景支持一次性展示所有变更的 diff
 - [ ] 日志系统接入工具调用事件，记录工具名、参数摘要、耗时和结果状态
+- [ ] 对话成本追踪：累计每轮 prompt_tokens、completion_tokens，转换为预估费用
+- [ ] 在状态栏或会话结束时展示本轮和累计 token 用量及预估费用
+- [ ] 批准授权使用工具时显示同意，再次会话中始终同意，拒绝三个选择，用户直接选择即可，不需要用户输入yes，no等
 
 验收标准：
 
@@ -1167,20 +1293,33 @@ zzm-agent eval --suite full --llm
 - 流式回复中的 Markdown 能在自然段落边界正确渲染
 - 文件修改后用户能看到 diff，而不是只能看最终回复
 - 工具执行日志能被测试和评估系统读取
+- 用户能在每轮对话后看到 token 用量
 
 ---
 
 ### E5: 上下文与 Token 管理
 
-**现状:** 使用 `len(text) / 4` 粗略估算 token 数，误差较大。  
+**现状:** 使用 `len(text) / 4` 粗略估算 token 数，误差较大（尤其中文场景）。  
 **目标:** 引入精确 token 计算、关键上下文 pinning，并让历史压缩从字符串截断升级为语义摘要。  
 **为什么现在做:** Prompt 管理、记忆检索和规划能力都依赖可靠上下文预算。  
 **关联章节:** 2.2、2.6、5.3。  
-**依赖:** E2、E3。
+**依赖:** E2、E3a。
+
+**⚠️ 风险提示：Tokenizer Fallback 链**
+
+`tiktoken` 不支持所有模型的编码器（例如当前使用的 `qwen3.5-plus`）。建议实现 fallback 链：
+
+```
+模型专用 tokenizer（如 qwen-tokenizer）→ tiktoken cl100k_base → len(text) / 4
+```
+
+不要假设 tiktoken 一定能命中当前模型的编码器；fallback 必须是显式设计，而不是 catch-all 异常处理。
+
+任务清单：
 
 - [ ] 在 `requirements.txt` 中添加 `tiktoken` 可选依赖
-- [ ] 实现 `TokenCounter` 类，根据模型名自动选择编码器
-- [ ] `MemoryStore.estimate_text_tokens` 优先使用 tiktoken，不可用时回退到字符估算
+- [ ] 实现 `TokenCounter` 类，支持 tokenizer fallback 链：模型专用 → tiktoken cl100k_base → `len/4`
+- [ ] `MemoryStore.estimate_text_tokens` 优先使用 `TokenCounter`，不可用时回退到字符估算
 - [ ] 调大默认 `max_context_tokens`，充分利用现代模型的长上下文窗口
 - [ ] 实现 `PinnedContext`，保存用户目标、关键约束、当前文件、错误核心行、未完成计划
 - [ ] History 超出预算时，优先压缩旧消息，而不是简单截断
@@ -1189,7 +1328,7 @@ zzm-agent eval --suite full --llm
 
 验收标准：
 
-- token 估算逻辑可针对不同模型选择编码器
+- token 估算逻辑可针对不同模型选择编码器，不支持的模型自动 fallback
 - 压缩前后 pinned 信息不会丢失
 - 长会话超过预算时，旧消息会被压缩为保留文件路径、决策、错误信息的摘要
 - 用户能在 CLI 中看到当前上下文使用量
@@ -1258,7 +1397,18 @@ zzm-agent eval --suite full --llm
 **关联章节:** 3.5、3.6、4.5、4.6、5.5。  
 **依赖:** E4。
 
-- [ ] 将 Agent Loop 主路径升级为 async，支持 async/sync 工具混合执行
+**⚠️ 风险提示：Async 迁移策略**
+
+从 sync 到 async 是一次影响面大的改动，会波及所有测试。建议采用以下策略降低风险：
+
+1. **保留 `run()` 同步入口**：对外 API 不变，内部用 `asyncio.run(self._async_run(...))` 包装
+2. 现有测试不需要改成 async 就能继续工作
+3. 新增 `async_run()` 方法供需要 async 上下文的调用方使用
+4. 工具注册时标记 `is_async=True/False`，async 工具直接 await，sync 工具走 `asyncio.to_thread()`
+
+任务清单：
+
+- [ ] 将 Agent Loop 主路径升级为 async，保留 `run()` 同步入口以兼容现有调用方
 - [ ] 同步工具通过 `asyncio.to_thread()` 或线程池执行，不能直接阻塞 event loop
 - [ ] 文件 IO、shell 执行、索引构建等阻塞操作统一走 sync-to-async 包装器
 - [ ] 增加 cancellation token，用户中断时能取消未完成工具
@@ -1278,11 +1428,13 @@ zzm-agent eval --suite full --llm
 - [ ] 新增 `check_process` 工具：查询后台进程的状态和最近输出
 - [ ] 新增 `stop_process` 工具：终止后台进程
 - [ ] 进程注册表管理，Agent 退出时自动清理子进程
+- [ ] 新增 Git 集成工具：`git_status`、`git_diff`、`git_commit`（对编程助手是核心能力）
 - [ ] 支持多行输入：`"""` 多行模式、`@file:path` 文件输入、管道输入
 
 验收标准：
 
 - Agent Loop 可以在 async 模式下运行，并兼容现有同步工具
+- `run()` 同步入口仍然可用，现有测试无需改为 async
 - 慢文件 IO 或慢 shell 执行期间，CLI Spinner、事件回调和取消信号仍能响应
 - 多个只读工具调用可以并发执行，写操作和 shell 操作仍保持安全串行
 - 用户中断时，未完成工具能被取消或进入明确的停止状态
@@ -1292,6 +1444,7 @@ zzm-agent eval --suite full --llm
 - 能启动一个长时间运行命令，并在后续轮次继续查询状态
 - Agent 退出时不会留下不可控子进程
 - CLI 能展示后台进程的运行状态和最近输出
+- `git_status`、`git_diff` 能正确工作并返回结构化结果
 
 ---
 
@@ -1303,11 +1456,28 @@ zzm-agent eval --suite full --llm
 **关联章节:** 2.4、3.4。  
 **依赖:** E6、E7、E8。
 
+**🔴 架构约束：Planner 必须在 AgentLoop 外层编排**
+
+plan-execute 模式与当前 ReAct 循环是两套不同的执行模型。如果直接在 `agent_loop.py` 中嵌入 Planner 逻辑，核心循环会变得极其复杂且难以测试。
+
+正确的做法是让 Planner 在 AgentLoop **外部**做编排：
+
+```
+Planner.plan(user_goal) → [step1, step2, step3]
+for step in steps:
+    result = AgentLoop.run(step.instruction)  # 每个子任务走现有 AgentLoop
+    Planner.reflect(step, result)             # 回顾并动态调整后续步骤
+```
+
+AgentLoop 本身只负责单轮 ReAct 循环，不需要知道自己是被 Planner 调度的。
+
+任务清单：
+
 - [ ] 实现 `WorkingMemory`：保存 notes、findings、plan、completed
 - [ ] 每轮 LLM 调用时注入当前 Working Memory
 - [ ] 实现 `Planner` 模块：接收用户目标，输出步骤列表
-- [ ] Agent Loop 支持 plan-execute 模式：先规划再逐步执行
-- [ ] 每步执行后回顾计划，动态调整后续步骤
+- [ ] `Planner` 在 AgentLoop 外部编排子任务，不修改 AgentLoop 核心循环
+- [ ] 每步执行后调用 `Planner.reflect()` 回顾结果，动态调整后续步骤
 - [ ] 支持用户中途干预：确认 / 修改 / 跳过某步骤
 
 验收标准：
@@ -1315,6 +1485,7 @@ zzm-agent eval --suite full --llm
 - 对复杂任务，Agent 能生成可见计划并逐步更新进度
 - 中途工具失败后，Agent 能根据 findings 调整后续步骤
 - 用户可以修改计划，Agent 后续执行会基于修改后的计划继续
+- `AgentLoop.run()` 的接口和内部逻辑不因 Planner 引入而改变
 
 ---
 
@@ -1324,7 +1495,16 @@ zzm-agent eval --suite full --llm
 **目标:** 完成 "评估 → 分析 → 生成新 prompt → 应用" 的完整闭环，并扩展模型、联网和生产安全边界。  
 **为什么最后做:** 这些能力价值高，但会显著扩大配置复杂度和安全面，应该在核心闭环稳定后推进。  
 **关联章节:** 第一章 Prompt 系统、第六章配置系统、第七章错误处理、第八章测试与评估、Evolution 模块、Web 能力、安全加固。  
-**依赖:** E3-E9。
+**依赖:** E3b-E9。
+
+**🔴 安全红线：auto-evolve 仅做候选生成，禁止自动应用**
+
+LLM 自己优化自己的 prompt 在学术界仍无定论，生产环境中容易退化且难以调试。必须遵守以下红线：
+
+1. auto-evolve 只自动生成候选 prompt + 评估报告，**永远不自动写入生产配置**
+2. 任何 prompt 变更必须经过人工确认或至少通过固定基准集的回归门禁
+3. `/evolve apply` 必须是显式的用户操作，不允许后台静默切换
+4. 每次变更保留回滚点，`/evolve rollback` 必须能一键恢复
 
 - [ ] 实现 `optimize()`：基于历史评估记录，让 LLM 自省并生成改进后的 system_prompt
 - [ ] 加入 prompt A/B 对比验证：新旧 prompt 分别回答相同问题，选择更好的

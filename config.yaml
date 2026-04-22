@@ -1,7 +1,8 @@
 model:
-  base_url: "https://coding.dashscope.aliyuncs.com/v1"
-  api_key: "sk-sp-0000000000000000000000000000000000"
-  model_name: "qwen3.5-plus"
+  # 你可以通过 .env 文件覆盖这三个核心配置，这里设定了默认的回退值(:-后面部分)
+  base_url: "${LLM_BASE_URL}"
+  api_key: "${LLM_API_KEY}"
+  model_name: "${LLM_MODEL_NAME}"
   temperature: 0.7
   max_tokens: 4096
 
