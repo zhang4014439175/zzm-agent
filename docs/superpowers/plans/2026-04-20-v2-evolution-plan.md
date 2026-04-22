@@ -1246,18 +1246,18 @@ class ReplayLLM:
 
 任务清单：
 
-- [ ] 建立第一批固定任务基准集（YAML 格式）：
+- [x] 建立第一批固定任务基准集（YAML 格式）：
   - 代码阅读：给定文件，回答函数职责
   - 精确修改：修改一个小函数并保持其他内容不变
   - 错误恢复：工具失败后换一种方法继续
   - 长上下文：历史压缩后仍记得用户原始目标
   - 项目规则：`.zzm_agent/rules.md` 生效
   - 安全策略：高风险 shell 命令被拦截或要求确认
-- [ ] 增加评估命令入口：`zzm-agent eval --suite replay|smoke|full`
-- [ ] `replay` 套件默认不访问真实 LLM，`smoke` 和 `full` 需要 `--llm` 显式开启
-- [ ] 真实 LLM 评估必须显式传入 `--llm` 或由发布流程触发
-- [ ] 记录回归指标：成功率、工具调用次数、重复调用次数、失败恢复率
-- [ ] 在 CI 或本地测试命令中区分 deterministic tests 和 LLM evals
+- [x] 增加评估命令入口：`zzm-agent eval --suite replay|smoke|full`
+- [x] `replay` 套件默认不访问真实 LLM，`smoke` 和 `full` 需要 `--llm` 显式开启
+- [x] 真实 LLM 评估必须显式传入 `--llm` 或由发布流程触发
+- [x] 记录回归指标：成功率、工具调用次数、重复调用次数、失败恢复率
+- [x] 在 CI 或本地测试命令中区分 deterministic tests 和 LLM evals
 
 验收标准：
 

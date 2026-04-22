@@ -24,35 +24,25 @@ _ENV_VALUE_PATTERN = re.compile(r"^\$\{([A-Za-z_][A-Za-z0-9_]*)(?::-(.*))?\}$")
 
 
 def parse_args(argv: list[str] | None = None) -> argparse.Namespace:
-    """
-    Parse bootstrap CLI flags before the interactive loop starts.
-
-    Args:
-        argv: Optional argument vector for tests and embedding.
-
-    Returns:
-        Parsed CLI arguments namespace.
-    """
-    # Keep CLI bootstrap flags centralized so session selection happens
-    # before config loading and REPL startup.
+    import sys
     parser = argparse.ArgumentParser(description="zzm-agent")
-    parser.add_argument(
-        "--session",
-        dest="session_id",
-        # Reuse an existing session when present; otherwise create it so the
-        # rest of the runtime can treat explicit session selection uniformly.
-        help="Resume or create a specific session id.",
-    )
-    parser.add_argument(
-        "--config",
-        dest="config_path",
-        help="Path to the YAML config file.",
-    )
-    parser.add_argument(
-        "--safe",
-        action="store_true",
-        help="Require confirmation for medium-risk tools in addition to high-risk tools.",
-    )
+    subparsers = parser.add_subparsers(dest="command", help="Available commands")
+    
+    repl_parser = subparsers.add_parser("repl", help="Start the interactive REPL loop (default)")
+    repl_parser.add_argument("--session", dest="session_id", help="Resume or create a specific session id.")
+    repl_parser.add_argument("--config", dest="config_path", help="Path to the YAML config file.")
+    repl_parser.add_argument("--safe", action="store_true", help="Require confirmation for medium-risk tools in addition to high-risk tools.")
+    
+    eval_parser = subparsers.add_parser("eval", help="Run the evaluation suite")
+    eval_parser.add_argument("--suite", choices=["replay", "smoke", "full"], required=True, help="Evaluation suite to run.")
+    eval_parser.add_argument("--llm", action="store_true", help="Enable real LLM for smoke/full suites")
+    eval_parser.add_argument("--config", dest="config_path", help="Path to the YAML config file.")
+
+    if argv is None:
+        argv = sys.argv[1:]
+    if not argv or argv[0] not in ["repl", "eval"]:
+        argv = ["repl"] + argv
+
     return parser.parse_args(argv)
 
 
@@ -308,15 +298,14 @@ def run_repl(runtime: dict[str, Any]) -> int:
 
 
 def main(argv: list[str] | None = None) -> int:
-    """
-    Start the interactive REPL loop.
-
-    Returns:
-        Process exit code. ``0`` for normal termination.
-    """
     try:
         args = parse_args(argv)
         cfg = load_config(args.config_path)
+        
+        if getattr(args, "command", "repl") == "eval":
+            from zzm_agent.eval.runner import run_eval
+            return run_eval(args.suite, args.llm, cfg)
+            
         runtime = build_runtime(args, cfg)
         return run_repl(runtime)
     except StorageCorruptionError as exc:

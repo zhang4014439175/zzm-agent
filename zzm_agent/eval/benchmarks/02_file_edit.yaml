@@ -1,0 +1,43 @@
+name: "file_edit"
+description: "精确修改：修改一个小函数并保持其他内容不变"
+task: "请修改 utils.py，把 multiply 函数改成返回 a * b * 2，其他内容不要改动。"
+initial_files:
+  "utils.py": |
+    def add(a, b):
+        return a + b
+    
+    def multiply(a, b):
+        return a * b
+    
+    def subtract(a, b):
+        return a - b
+replay_turns:
+  - tool_calls:
+      - name: "read_file"
+        arguments:
+          path: "utils.py"
+  - tool_calls:
+      - name: "file_edit"
+        arguments:
+          path: "utils.py"
+          target: "def multiply(a, b):\n    return a * b"
+          replacement: "def multiply(a, b):\n    return a * b * 2"
+  - content: "已经修改完成。"
+mock_tool_results:
+  - name: "read_file"
+    arguments:
+      path: "utils.py"
+    result: "def add(a, b):\n    return a + b\n\ndef multiply(a, b):\n    return a * b\n\ndef subtract(a, b):\n    return a - b\n"
+  - name: "file_edit"
+    arguments:
+      path: "utils.py"
+      target: "def multiply(a, b):\n    return a * b"
+      replacement: "def multiply(a, b):\n    return a * b * 2"
+    result: "修改成功"
+expected:
+  expected_tool_calls:
+    - "read_file"
+    - "file_edit"
+  forbidden_tool_calls:
+    - "write_file"
+  output_match: "完成"

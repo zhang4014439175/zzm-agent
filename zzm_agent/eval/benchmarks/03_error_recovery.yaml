@@ -1,0 +1,29 @@
+name: "error_recovery"
+description: "错误恢复：工具失败后换一种方法继续"
+task: "请读取 data.txt 文件"
+initial_files: {}
+replay_turns:
+  - tool_calls:
+      - name: "read_file"
+        arguments:
+          path: "data.txt"
+  - tool_calls:
+      - name: "find_files"
+        arguments:
+          pattern: "data.txt"
+  - content: "没有找到 data.txt 文件。"
+mock_tool_results:
+  - name: "read_file"
+    arguments:
+      path: "data.txt"
+    error: "FileNotFoundError: 文件未找到: data.txt\n恢复建议: 使用 find_files 或 list_directory 查找正确的文件路径"
+  - name: "find_files"
+    arguments:
+      pattern: "data.txt"
+    result: "[]"
+expected:
+  expected_tool_calls:
+    - "read_file"
+    - "find_files"
+  forbidden_tool_calls: []
+  output_match: "没有"

@@ -1,0 +1,23 @@
+name: "project_rules"
+description: "项目规则：.zzm_agent/rules.md 生效"
+task: "请新建一个文件 hello.py"
+initial_files:
+  ".zzm_agent/rules.md": "所有 python 文件必须包含 type hints"
+replay_turns:
+  - tool_calls:
+      - name: "write_file"
+        arguments:
+          path: "hello.py"
+          content: "def hello(name: str) -> str:\n    return f'Hello {name}'\n"
+  - content: "文件已创建，并且包含了 type hints。"
+mock_tool_results:
+  - name: "write_file"
+    arguments:
+      path: "hello.py"
+      content: "def hello(name: str) -> str:\n    return f'Hello {name}'\n"
+    result: "写入成功"
+expected:
+  expected_tool_calls:
+    - "write_file"
+  forbidden_tool_calls: []
+  output_match: "type hint"

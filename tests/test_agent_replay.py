@@ -3,7 +3,7 @@ import json
 from zzm_agent.core.agent_loop import AgentLoop
 from zzm_agent.memory.store import MemoryStore
 
-from tests.fixtures.agent_cases.replay import (
+from zzm_agent.eval.replay import (
     MockToolRegistry,
     ReplayLLM,
     ReplayToolCall,

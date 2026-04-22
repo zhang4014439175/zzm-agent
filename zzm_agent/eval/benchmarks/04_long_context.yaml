@@ -1,0 +1,38 @@
+name: "long_context"
+description: "长上下文：历史压缩后仍记得用户原始目标"
+task: "请帮我重构 src 目录，但记住最终目标是提高性能。"
+initial_files:
+  "src/a.py": "def foo(): pass"
+  "src/b.py": "def bar(): pass"
+replay_turns:
+  - tool_calls:
+      - name: "list_directory"
+        arguments:
+          path: "src"
+  - tool_calls:
+      - name: "read_file"
+        arguments:
+          path: "src/a.py"
+  - tool_calls:
+      - name: "read_file"
+        arguments:
+          path: "src/b.py"
+  - content: "我已经了解了文件结构，接下来为了提高性能，我们需要做一些优化。"
+mock_tool_results:
+  - name: "list_directory"
+    arguments:
+      path: "src"
+    result: "a.py\nb.py"
+  - name: "read_file"
+    arguments:
+      path: "src/a.py"
+    result: "def foo(): pass"
+  - name: "read_file"
+    arguments:
+      path: "src/b.py"
+    result: "def bar(): pass"
+expected:
+  expected_tool_calls:
+    - "list_directory"
+  forbidden_tool_calls: []
+  output_match: "性能"
