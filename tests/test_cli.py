@@ -1,5 +1,13 @@
 from zzm_agent.cli_support.commands import handle_slash
-from zzm_agent.cli_support.runtime import get_agent_loop_policy, load_config, parse_args
+from zzm_agent.cli_support.observability import CliObserver
+from zzm_agent.cli_support.runtime import (
+    build_tool_confirmation_callback,
+    _ask_tool_approval_choice,
+    get_agent_loop_policy,
+    load_config,
+    parse_args,
+)
+from zzm_agent.core.observability import TokenUsage, tool_end_event, tool_start_event
 from zzm_agent.core.tool_registry import ToolRegistry
 from zzm_agent.memory.store import MemoryStore
 
@@ -54,6 +62,40 @@ class DummyConsole:
         if self.inputs:
             return self.inputs.pop(0)
         return ""
+
+
+def test_questionary_choice_default_is_valid(monkeypatch):
+    calls = {}
+
+    class DummyQuestionary:
+        class Choice:
+            def __init__(self, title, value):
+                self.title = title
+                self.value = value
+
+        @staticmethod
+        def select(message, choices, default, qmark, pointer):
+            calls["default"] = default
+            calls["values"] = [choice.value for choice in choices]
+
+            class Prompt:
+                def ask(self):
+                    return default
+
+            return Prompt()
+
+    monkeypatch.setitem(__import__("sys").modules, "questionary", DummyQuestionary)
+
+    class RichLikeConsole:
+        pass
+
+    import rich.console
+
+    monkeypatch.setattr(rich.console, "Console", RichLikeConsole)
+
+    assert _ask_tool_approval_choice(RichLikeConsole()) == "3"
+    assert calls["default"] == "3"
+    assert "3" in calls["values"]
 
 
 def test_parse_args_supports_session_flag():
@@ -128,6 +170,83 @@ def test_agent_loop_policy_clamps_values_to_at_least_one():
         "duplicate_tool_call_limit": 1,
         "max_tool_retries": 0,
     }
+
+
+def test_tool_confirmation_supports_allow_once_choice():
+    console = DummyConsole()
+    console.inputs = ["1"]
+    confirm = build_tool_confirmation_callback(console)
+
+    assert confirm("wipe", {"target": "demo"}, "high") is True
+    assert any("Tool approval required" in line for line in console.lines)
+    assert any("Allow once" in line and "Deny" in line for line in console.lines)
+
+
+def test_tool_confirmation_supports_session_allow_choice():
+    console = DummyConsole()
+    console.inputs = ["2"]
+    confirm = build_tool_confirmation_callback(console)
+
+    assert confirm("wipe", {"target": "demo"}, "high") is True
+    assert confirm("wipe", {"target": "demo"}, "high") is True
+    assert console.inputs == []
+    assert any("remembered approval" in line for line in console.lines)
+
+
+def test_tool_confirmation_denies_by_default():
+    console = DummyConsole()
+    confirm = build_tool_confirmation_callback(console)
+
+    assert confirm("wipe", {"target": "demo"}, "high") is False
+
+
+def test_cli_observer_collects_file_edit_diff(tmp_path):
+    path = tmp_path / "demo.txt"
+    path.write_text("old\n", encoding="utf-8")
+    observer = CliObserver(DummyConsole(), workspace_root=tmp_path)
+
+    observer.on_tool_start(
+        tool_start_event(
+            tool_name="file_edit",
+            tool_call_id="call_1",
+            arguments={"path": "demo.txt", "target": "old", "replacement": "new"},
+            risk_level="medium",
+        )
+    )
+    path.write_text("new\n", encoding="utf-8")
+    observer.on_tool_end(
+        tool_end_event(
+            tool_name="file_edit",
+            tool_call_id="call_1",
+            arguments={"path": "demo.txt", "target": "old", "replacement": "new"},
+            risk_level="medium",
+            status="success",
+            duration_ms=1.0,
+            result="ok",
+            attempts=1,
+        )
+    )
+
+    assert len(observer._diffs) == 1
+    assert "-old" in observer._diffs[0][1]
+    assert "+new" in observer._diffs[0][1]
+
+
+def test_cli_observer_renders_usage_with_configured_pricing():
+    console = DummyConsole()
+    observer = CliObserver(
+        console,
+        workspace_root=".",
+        input_price_per_1m=1.0,
+        output_price_per_1m=2.0,
+    )
+
+    observer.render_usage(
+        TokenUsage(prompt_tokens=1000, completion_tokens=1000, total_tokens=2000, source="api"),
+        TokenUsage(prompt_tokens=1000, completion_tokens=1000, total_tokens=2000, source="api"),
+    )
+
+    assert console.lines
 
 
 def test_handle_slash_new_and_switch_session(tmp_path):

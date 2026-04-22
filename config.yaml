@@ -5,6 +5,9 @@ model:
   model_name: "${LLM_MODEL_NAME}"
   temperature: 0.7
   max_tokens: 4096
+  # Optional pricing for CLI cost estimates, in USD per 1M tokens.
+  input_price_per_1m: 0
+  output_price_per_1m: 0
 
 agent:
   system_prompt: "你是 zzm-agent，一个简洁高效的个人助理。"

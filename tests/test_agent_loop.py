@@ -3,6 +3,7 @@ import pytest
 from unittest.mock import MagicMock
 from types import SimpleNamespace
 from zzm_agent.core.agent_loop import AgentLoop
+from zzm_agent.core.observability import ToolEventLogger, read_tool_event_log
 from zzm_agent.core.tool_registry import ToolRegistry
 from zzm_agent.memory.store import MemoryStore
 
@@ -38,6 +39,17 @@ def make_response(content=None, tool_calls=None):
     
     resp = MagicMock()
     resp.choices = [choice]
+    resp.usage = None
+    return resp
+
+
+def make_response_with_usage(content=None, tool_calls=None, prompt=0, completion=0):
+    resp = make_response(content=content, tool_calls=tool_calls)
+    resp.usage = SimpleNamespace(
+        prompt_tokens=prompt,
+        completion_tokens=completion,
+        total_tokens=prompt + completion,
+    )
     return resp
 
 
@@ -80,6 +92,46 @@ def test_simple_reply(registry, store):
     assert store.load_history()[-1]["content"] == "Hello!"
 
 
+def test_agent_loop_tracks_api_token_usage(registry, store):
+    loop = AgentLoop(
+        client=MagicMock(),
+        model="test-model",
+        system_prompt="You are helpful.",
+        registry=registry,
+        store=store,
+    )
+    loop.client.chat.completions.create.return_value = make_response_with_usage(
+        content="Hello!",
+        prompt=12,
+        completion=5,
+    )
+
+    result = loop.run("Hi", stream=False)
+
+    assert result == "Hello!"
+    assert loop.last_turn_usage.prompt_tokens == 12
+    assert loop.last_turn_usage.completion_tokens == 5
+    assert loop.last_turn_usage.total_tokens == 17
+    assert loop.last_turn_usage.source == "api"
+    assert loop.cumulative_usage.total_tokens == 17
+
+
+def test_agent_loop_estimates_token_usage_when_provider_omits_usage(registry, store):
+    loop = AgentLoop(
+        client=MagicMock(),
+        model="test-model",
+        system_prompt="You are helpful.",
+        registry=registry,
+        store=store,
+    )
+    loop.client.chat.completions.create.return_value = make_response(content="Hello!")
+
+    loop.run("Hi", stream=False)
+
+    assert loop.last_turn_usage.total_tokens > 0
+    assert loop.last_turn_usage.source == "estimated"
+
+
 def test_tool_call_then_reply(registry, store):
     """Test the loop when the model requests a tool call before responding."""
     # Mock tool call object
@@ -112,6 +164,105 @@ def test_tool_call_then_reply(registry, store):
     assert len(history) == 4
     assert history[2]["role"] == "tool"
     assert history[2]["content"] == "ECHO:world"
+
+
+def test_tool_callbacks_receive_start_and_end_events(registry, store):
+    tool_call = MagicMock()
+    tool_call.id = "call_1"
+    tool_call.function.name = "echo"
+    tool_call.function.arguments = json.dumps({"text": "world"})
+    events = []
+
+    loop = AgentLoop(
+        client=MagicMock(),
+        model="test-model",
+        system_prompt="sys",
+        registry=registry,
+        store=store,
+        on_tool_start=events.append,
+        on_tool_end=events.append,
+        on_tool_error=events.append,
+    )
+    loop.client.chat.completions.create.side_effect = [
+        make_response(tool_calls=[tool_call]),
+        make_response(content="Done!"),
+    ]
+
+    result = loop.run("call echo", stream=False)
+
+    assert result == "Done!"
+    assert [event.event_name for event in events] == ["tool.start", "tool.end"]
+    assert events[0].tool_name == "echo"
+    assert events[0].arguments_summary == {"text": "world"}
+    assert events[1].status == "success"
+    assert events[1].duration_ms >= 0
+    assert events[1].result_preview == "ECHO:world"
+
+
+def test_tool_callbacks_receive_error_events(tmp_path):
+    registry = ToolRegistry()
+
+    @registry.tool(description="explode")
+    def explode(value: str) -> str:
+        raise ValueError(f"bad value: {value}")
+
+    store = MemoryStore(path=tmp_path / "memory.json", max_history=10)
+    tool_call = MagicMock()
+    tool_call.id = "call_1"
+    tool_call.function.name = "explode"
+    tool_call.function.arguments = json.dumps({"value": "x"})
+    errors = []
+
+    loop = AgentLoop(
+        client=MagicMock(),
+        model="test-model",
+        system_prompt="sys",
+        registry=registry,
+        store=store,
+        on_tool_error=errors.append,
+    )
+    loop.client.chat.completions.create.side_effect = [
+        make_response(tool_calls=[tool_call]),
+        make_response(content="handled"),
+    ]
+
+    assert loop.run("explode", stream=False) == "handled"
+    assert len(errors) == 1
+    assert errors[0].event_name == "tool.error"
+    assert errors[0].tool_name == "explode"
+    assert errors[0].error_type == "ValueError"
+    assert "bad value" in errors[0].error_message
+
+
+def test_tool_event_logger_writes_jsonl(registry, store, tmp_path):
+    tool_call = MagicMock()
+    tool_call.id = "call_1"
+    tool_call.function.name = "echo"
+    tool_call.function.arguments = json.dumps({"text": "logged"})
+    log_path = tmp_path / "tool_events.jsonl"
+    logger = ToolEventLogger(log_path)
+
+    loop = AgentLoop(
+        client=MagicMock(),
+        model="test-model",
+        system_prompt="sys",
+        registry=registry,
+        store=store,
+        on_tool_start=logger,
+        on_tool_end=logger,
+    )
+    loop.client.chat.completions.create.side_effect = [
+        make_response(tool_calls=[tool_call]),
+        make_response(content="Done!"),
+    ]
+
+    loop.run("call echo", stream=False)
+
+    records = read_tool_event_log(log_path)
+    assert [record["event_name"] for record in records] == ["tool.start", "tool.end"]
+    assert records[0]["tool_name"] == "echo"
+    assert records[0]["arguments_summary"] == {"text": "logged"}
+    assert records[1]["status"] == "success"
 
 
 def test_agent_loop_stops_at_max_tool_iterations(registry, store):
@@ -427,7 +578,7 @@ def test_high_risk_tool_requires_approval(tmp_path):
     assert history[2]["content"] == "User denied tool execution."
 
 
-def test_medium_risk_tool_runs_without_safe_mode(tmp_path):
+def test_medium_risk_tool_requires_approval_by_default(tmp_path):
     registry = ToolRegistry()
 
     @registry.tool(description="中风险工具", risk_level="medium")
@@ -440,7 +591,6 @@ def test_medium_risk_tool_runs_without_safe_mode(tmp_path):
     tool_call.function.name = "edit"
     tool_call.function.arguments = json.dumps({"target": "demo"})
 
-    confirm_calls = []
     loop = AgentLoop(
         client=MagicMock(),
         model="test-model",
@@ -448,18 +598,17 @@ def test_medium_risk_tool_runs_without_safe_mode(tmp_path):
         registry=registry,
         store=store,
         safe_mode=False,
-        confirm_tool=lambda name, arguments, risk: confirm_calls.append((name, risk)),
+        confirm_tool=lambda name, arguments, risk: False,
     )
     loop.client.chat.completions.create.side_effect = [
         make_response(tool_calls=[tool_call]),
-        make_response(content="ok"),
+        make_response(content="Denied handled."),
     ]
 
     result = loop.run("edit", stream=False)
 
-    assert result == "ok"
-    assert confirm_calls == []
-    assert store.load_history()[2]["content"] == "EDITED:demo"
+    assert result == "Denied handled."
+    assert store.load_history()[2]["content"] == "User denied tool execution."
 
 
 def test_medium_risk_tool_requires_approval_in_safe_mode(tmp_path):

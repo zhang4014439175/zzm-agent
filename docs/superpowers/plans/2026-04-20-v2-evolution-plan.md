@@ -10,6 +10,8 @@
 |------|----------|
 | 2026-04-20 | 初版，E1-E10 路线图 |
 | 2026-04-22 | 代码审计补充：E3 拆分为 E3a/E3b；新增前置修复任务 E0.5；E4 补充对话成本追踪、结构化输出；E5 补充 tokenizer fallback 链；E8 补充 async 兼容层策略和 Git 工具；E9 补充 Planner 架构约束；E10 补充 auto-evolve 安全红线；新增目标目录结构 |
+| 2026-04-22 | 完成 E4 CLI 可观测性：工具事件、Rich Live 状态、缓冲 Markdown、diff 预览、工具事件日志、token/费用展示和审批选项 |
+| 2026-04-22 | E4 CLI 体验增强：授权菜单接入 Questionary 上下键选择，REPL 输入接入 prompt_toolkit 历史记录，Rich 面板统一圆角、padding、柔和配色和 JSON 高亮 |
 
 ---
 
@@ -1054,7 +1056,7 @@ zzm-agent eval --suite full --llm
 | 1.5 | E0.5 安全与卫生修复 | P0 | 修复明文 API Key 等不应带入后续阶段的安全和卫生问题 | API Key 环境变量化、.env.example、.gitignore 补全 | E2 |
 | 2 | E3a 回放测试底座 | P0 | 让 Agent Loop 的行为可在零 LLM 调用下被测试 | MockLLM/ReplayLLM、核心回放用例、fixtures 目录 | E2 |
 | 2.5 | E3b 基准集与评估命令 | P0 | 建立可比较、可回归的质量基线 | 固定任务基准集、eval 命令行、回归指标记录 | E3a |
-| 3 | E4 CLI 可观测性 | P0 | 让用户看得见 Agent 正在做什么 | 3.2 工具事件回调、5.2 工具状态面板、5.1 流式 Markdown、5.4 Diff 预览、对话成本追踪、日志 | E2、E3a |
+| 3 | E4 CLI 可观测性 | 已完成 | 让用户看得见 Agent 正在做什么 | 3.2 工具事件回调、5.2 工具状态面板、5.1 流式 Markdown、5.4 Diff 预览、对话成本追踪、日志 | E2、E3a |
 | 4 | E5 上下文与 Token 管理 | P0 | 让长会话不再靠粗略估算和硬截断 | 2.2 History 压缩、2.6 Pinning、Token 精确计算（含 fallback 链）、5.3 状态栏 | E2、E3a |
 | 5 | E6 PromptManager 与环境适配 | P1 | 让 Agent 能根据项目、任务和运行环境调整行为 | 1.1 Prompt 模板、1.2 动态组装、1.3 意图检测、1.4 项目规则、1.5 环境适配 | E5 |
 | 6 | E7 记忆与检索升级 | P1 | 让记忆真正能被沉淀、召回和利用 | 2.1 Episodic 摘要、2.3 自动记忆、2.5 重要性评分、语义/混合检索 | E5、E6 |
@@ -1273,19 +1275,20 @@ class ReplayLLM:
 **目标:** 让用户清楚看到 Agent 当前正在执行什么、是否成功、耗时多久、花了多少钱。  
 **为什么现在做:** Agent 一旦具备执行能力，静默执行就是最影响信任感的问题。  
 **关联章节:** 3.2、5.1、5.2、5.4、7.1。  
-**依赖:** E2、E3a。
+**依赖:** E2、E3a。  
+**当前状态:** 已完成。已通过工具事件回调、Rich Live 状态面板、缓冲 Markdown、diff 预览、JSONL 工具事件日志、token/费用汇总和三选项工具授权覆盖验收标准；medium / high 风险工具默认弹出授权卡，`auto_approve` 显式开启时才跳过。CLI 体验已补充 Questionary 授权菜单、prompt_toolkit 输入历史，以及圆角面板、padding、柔和配色和 JSON 高亮。
 
 任务清单：
 
-- [ ] 在 `AgentLoop` 增加 `on_tool_start`、`on_tool_end`、`on_tool_error` 事件回调
-- [ ] CLI 层用 Rich `Live` 渲染工具执行状态面板
-- [ ] 流式输出改为缓冲型 Markdown 渲染，避免默认模式显示原始 `**bold**`
-- [ ] `file_edit` 执行后显示彩色 diff 预览
-- [ ] 多文件修改场景支持一次性展示所有变更的 diff
-- [ ] 日志系统接入工具调用事件，记录工具名、参数摘要、耗时和结果状态
-- [ ] 对话成本追踪：累计每轮 prompt_tokens、completion_tokens，转换为预估费用
-- [ ] 在状态栏或会话结束时展示本轮和累计 token 用量及预估费用
-- [ ] 批准授权使用工具时显示同意，再次会话中始终同意，拒绝三个选择，用户直接选择即可，不需要用户输入yes，no等
+- [x] 在 `AgentLoop` 增加 `on_tool_start`、`on_tool_end`、`on_tool_error` 事件回调
+- [x] CLI 层用 Rich `Live` 渲染工具执行状态面板
+- [x] 流式输出改为缓冲型 Markdown 渲染，避免默认模式显示原始 `**bold**`
+- [x] `file_edit` 执行后显示彩色 diff 预览
+- [x] 多文件修改场景支持一次性展示所有变更的 diff
+- [x] 日志系统接入工具调用事件，记录工具名、参数摘要、耗时和结果状态
+- [x] 对话成本追踪：累计每轮 prompt_tokens、completion_tokens，转换为预估费用
+- [x] 在状态栏或会话结束时展示本轮和累计 token 用量及预估费用
+- [x] 批准授权使用工具时显示同意，再次会话中始终同意，拒绝三个选择，用户直接选择即可，不需要用户输入yes，no等
 
 验收标准：
 

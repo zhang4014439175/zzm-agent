@@ -1,12 +1,32 @@
 import json
+from dataclasses import dataclass
+from time import perf_counter
 from typing import TYPE_CHECKING, Any, Callable
 
 from zzm_agent.core.errors import ToolError, tool_error_from_exception
+from zzm_agent.core.observability import (
+    TokenUsage,
+    ToolEvent,
+    ToolEventCallback,
+    tool_end_event,
+    tool_error_event,
+    tool_start_event,
+)
 
 if TYPE_CHECKING:
     from openai import OpenAI
     from zzm_agent.core.tool_registry import ToolRegistry
     from zzm_agent.memory.store import MemoryStore
+
+
+@dataclass
+class _ToolExecutionOutcome:
+    """Internal result of one registry tool invocation."""
+
+    content: str
+    success: bool
+    attempts: int = 1
+    error: ToolError | None = None
 
 
 class AgentLoop:
@@ -33,6 +53,9 @@ class AgentLoop:
         max_tool_iterations: int = 20,
         duplicate_tool_call_limit: int = 3,
         max_tool_retries: int = 1,
+        on_tool_start: ToolEventCallback | None = None,
+        on_tool_end: ToolEventCallback | None = None,
+        on_tool_error: ToolEventCallback | None = None,
     ):
         """
         Initialize the AgentLoop.
@@ -46,6 +69,9 @@ class AgentLoop:
             max_tool_iterations: Maximum model tool-call rounds before stopping.
             duplicate_tool_call_limit: Consecutive identical calls before stopping.
             max_tool_retries: Automatic retries for retryable tool execution errors.
+            on_tool_start: Callback for structured tool start events.
+            on_tool_end: Callback for successful or denied tool completion events.
+            on_tool_error: Callback for failed tool completion events.
         """
         self.client = client
         self.model = model
@@ -61,6 +87,11 @@ class AgentLoop:
         self.max_tool_iterations = max(1, max_tool_iterations)
         self.duplicate_tool_call_limit = max(1, duplicate_tool_call_limit)
         self.max_tool_retries = max(0, max_tool_retries)
+        self.on_tool_start = on_tool_start
+        self.on_tool_end = on_tool_end
+        self.on_tool_error = on_tool_error
+        self.last_turn_usage = TokenUsage()
+        self.cumulative_usage = TokenUsage()
 
     def _build_tool_call_record(
         self,
@@ -91,11 +122,70 @@ class AgentLoop:
             )
         return records
 
+    def _usage_from_sdk_object(self, usage: Any) -> TokenUsage:
+        """Normalize OpenAI-compatible usage metadata when the SDK provides it."""
+        if usage is None:
+            return TokenUsage()
+
+        def get_int(field: str) -> int:
+            if isinstance(usage, dict):
+                value = usage.get(field, 0)
+            else:
+                value = getattr(usage, field, 0)
+            if not isinstance(value, (int, float, str)):
+                return 0
+            try:
+                return int(value or 0)
+            except (TypeError, ValueError):
+                return 0
+
+        prompt_tokens = get_int("prompt_tokens")
+        completion_tokens = get_int("completion_tokens")
+        total_tokens = get_int("total_tokens") or prompt_tokens + completion_tokens
+        if total_tokens <= 0 and prompt_tokens <= 0 and completion_tokens <= 0:
+            return TokenUsage()
+        return TokenUsage(
+            prompt_tokens=prompt_tokens,
+            completion_tokens=completion_tokens,
+            total_tokens=total_tokens,
+            source="api",
+        )
+
+    def _estimate_text_tokens(self, text: str) -> int:
+        """Small local fallback until the dedicated TokenCounter lands in E5."""
+        stripped = text.strip()
+        if not stripped:
+            return 0
+        return max(1, len(stripped) // 4)
+
+    def _estimate_messages_tokens(self, messages: list[dict[str, Any]]) -> int:
+        serialized = json.dumps(messages, ensure_ascii=False, default=str)
+        return self._estimate_text_tokens(serialized)
+
+    def _estimate_call_usage(
+        self,
+        messages: list[dict[str, Any]],
+        assistant_content: str,
+        tool_calls: list[dict[str, Any]],
+    ) -> TokenUsage:
+        """Estimate usage when the provider omits token accounting."""
+        completion_payload = assistant_content
+        if tool_calls:
+            completion_payload += json.dumps(tool_calls, ensure_ascii=False, default=str)
+        prompt_tokens = self._estimate_messages_tokens(messages)
+        completion_tokens = self._estimate_text_tokens(completion_payload)
+        return TokenUsage(
+            prompt_tokens=prompt_tokens,
+            completion_tokens=completion_tokens,
+            total_tokens=prompt_tokens + completion_tokens,
+            source="estimated",
+        )
+
     def _complete_once(
         self,
         messages: list[dict[str, Any]],
         tools: list[dict[str, Any]],
-    ) -> tuple[str, list[dict[str, Any]], bool]:
+    ) -> tuple[str, list[dict[str, Any]], bool, TokenUsage]:
         kwargs = {
             "model": self.model,
             "messages": messages,
@@ -110,14 +200,19 @@ class AgentLoop:
 
         response = self.client.chat.completions.create(**kwargs)
         msg = response.choices[0].message
-        return msg.content or "", self._extract_tool_calls(msg.tool_calls or []), False
+        return (
+            msg.content or "",
+            self._extract_tool_calls(msg.tool_calls or []),
+            False,
+            self._usage_from_sdk_object(getattr(response, "usage", None)),
+        )
 
     def _stream_once(
         self,
         messages: list[dict[str, Any]],
         tools: list[dict[str, Any]],
         on_text_chunk: Callable[[str], None] | None,
-    ) -> tuple[str, list[dict[str, Any]], bool]:
+    ) -> tuple[str, list[dict[str, Any]], bool, TokenUsage]:
         kwargs = {
             "model": self.model,
             "messages": messages,
@@ -132,6 +227,7 @@ class AgentLoop:
             kwargs["tool_choice"] = "auto"
 
         text_parts: list[str] = []
+        usage = TokenUsage()
         # Streamed tool calls are incremental: the model can emit the same call
         # over multiple chunks, so we rebuild each call by its stable index.
         tool_call_map: dict[int, dict[str, Any]] = {}
@@ -139,6 +235,10 @@ class AgentLoop:
         try:
             response = self.client.chat.completions.create(**kwargs)
             for chunk in response:
+                chunk_usage = self._usage_from_sdk_object(getattr(chunk, "usage", None))
+                if chunk_usage.has_tokens():
+                    usage.add(chunk_usage)
+
                 # Ignore keep-alive/empty chunks that carry no choice payload.
                 if not getattr(chunk, "choices", None):
                     continue
@@ -182,26 +282,24 @@ class AgentLoop:
         except (KeyboardInterrupt, GeneratorExit):
             # Let the caller keep any text already shown to the user, but signal
             # that this turn was interrupted so partial tool state is discarded.
-            return "".join(text_parts), [], True
+            return "".join(text_parts), [], True, usage
         except Exception:
             if text_parts:
                 # If the transport dies mid-stream after visible output, treat it
                 # like an interrupted response instead of raising after partial render.
-                return "".join(text_parts), [], True
+                return "".join(text_parts), [], True, usage
             raise
 
         # Tool calls must be replayed in their original order for downstream execution.
         tool_calls = [tool_call_map[i] for i in sorted(tool_call_map)]
-        return "".join(text_parts), tool_calls, False
+        return "".join(text_parts), tool_calls, False, usage
 
     def _requires_tool_confirmation(self, risk_level: str) -> bool:
         """Return whether a tool call needs interactive approval."""
         if self.auto_approve:
             return False
-        if risk_level == "high":
+        if risk_level in {"medium", "high"}:
             return True
-        if risk_level == "medium":
-            return self.safe_mode
         return False
 
     def _is_tool_execution_approved(self, name: str, arguments: dict[str, Any]) -> bool:
@@ -254,7 +352,7 @@ class AgentLoop:
         )
         return error.to_json()
 
-    def _execute_tool_with_retries(self, name: str, args: dict[str, Any]) -> str:
+    def _execute_tool_with_retries(self, name: str, args: dict[str, Any]) -> _ToolExecutionOutcome:
         """Execute a tool with bounded retries for structured retryable errors."""
         attempts = 0
         last_error: ToolError | None = None
@@ -263,21 +361,60 @@ class AgentLoop:
         while attempts < max_attempts:
             attempts += 1
             try:
-                return str(self.registry.call(name, args))
+                return _ToolExecutionOutcome(
+                    content=str(self.registry.call(name, args)),
+                    success=True,
+                    attempts=attempts,
+                )
             except Exception as exc:
                 last_error = tool_error_from_exception(exc)
                 if not last_error.retryable or attempts >= max_attempts:
-                    return self._format_retried_error(last_error, attempts)
+                    return _ToolExecutionOutcome(
+                        content=self._format_retried_error(last_error, attempts),
+                        success=False,
+                        attempts=attempts,
+                        error=last_error,
+                    )
 
         # This is defensive; the loop always returns on success or final error.
         if last_error is None:
-            return ToolError(
+            last_error = ToolError(
                 error_type="ToolExecutionError",
                 message="Tool execution failed without an exception payload.",
                 recovery_hint="Inspect tool execution logs before retrying.",
                 retryable=False,
-            ).to_json()
-        return self._format_retried_error(last_error, attempts)
+            )
+            return _ToolExecutionOutcome(
+                content=last_error.to_json(),
+                success=False,
+                attempts=attempts,
+                error=last_error,
+            )
+        return _ToolExecutionOutcome(
+            content=self._format_retried_error(last_error, attempts),
+            success=False,
+            attempts=attempts,
+            error=last_error,
+        )
+
+    def _emit_tool_event(
+        self,
+        callback: ToolEventCallback | None,
+        event: ToolEvent,
+    ) -> None:
+        """Send a tool event to observers without letting UI/logging break the loop."""
+        if callback is None:
+            return
+        try:
+            callback(event)
+        except Exception:
+            # Observability must never change agent behavior.
+            return
+
+    def _commit_turn_usage(self, usage: TokenUsage) -> None:
+        """Persist the latest turn and cumulative model usage counters."""
+        self.last_turn_usage = usage.copy()
+        self.cumulative_usage.add(usage)
 
     def run(
         self,
@@ -310,6 +447,7 @@ class AgentLoop:
         # Persist only the current turn once it is safe to do so; this avoids
         # duplicating prior history that was already loaded from disk.
         turn_messages = [{"role": "user", "content": user_input}]
+        turn_usage = TokenUsage()
         
         # Get available tool schemas
         tools = self.registry.get_schemas()
@@ -326,23 +464,33 @@ class AgentLoop:
                 messages.append(assistant_msg)
                 turn_messages.append(assistant_msg)
                 self.store.append(turn_messages)
+                self._commit_turn_usage(turn_usage)
                 return final_reply
 
             if stream:
-                assistant_content, tool_calls_raw, interrupted = self._stream_once(
+                assistant_content, tool_calls_raw, interrupted, call_usage = self._stream_once(
                     messages=messages,
                     tools=tools,
                     on_text_chunk=on_text_chunk,
                 )
             else:
-                assistant_content, tool_calls_raw, interrupted = self._complete_once(
+                assistant_content, tool_calls_raw, interrupted, call_usage = self._complete_once(
                     messages=messages,
                     tools=tools,
                 )
 
+            if not call_usage.has_tokens():
+                call_usage = self._estimate_call_usage(
+                    messages=messages,
+                    assistant_content=assistant_content,
+                    tool_calls=tool_calls_raw,
+                )
+            turn_usage.add(call_usage)
+
             if interrupted:
                 # Interrupted turns intentionally do not write partial assistant
                 # or tool state, preserving a resumable conversation history.
+                self._commit_turn_usage(turn_usage)
                 return assistant_content
 
             # If it's a simple text reply, we are done
@@ -354,6 +502,7 @@ class AgentLoop:
 
                 # Only the final assistant reply marks the turn as complete.
                 self.store.append(turn_messages)
+                self._commit_turn_usage(turn_usage)
                 return final_reply
 
             # If the model wants to call tools
@@ -376,6 +525,7 @@ class AgentLoop:
                 messages.append(assistant_msg)
                 turn_messages.append(assistant_msg)
                 self.store.append(turn_messages)
+                self._commit_turn_usage(turn_usage)
                 return final_reply
 
             tool_iterations += 1
@@ -392,18 +542,98 @@ class AgentLoop:
             # Tool results stay inside the same turn so the model can immediately
             # consume them on the next loop iteration.
             for tc in tool_calls_raw:
-
+                name = ""
+                args: dict[str, Any] = {}
+                risk_level = "unknown"
+                started_at = perf_counter()
                 try:
                     # Parse arguments and call the tool through the registry
                     name = tc["function"]["name"]
                     args = json.loads(tc["function"]["arguments"])
+                    risk_level = self.registry.get_tool_meta(name).get("risk_level", "low")
                     if not self._is_tool_execution_approved(name, args):
                         result_str = "User denied tool execution."
+                        duration_ms = (perf_counter() - started_at) * 1000
+                        self._emit_tool_event(
+                            self.on_tool_end,
+                            tool_end_event(
+                                tool_name=name,
+                                tool_call_id=tc["id"],
+                                arguments=args,
+                                risk_level=risk_level,
+                                status="denied",
+                                duration_ms=duration_ms,
+                                result=result_str,
+                                attempts=0,
+                            ),
+                        )
                     else:
-                        result_str = self._execute_tool_with_retries(name, args)
+                        self._emit_tool_event(
+                            self.on_tool_start,
+                            tool_start_event(
+                                tool_name=name,
+                                tool_call_id=tc["id"],
+                                arguments=args,
+                                risk_level=risk_level,
+                            ),
+                        )
+                        outcome = self._execute_tool_with_retries(name, args)
+                        result_str = outcome.content
+                        duration_ms = (perf_counter() - started_at) * 1000
+                        if outcome.success:
+                            self._emit_tool_event(
+                                self.on_tool_end,
+                                tool_end_event(
+                                    tool_name=name,
+                                    tool_call_id=tc["id"],
+                                    arguments=args,
+                                    risk_level=risk_level,
+                                    status="success",
+                                    duration_ms=duration_ms,
+                                    result=result_str,
+                                    attempts=outcome.attempts,
+                                ),
+                            )
+                        else:
+                            error = outcome.error or ToolError(
+                                error_type="ToolExecutionError",
+                                message=result_str,
+                                recovery_hint="Inspect tool execution logs before retrying.",
+                                retryable=False,
+                            )
+                            self._emit_tool_event(
+                                self.on_tool_error,
+                                tool_error_event(
+                                    tool_name=name,
+                                    tool_call_id=tc["id"],
+                                    arguments=args,
+                                    risk_level=risk_level,
+                                    duration_ms=duration_ms,
+                                    error_type=error.error_type,
+                                    error_message=error.message,
+                                    attempts=outcome.attempts,
+                                    result=result_str,
+                                ),
+                            )
                 except Exception as e:
                     # Capture tool execution errors and feed them back to the model
-                    result_str = tool_error_from_exception(e).to_json()
+                    error = tool_error_from_exception(e)
+                    result_str = error.to_json()
+                    duration_ms = (perf_counter() - started_at) * 1000
+                    self._emit_tool_event(
+                        self.on_tool_error,
+                        tool_error_event(
+                            tool_name=name or "<unknown>",
+                            tool_call_id=tc.get("id", ""),
+                            arguments=args,
+                            risk_level=risk_level,
+                            duration_ms=duration_ms,
+                            error_type=error.error_type,
+                            error_message=error.message,
+                            attempts=1,
+                            result=result_str,
+                        ),
+                    )
 
                 tool_result_msg = {
                     "role": "tool",

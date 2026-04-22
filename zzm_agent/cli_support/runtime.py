@@ -7,13 +7,18 @@ import re
 from pathlib import Path
 from typing import Any
 
+from zzm_agent.constants import TOOL_EVENTS_PATH
 from zzm_agent.cli_support.commands import handle_slash
+from zzm_agent.cli_support.observability import CliObserver
 from zzm_agent.cli_support.rendering import (
+    MarkdownStreamRenderer,
+    build_prompt_session,
     build_console,
+    read_repl_input,
     render_reply,
-    stream_reply_chunk,
 )
 from zzm_agent.core.agent_loop import AgentLoop
+from zzm_agent.core.observability import ToolEvent, ToolEventCallback, ToolEventLogger
 from zzm_agent.core.tool_registry import ToolRegistry, set_active_registry
 from zzm_agent.evolution.optimizer import EvolutionOptimizer
 from zzm_agent.memory.io import StorageCorruptionError
@@ -31,7 +36,7 @@ def parse_args(argv: list[str] | None = None) -> argparse.Namespace:
     repl_parser = subparsers.add_parser("repl", help="Start the interactive REPL loop (default)")
     repl_parser.add_argument("--session", dest="session_id", help="Resume or create a specific session id.")
     repl_parser.add_argument("--config", dest="config_path", help="Path to the YAML config file.")
-    repl_parser.add_argument("--safe", action="store_true", help="Require confirmation for medium-risk tools in addition to high-risk tools.")
+    repl_parser.add_argument("--safe", action="store_true", help="Reserved for stricter confirmation policies. Medium/high-risk tools already require confirmation by default.")
     
     eval_parser = subparsers.add_parser("eval", help="Run the evaluation suite")
     eval_parser.add_argument("--suite", choices=["replay", "smoke", "full"], required=True, help="Evaluation suite to run.")
@@ -117,19 +122,135 @@ def load_config(config_path: str | Path | None = None) -> dict[str, Any]:
 
 def build_tool_confirmation_callback(console: Any):
     """Return an interactive approval callback for tools that require it."""
+    always_approved: set[str] = set()
+
     def confirm_tool(name: str, arguments: dict[str, Any], risk_level: str) -> bool:
-        rendered_args = json.dumps(arguments, ensure_ascii=False, sort_keys=True)
-        prompt = (
-            f"[yellow]Approve {risk_level}-risk tool [cyan]{name}[/cyan] "
-            f"with args {rendered_args}? [y/N] [/yellow]"
-        )
+        if name in always_approved:
+            console.print(f"[dim]Using remembered approval for [cyan]{name}[/cyan].[/dim]")
+            return True
+
+        _render_tool_approval_request(console, name, arguments, risk_level)
         try:
-            answer = console.input(prompt).strip().lower()
+            answer = _ask_tool_approval_choice(console)
         except (KeyboardInterrupt, EOFError):
             return False
-        return answer in {"y", "yes"}
+        if answer == "2":
+            always_approved.add(name)
+            return True
+        return answer == "1"
 
     return confirm_tool
+
+
+def _render_tool_approval_request(
+    console: Any,
+    name: str,
+    arguments: dict[str, Any],
+    risk_level: str,
+) -> None:
+    """Render a clear approval card before a risky tool runs."""
+    rendered_args = json.dumps(arguments, ensure_ascii=False, sort_keys=True, indent=2)
+    try:
+        from rich.console import Console
+        from rich import box
+        from rich.console import Group
+        from rich.panel import Panel
+        from rich.json import JSON
+        from rich.table import Table
+        from rich.text import Text
+    except ImportError:
+        console.print(f"Tool approval required ({risk_level} risk): {name}")
+        console.print(rendered_args)
+        return
+
+    if not isinstance(console, Console):
+        console.print(f"Tool approval required ({risk_level} risk): {name}")
+        console.print(rendered_args)
+        console.print("[1] Allow once  [2] Always allow this tool this session  [3] Deny")
+        return
+
+    title_style = "#E06C75" if risk_level == "high" else "#E5C07B"
+    header = Text.assemble(
+        ("  Tool approval required", f"bold {title_style}"),
+        ("  "),
+        (risk_level.upper(), title_style),
+    )
+    meta = Table.grid(padding=(0, 1))
+    meta.add_column(style="dim #ABB2BF", justify="right")
+    meta.add_column(style="bold #56B6C2")
+    meta.add_row("  Tool", name)
+    meta.add_row("  Risk", risk_level)
+
+    console.print(
+        Panel(
+            Group(
+                header,
+                meta,
+                JSON(rendered_args),
+            ),
+            title="Permission",
+            title_align="left",
+            border_style=title_style,
+            box=box.ROUNDED,
+            padding=(1, 2),
+            expand=False,
+        )
+    )
+
+
+def _ask_tool_approval_choice(console: Any) -> str:
+    """Ask for one of the explicit tool approval choices."""
+    try:
+        import questionary
+        from rich.console import Console
+    except ImportError:
+        questionary = None
+        Console = None
+
+    if questionary is not None and Console is not None and isinstance(console, Console):
+        answer = questionary.select(
+            "Approve this tool call?",
+            choices=[
+                questionary.Choice("Allow once", value="1"),
+                questionary.Choice("Always allow this tool this session", value="2"),
+                questionary.Choice("Deny", value="3"),
+            ],
+            default="3",
+            qmark="?",
+            pointer=">",
+        ).ask()
+        return answer or "3"
+
+    try:
+        from rich.prompt import Prompt
+    except ImportError:
+        return console.input("Choose [1/2/3]: ").strip()
+
+    try:
+        return Prompt.ask(
+            "Choose",
+            choices=["1", "2", "3"],
+            default="3",
+            console=console,
+            show_choices=True,
+            show_default=True,
+        )
+    except TypeError:
+        # Lightweight test doubles and non-Rich consoles may not accept the
+        # keyword arguments Rich Prompt forwards to Console.input.
+        choice = console.input("Choose [1/2/3] (3): ").strip()
+        return choice or "3"
+
+
+def _fanout_tool_callbacks(*callbacks: ToolEventCallback | None) -> ToolEventCallback:
+    """Return one callback that forwards events to each configured observer."""
+    active_callbacks = [callback for callback in callbacks if callback is not None]
+
+    def fanout(event: ToolEvent) -> None:
+        for callback in active_callbacks:
+            callback(event)
+
+    return fanout
 
 
 def build_registry(cfg: dict[str, Any]) -> ToolRegistry:
@@ -218,6 +339,15 @@ def build_runtime(args: argparse.Namespace, cfg: dict[str, Any]) -> dict[str, An
     )
     system_prompt = optimizer.get_current_prompt() or cfg["agent"]["system_prompt"]
     loop_policy = get_agent_loop_policy(cfg)
+    model_cfg = cfg.get("model", {})
+    workspace_root = Path(os.environ["ZZM_AGENT_WORKSPACE_ROOT"])
+    observer = CliObserver(
+        console=console,
+        workspace_root=workspace_root,
+        input_price_per_1m=float(model_cfg.get("input_price_per_1m", 0.0) or 0.0),
+        output_price_per_1m=float(model_cfg.get("output_price_per_1m", 0.0) or 0.0),
+    )
+    tool_event_logger = ToolEventLogger(workspace_root / TOOL_EVENTS_PATH)
     loop = AgentLoop(
         client=client,
         model=cfg["model"]["model_name"],
@@ -234,6 +364,9 @@ def build_runtime(args: argparse.Namespace, cfg: dict[str, Any]) -> dict[str, An
         max_tool_iterations=loop_policy["max_tool_iterations"],
         duplicate_tool_call_limit=loop_policy["duplicate_tool_call_limit"],
         max_tool_retries=loop_policy["max_tool_retries"],
+        on_tool_start=_fanout_tool_callbacks(observer.on_tool_start, tool_event_logger),
+        on_tool_end=_fanout_tool_callbacks(observer.on_tool_end, tool_event_logger),
+        on_tool_error=_fanout_tool_callbacks(observer.on_tool_error, tool_event_logger),
     )
 
     return {
@@ -242,6 +375,7 @@ def build_runtime(args: argparse.Namespace, cfg: dict[str, Any]) -> dict[str, An
         "store": store,
         "optimizer": optimizer,
         "loop": loop,
+        "observer": observer,
     }
 
 
@@ -254,6 +388,11 @@ def run_repl(runtime: dict[str, Any]) -> int:
     store = runtime["store"]
     optimizer = runtime["optimizer"]
     loop = runtime["loop"]
+    observer = runtime.get("observer")
+    prompt_session = build_prompt_session(
+        workspace=os.environ.get("ZZM_AGENT_WORKSPACE_ROOT", os.getcwd()),
+        runtime=runtime
+    )
 
     # Show professional welcome panel on startup
     render_welcome(
@@ -267,7 +406,7 @@ def run_repl(runtime: dict[str, Any]) -> int:
 
     while True:
         try:
-            user_input = console.input("[bold blue]you>[/bold blue] ").strip()
+            user_input = read_repl_input(console, prompt_session)
         except (KeyboardInterrupt, EOFError):
             console.print("\n[dim]Bye.[/dim]")
             return 0
@@ -282,18 +421,23 @@ def run_repl(runtime: dict[str, Any]) -> int:
 
         try:
             streamed = {"seen": False}
+            stream_renderer = MarkdownStreamRenderer(console)
 
             def on_text_chunk(chunk: str) -> None:
                 streamed["seen"] = True
-                stream_reply_chunk(console, chunk)
+                stream_renderer.push(chunk)
 
             reply = loop.run(user_input, stream=True, on_text_chunk=on_text_chunk)
             if streamed["seen"]:
-                # Streamed output has already been printed chunk-by-chunk above.
+                stream_renderer.flush()
                 console.print()
             else:
                 render_reply(console, reply)
+            if observer is not None:
+                observer.finish_turn(loop.last_turn_usage, loop.cumulative_usage)
         except Exception as exc:
+            if observer is not None:
+                observer.stop()
             console.print(f"[red]Error: {exc}[/red]")
 
 
