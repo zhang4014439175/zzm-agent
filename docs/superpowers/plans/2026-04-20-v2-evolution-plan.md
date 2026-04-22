@@ -1213,10 +1213,10 @@ class ReplayLLM:
 
 任务清单：
 
-- [ ] 建立 `tests/fixtures/agent_cases/` 目录
-- [ ] 实现 `ReplayTurn` 和 `ReplayLLM`，兼容 `client.chat.completions.create()` 的流式和非流式接口
-- [ ] 实现工具结果 mock 机制：给定 `(tool_name, args) → result` 映射表
-- [ ] 编写第一批核心回放测试用例：
+- [x] 建立 `tests/fixtures/agent_cases/` 目录
+- [x] 实现 `ReplayTurn` 和 `ReplayLLM`，兼容 `client.chat.completions.create()` 的流式和非流式接口
+- [x] 实现工具结果 mock 机制：给定 `(tool_name, args) → result` 映射表
+- [x] 编写第一批核心回放测试用例：
 
 | # | 用例名 | 验证点 |
 |---|--------|--------|
@@ -1226,7 +1226,7 @@ class ReplayLLM:
 | 4 | `test_iteration_limit` | 超过 `max_tool_iterations` → 被截断 |
 | 5 | `test_user_deny_high_risk` | `run_shell(rm ...)` 被拦截 → LLM 收到 "User denied" |
 
-- [ ] 所有回放测试可通过 `pytest tests/` 直接运行，不需要网络或 API Key
+- [x] 所有回放测试可通过 `pytest tests/` 直接运行，不需要网络或 API Key
 
 验收标准：
 
