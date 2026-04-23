@@ -4,6 +4,7 @@ import argparse
 import json
 import os
 import re
+import time
 from pathlib import Path
 from typing import Any
 
@@ -26,6 +27,60 @@ from zzm_agent.memory.store import MemoryStore
 
 CONFIG_PATH = Path("config.yaml")
 _ENV_VALUE_PATTERN = re.compile(r"^\$\{([A-Za-z_][A-Za-z0-9_]*)(?::-(.*))?\}$")
+
+
+class _WorkingStatus:
+    """Small animated status line rendered by Rich Live."""
+
+    _shades = ("#555555", "#777777", "#999999", "#bbbbbb", "#dddddd", "#ffffff")
+
+    def __init__(self) -> None:
+        self.started_at = time.monotonic()
+
+    def __rich_console__(self, console: Any, options: Any) -> Any:
+        from rich.text import Text
+
+        word = "working"
+        offset = int(time.monotonic() * 8) % (len(word) + len(self._shades))
+        elapsed = time.monotonic() - self.started_at
+        text = Text("\u2022 ", style="#777777")
+        for index, char in enumerate(word):
+            shade_index = max(0, len(self._shades) - 1 - abs(index - offset))
+            text.append(char, style=self._shades[shade_index])
+        text.append(f" {elapsed:.1f}s", style="#777777")
+        yield text
+
+
+def _start_working_status(console: Any) -> bool:
+    if getattr(console, "_zzm_working_live", None) is not None:
+        return True
+    try:
+        from rich.live import Live
+    except ImportError:
+        return False
+
+    status = getattr(console, "_zzm_working_status", None)
+    if status is None:
+        status = _WorkingStatus()
+        setattr(console, "_zzm_working_status", status)
+
+    live = Live(status, console=console, refresh_per_second=12, transient=True)
+    live.start()
+    setattr(console, "_zzm_working_live", live)
+    return True
+
+
+def _stop_working_status(console: Any, *, clear_status: bool = False) -> bool:
+    live = getattr(console, "_zzm_working_live", None)
+    if live is None:
+        return False
+    try:
+        live.stop()
+    finally:
+        setattr(console, "_zzm_working_live", None)
+        if clear_status:
+            setattr(console, "_zzm_working_status", None)
+    return True
 
 
 def parse_args(argv: list[str] | None = None) -> argparse.Namespace:
@@ -129,11 +184,16 @@ def build_tool_confirmation_callback(console: Any):
             console.print(f"[dim]Using remembered approval for [cyan]{name}[/cyan].[/dim]")
             return True
 
+        paused_working = _stop_working_status(console)
         _render_tool_approval_request(console, name, arguments, risk_level)
         try:
             answer = _ask_tool_approval_choice(console)
         except (KeyboardInterrupt, EOFError):
+            if paused_working:
+                _start_working_status(console)
             return False
+        if paused_working:
+            _start_working_status(console)
         if answer == "2":
             always_approved.add(name)
             return True
@@ -149,97 +209,107 @@ def _render_tool_approval_request(
     risk_level: str,
 ) -> None:
     """Render a clear approval card before a risky tool runs."""
-    rendered_args = json.dumps(arguments, ensure_ascii=False, sort_keys=True, indent=2)
     try:
-        from rich.console import Console
-        from rich import box
-        from rich.console import Group
-        from rich.panel import Panel
-        from rich.json import JSON
-        from rich.table import Table
+        from rich.console import Consol
         from rich.text import Text
     except ImportError:
         console.print(f"Tool approval required ({risk_level} risk): {name}")
-        console.print(rendered_args)
+        console.print(_format_compact_arguments(arguments))
         return
 
     if not isinstance(console, Console):
         console.print(f"Tool approval required ({risk_level} risk): {name}")
-        console.print(rendered_args)
+        console.print(_format_compact_arguments(arguments))
         console.print("[1] Allow once  [2] Always allow this tool this session  [3] Deny")
         return
 
-    title_style = "#E06C75" if risk_level == "high" else "#E5C07B"
-    header = Text.assemble(
-        ("  Tool approval required", f"bold {title_style}"),
-        ("  "),
-        (risk_level.upper(), title_style),
+    body = Text.assemble(
+        ("\u2022Approve: ", "#E5C07B bold"),
+        (""),
+        (risk_level.upper(), "default"),
+        (" tool ", "default"),
+        (name, "default"),
+        (" args ", "default"),
+        (_format_compact_arguments(arguments), "default"),
     )
-    meta = Table.grid(padding=(0, 1))
-    meta.add_column(style="dim #ABB2BF", justify="right")
-    meta.add_column(style="bold #56B6C2")
-    meta.add_row("  Tool", name)
-    meta.add_row("  Risk", risk_level)
+    console.print(body)
+    console.print()
 
-    console.print(
-        Panel(
-            Group(
-                header,
-                meta,
-                JSON(rendered_args),
-            ),
-            title="Permission",
-            title_align="left",
-            border_style=title_style,
-            box=box.ROUNDED,
-            padding=(1, 2),
-            expand=False,
-        )
+
+def _format_compact_arguments(arguments: dict[str, Any], max_length: int = 160) -> str:
+    rendered = json.dumps(
+        arguments,
+        ensure_ascii=False,
+        sort_keys=True,
+        separators=(",", ": "),
     )
+    if len(rendered) <= max_length:
+        return rendered
+    return rendered[: max_length - 3] + "..."
 
 
 def _ask_tool_approval_choice(console: Any) -> str:
     """Ask for one of the explicit tool approval choices."""
     try:
-        import questionary
-        from rich.console import Console
+        from prompt_toolkit import Application
+        from prompt_toolkit.key_binding import KeyBindings
+        from prompt_toolkit.layout import Layout
+        from prompt_toolkit.layout.controls import FormattedTextControl
+        from prompt_toolkit.layout.containers import Window
+        from prompt_toolkit.styles import Style
     except ImportError:
-        questionary = None
-        Console = None
-
-    if questionary is not None and Console is not None and isinstance(console, Console):
-        answer = questionary.select(
-            "Approve this tool call?",
-            choices=[
-                questionary.Choice("Allow once", value="1"),
-                questionary.Choice("Always allow this tool this session", value="2"),
-                questionary.Choice("Deny", value="3"),
-            ],
-            default="3",
-            qmark="?",
-            pointer=">",
-        ).ask()
-        return answer or "3"
-
-    try:
-        from rich.prompt import Prompt
-    except ImportError:
-        return console.input("Choose [1/2/3]: ").strip()
-
-    try:
-        return Prompt.ask(
-            "Choose",
-            choices=["1", "2", "3"],
-            default="3",
-            console=console,
-            show_choices=True,
-            show_default=True,
-        )
-    except TypeError:
-        # Lightweight test doubles and non-Rich consoles may not accept the
-        # keyword arguments Rich Prompt forwards to Console.input.
-        choice = console.input("Choose [1/2/3] (3): ").strip()
+        choice = console.input("Approve [1/2/3] (3): ").strip()
         return choice or "3"
+
+    choices = [
+        ("Allow once", "1"),
+        ("Always allow this tool this session", "2"),
+        ("Deny", "3"),
+    ]
+    selected = {"index": 2}
+
+    def get_fragments() -> list[tuple[str, str]]:
+        fragments: list[tuple[str, str]] = []
+        for index, (label, _value) in enumerate(choices):
+            if index == selected["index"]:
+                fragments.append(("class:selected", f">{label}\n"))
+            else:
+                fragments.append(("class:text", f" {label}\n"))
+        return fragments
+
+    bindings = KeyBindings()
+
+    @bindings.add("up")
+    @bindings.add("k")
+    def _move_up(event: Any) -> None:
+        selected["index"] = (selected["index"] - 1) % len(choices)
+
+    @bindings.add("down")
+    @bindings.add("j")
+    def _move_down(event: Any) -> None:
+        selected["index"] = (selected["index"] + 1) % len(choices)
+
+    @bindings.add("enter")
+    def _accept(event: Any) -> None:
+        event.app.exit(result=choices[selected["index"]][1])
+
+    @bindings.add("c-c")
+    def _cancel(event: Any) -> None:
+        event.app.exit(result="3")
+
+    app = Application(
+        layout=Layout(Window(FormattedTextControl(get_fragments), always_hide_cursor=True)),
+        key_bindings=bindings,
+        style=Style.from_dict({
+            "text": "noreverse bg:default fg:default",
+            "selected": "noreverse bg:default fg:#56B6C2",
+        }),
+        full_screen=False,
+        erase_when_done=False,
+    )
+    answer = app.run()
+    return answer or "3"
+
 
 
 def _fanout_tool_callbacks(*callbacks: ToolEventCallback | None) -> ToolEventCallback:
@@ -420,19 +490,32 @@ def run_repl(runtime: dict[str, Any]) -> int:
             continue
 
         try:
+            console.print()
             streamed = {"seen": False}
             stream_renderer = MarkdownStreamRenderer(console)
 
             def on_text_chunk(chunk: str) -> None:
+                if not streamed["seen"]:
+                    _stop_working_status(console)
                 streamed["seen"] = True
                 stream_renderer.push(chunk)
 
-            reply = loop.run(user_input, stream=True, on_text_chunk=on_text_chunk)
+            if not _start_working_status(console):
+                reply = loop.run(user_input, stream=True, on_text_chunk=on_text_chunk)
+            else:
+                try:
+                    reply = loop.run(user_input, stream=True, on_text_chunk=on_text_chunk)
+                finally:
+                    _stop_working_status(console, clear_status=True)
+
             if streamed["seen"]:
                 stream_renderer.flush()
-                console.print()
             else:
                 render_reply(console, reply)
+
+            if streamed["seen"]:
+                console.print()
+                
             if observer is not None:
                 observer.finish_turn(loop.last_turn_usage, loop.cumulative_usage)
         except Exception as exc:

@@ -1,5 +1,6 @@
 from zzm_agent.cli_support.commands import handle_slash
 from zzm_agent.cli_support.observability import CliObserver
+from zzm_agent.cli_support.rendering import SlashCommandCompleter
 from zzm_agent.cli_support.runtime import (
     build_tool_confirmation_callback,
     _ask_tool_approval_choice,
@@ -64,38 +65,17 @@ class DummyConsole:
         return ""
 
 
-def test_questionary_choice_default_is_valid(monkeypatch):
-    calls = {}
+def test_tool_approval_choice_default_is_valid(monkeypatch):
+    real_import = __import__
 
-    class DummyQuestionary:
-        class Choice:
-            def __init__(self, title, value):
-                self.title = title
-                self.value = value
+    def fake_import(name, *args, **kwargs):
+        if name == "prompt_toolkit":
+            raise ImportError
+        return real_import(name, *args, **kwargs)
 
-        @staticmethod
-        def select(message, choices, default, qmark, pointer):
-            calls["default"] = default
-            calls["values"] = [choice.value for choice in choices]
+    monkeypatch.setattr("builtins.__import__", fake_import)
 
-            class Prompt:
-                def ask(self):
-                    return default
-
-            return Prompt()
-
-    monkeypatch.setitem(__import__("sys").modules, "questionary", DummyQuestionary)
-
-    class RichLikeConsole:
-        pass
-
-    import rich.console
-
-    monkeypatch.setattr(rich.console, "Console", RichLikeConsole)
-
-    assert _ask_tool_approval_choice(RichLikeConsole()) == "3"
-    assert calls["default"] == "3"
-    assert "3" in calls["values"]
+    assert _ask_tool_approval_choice(DummyConsole()) == "3"
 
 
 def test_parse_args_supports_session_flag():
@@ -112,6 +92,74 @@ def test_parse_args_supports_config_flag():
 def test_parse_args_supports_safe_flag():
     args = parse_args(["--safe"])
     assert args.safe is True
+
+
+def test_slash_command_completer_highlights_selected_command():
+    pytest = __import__("pytest")
+    document_module = pytest.importorskip("prompt_toolkit.document")
+    completion_module = pytest.importorskip("prompt_toolkit.completion")
+
+    completer = SlashCommandCompleter({"/help": "Show help"})
+
+    completions = list(
+        completer.get_completions(
+            document_module.Document("/"),
+            completion_module.CompleteEvent(),
+        )
+    )
+
+    assert completions[0].text == "/help"
+    assert completions[0].display_meta_text == "Show help"
+    assert completions[0].style == ""
+    assert completions[0].selected_style == ""
+
+
+def test_slash_command_completer_uses_prefix_fuzzy_matching():
+    pytest = __import__("pytest")
+    document_module = pytest.importorskip("prompt_toolkit.document")
+    completion_module = pytest.importorskip("prompt_toolkit.completion")
+
+    completer = SlashCommandCompleter({
+        "/search": "Find memories",
+        "/session": "Switch sessions",
+        "/memory": "Find memories",
+    })
+
+    completions = list(
+        completer.get_completions(
+            document_module.Document("/srch"),
+            completion_module.CompleteEvent(),
+        )
+    )
+
+    assert [completion.text for completion in completions] == ["/search"]
+
+
+def test_slash_command_completer_does_not_match_description_or_middle():
+    pytest = __import__("pytest")
+    document_module = pytest.importorskip("prompt_toolkit.document")
+    completion_module = pytest.importorskip("prompt_toolkit.completion")
+
+    completer = SlashCommandCompleter({
+        "/search": "Find memories",
+        "/memory": "Search previous messages",
+    })
+
+    description_matches = list(
+        completer.get_completions(
+            document_module.Document("/previous"),
+            completion_module.CompleteEvent(),
+        )
+    )
+    middle_matches = list(
+        completer.get_completions(
+            document_module.Document("/ear"),
+            completion_module.CompleteEvent(),
+        )
+    )
+
+    assert description_matches == []
+    assert middle_matches == []
 
 
 def test_load_config_expands_env_placeholders(tmp_path, monkeypatch):
