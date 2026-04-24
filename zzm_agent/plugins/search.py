@@ -8,8 +8,23 @@ from zzm_agent.core.tool_registry import tool
 def _workspace_root() -> Path:
     root = os.environ.get("ZZM_AGENT_WORKSPACE_ROOT")
     if root:
-        return Path(root).expanduser().resolve()
-    return Path.cwd().resolve()
+        return Path(root).expanduser().resolve(strict=False)
+    return Path.cwd().resolve(strict=False)
+
+
+def _ensure_inside_workspace(real_path: Path, workspace_root: Path) -> None:
+    """Reject paths whose real filesystem location is outside the workspace."""
+    if not real_path.is_relative_to(workspace_root):
+        raise ValueError(f"Path escapes workspace root: {workspace_root}")
+
+
+def _is_real_path_inside_workspace(path: Path, workspace_root: Path) -> bool:
+    """Return whether an existing path resolves inside the workspace."""
+    try:
+        real_path = path.resolve(strict=True)
+    except OSError:
+        return False
+    return real_path.is_relative_to(workspace_root)
 
 
 def _resolve_workspace_path(path: str) -> Path:
@@ -21,8 +36,9 @@ def _resolve_workspace_path(path: str) -> Path:
         candidate = (workspace_root / expanded).resolve(strict=False)
     else:
         candidate = expanded.resolve(strict=False)
-    if not candidate.is_relative_to(workspace_root):
-        raise ValueError(f"Path escapes workspace root: {workspace_root}")
+    _ensure_inside_workspace(candidate, workspace_root)
+    if candidate.exists():
+        _ensure_inside_workspace(candidate.resolve(strict=True), workspace_root)
     return candidate
 
 
@@ -167,9 +183,10 @@ def grep_search(
 def _collect_search_files(root: Path, include_glob: str) -> list[Path]:
     """Collect files to search, respecting exclusion rules and include globs."""
     files: list[Path] = []
+    workspace_root = _workspace_root()
 
     if root.is_file():
-        if not _is_binary(root):
+        if not _is_binary(root) and _is_real_path_inside_workspace(root, workspace_root):
             files.append(root)
         return files
 
@@ -182,7 +199,11 @@ def _collect_search_files(root: Path, include_glob: str) -> list[Path]:
         # Use glob matching for each pattern
         for glob_pattern in globs:
             for match in root.rglob(glob_pattern):
-                if match.is_file() and not _is_binary(match):
+                if (
+                    match.is_file()
+                    and not _is_binary(match)
+                    and _is_real_path_inside_workspace(match, workspace_root)
+                ):
                     # Check if any parent dir should be skipped
                     if not any(_should_skip_dir(part) for part in match.relative_to(root).parts[:-1]):
                         files.append(match)
@@ -192,6 +213,8 @@ def _collect_search_files(root: Path, include_glob: str) -> list[Path]:
             if not match.is_file():
                 continue
             if _is_binary(match):
+                continue
+            if not _is_real_path_inside_workspace(match, workspace_root):
                 continue
             try:
                 rel_parts = match.relative_to(root).parts
@@ -238,6 +261,8 @@ def find_files(name_pattern: str, path: str = ".", max_results: int = 50) -> str
         results: list[tuple[str, int, bool]] = []
 
         for match in p.rglob(name_pattern):
+            if not _is_real_path_inside_workspace(match, workspace):
+                continue
             try:
                 rel_parts = match.relative_to(p).parts
             except ValueError:

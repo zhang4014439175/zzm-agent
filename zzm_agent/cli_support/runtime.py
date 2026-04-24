@@ -210,11 +210,12 @@ def _render_tool_approval_request(
 ) -> None:
     """Render a clear approval card before a risky tool runs."""
     try:
-        from rich.console import Consol
+        from rich.console import Console
         from rich.text import Text
     except ImportError:
         console.print(f"Tool approval required ({risk_level} risk): {name}")
         console.print(_format_compact_arguments(arguments))
+        console.print("[1] Allow once  [2] Always allow this tool this session  [3] Deny")
         return
 
     if not isinstance(console, Console):
@@ -250,6 +251,10 @@ def _format_compact_arguments(arguments: dict[str, Any], max_length: int = 160) 
 
 def _ask_tool_approval_choice(console: Any) -> str:
     """Ask for one of the explicit tool approval choices."""
+    def ask_plain() -> str:
+        choice = console.input("Approve [1/2/3] (3): ").strip()
+        return choice if choice in {"1", "2", "3"} else "3"
+
     try:
         from prompt_toolkit import Application
         from prompt_toolkit.key_binding import KeyBindings
@@ -258,8 +263,7 @@ def _ask_tool_approval_choice(console: Any) -> str:
         from prompt_toolkit.layout.containers import Window
         from prompt_toolkit.styles import Style
     except ImportError:
-        choice = console.input("Approve [1/2/3] (3): ").strip()
-        return choice or "3"
+        return ask_plain()
 
     choices = [
         ("Allow once", "1"),
@@ -297,17 +301,20 @@ def _ask_tool_approval_choice(console: Any) -> str:
     def _cancel(event: Any) -> None:
         event.app.exit(result="3")
 
-    app = Application(
-        layout=Layout(Window(FormattedTextControl(get_fragments), always_hide_cursor=True)),
-        key_bindings=bindings,
-        style=Style.from_dict({
-            "text": "noreverse bg:default fg:default",
-            "selected": "noreverse bg:default fg:#56B6C2",
-        }),
-        full_screen=False,
-        erase_when_done=False,
-    )
-    answer = app.run()
+    try:
+        app = Application(
+            layout=Layout(Window(FormattedTextControl(get_fragments), always_hide_cursor=True)),
+            key_bindings=bindings,
+            style=Style.from_dict({
+                "text": "noreverse bg:default fg:default",
+                "selected": "noreverse bg:default fg:#56B6C2",
+            }),
+            full_screen=False,
+            erase_when_done=False,
+        )
+        answer = app.run()
+    except Exception:
+        return ask_plain()
     return answer or "3"
 
 

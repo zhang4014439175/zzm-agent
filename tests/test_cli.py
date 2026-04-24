@@ -297,6 +297,38 @@ def test_cli_observer_renders_usage_with_configured_pricing():
     assert console.lines
 
 
+def test_cli_observer_finish_turn_does_not_render_usage_table():
+    console = DummyConsole()
+    observer = CliObserver(console, workspace_root=".")
+
+    observer.finish_turn(
+        TokenUsage(prompt_tokens=10, completion_tokens=5, total_tokens=15, source="api"),
+        TokenUsage(prompt_tokens=10, completion_tokens=5, total_tokens=15, source="api"),
+    )
+
+    assert console.lines == []
+
+
+def test_cli_observer_edit_summary_colors_counts():
+    pytest = __import__("pytest")
+    text_module = pytest.importorskip("rich.text")
+    observer = CliObserver(DummyConsole(), workspace_root=".")
+
+    summary = observer._format_edit_summary(
+        observer.workspace_root / ".env",
+        "--- .env\n+++ .env\n+hello\n",
+        text_module.Text,
+    )
+
+    assert str(summary).startswith("\u2022Edited: .env  (+1 -0)")
+    spans_by_text = {
+        str(summary)[span.start:span.end]: span.style
+        for span in summary.spans
+    }
+    assert spans_by_text["+1"] == "#2EA043"
+    assert spans_by_text["-0"] == "#CF222E"
+
+
 def test_handle_slash_new_and_switch_session(tmp_path):
     # The slash-command layer is responsible for wiring operator intent into
     # MemoryStore state changes without needing a live model client.

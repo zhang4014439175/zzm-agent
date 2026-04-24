@@ -298,6 +298,32 @@ def build_console():
     )
 
 
+def build_bottom_toolbar(runtime: dict[str, Any] | None = None):
+    """Build the shared prompt-toolkit bottom toolbar."""
+    if not runtime:
+        return ""
+
+    try:
+        from prompt_toolkit.formatted_text import HTML
+    except ImportError:
+        return ""
+
+    loop = runtime.get("loop")
+    store = runtime.get("store")
+    if not loop or not store:
+        return ""
+
+    workspace_path = os.environ.get("ZZM_AGENT_WORKSPACE_ROOT", os.getcwd())
+    model = loop.model
+    token_count = loop.cumulative_usage.total_tokens
+
+    return HTML(
+        f' <b>{workspace_path}</b> '
+        f'| <b>Model:</b> {model} '
+        f'| <b>Tokens:</b> {token_count} '
+    )
+
+
 def build_prompt_session(workspace: str | Path, runtime: dict[str, Any] | None = None):
     """Create an optional prompt_toolkit input session with history."""
     try:
@@ -350,21 +376,8 @@ def build_prompt_session(workspace: str | Path, runtime: dict[str, Any] | None =
         }
         completer = SlashCommandCompleter(commands_meta)
         
-        loop = runtime.get("loop")
-        store = runtime.get("store")
-        
         def get_bottom_toolbar():
-            if not loop or not store:
-                return ""
-            workspace_path = os.environ.get("ZZM_AGENT_WORKSPACE_ROOT", os.getcwd())
-            model = loop.model
-            token_count = loop.cumulative_usage.total_tokens
-            
-            return HTML(
-                f' <b>{workspace_path}</b> '
-                f'| <b>Model:</b> {model} '
-                f'| <b>Tokens:</b> {token_count} '
-            )
+            return build_bottom_toolbar(runtime)
             
         bottom_toolbar = get_bottom_toolbar
 

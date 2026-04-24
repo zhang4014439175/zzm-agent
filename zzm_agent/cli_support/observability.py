@@ -137,6 +137,9 @@ class CliObserver:
     def _start_live(self) -> None:
         if self._live is not None:
             return
+        if getattr(self.console, "_zzm_prompt_footer_live", False):
+            self._render_plain_tool_status()
+            return
         if not hasattr(self.console, "set_live"):
             self._render_plain_tool_status()
             return
@@ -357,8 +360,11 @@ class CliObserver:
         summary = text_cls.assemble(
             ("\u2022Edited: ", "bold #56B6C2"),
             (rel_path, "dim"),
-            ("  ", "default"),
-            (f"(+{added} -{removed})", "dim"),
+            ("  (", "dim"),
+            (f"+{added}", "#2EA043"),
+            (" ", "dim"),
+            (f"-{removed}", "#CF222E"),
+            (")", "dim"),
         )
         preview = self._diff_preview_lines(diff_text)
         if not preview:
@@ -408,7 +414,7 @@ class CliObserver:
             elif line.startswith("-"):
                 marker = "-"
                 content = line[1:]
-                style = "#b8d3bf on #2f5f43"
+                style = "#ffd7d5 on #67060c"
             elif line.startswith(" "):
                 content = line[1:]
 
