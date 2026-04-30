@@ -13,12 +13,14 @@ model:
   output_price_per_1m: 0
 
 agent:
-  system_prompt: "你是 zzm-agent，一个简洁高效的个人助理。"
+  system_prompt: "你是 zzm-agent，一个简洁高效的个人助理，请用中文进行对话。"
   auto_approve: false
   max_tool_iterations: 20
   duplicate_tool_call_limit: 3
   max_tool_retries: 1
   stream: true
+  # Set to null if the current provider rejects tool_choice.
+  tool_choice: "auto"
   plugin_dirs:
     - "zzm_agent/plugins"
 

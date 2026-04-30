@@ -2,9 +2,11 @@ from __future__ import annotations
 
 from typing import Any
 
+from zzm_agent.core.model_metadata import resolve_model_context_limit
 from zzm_agent.core.tool_registry import ToolRegistry
 from zzm_agent.evolution.optimizer import EvolutionOptimizer
 from zzm_agent.memory.store import MemoryStore
+from zzm_agent.memory.token_counter import TokenCounter
 
 
 def handle_slash(
@@ -78,6 +80,69 @@ def handle_slash(
             console.print(
                 f"[cyan]{function_meta['name']}[/cyan]: {function_meta['description']}"
             )
+        return True
+
+    if command.startswith("/models"):
+        if runtime is None:
+            console.print("[yellow]Model listing is unavailable in this context.[/yellow]")
+            return True
+
+        parts = command.split(maxsplit=1)
+        name_filter = parts[1].strip() if len(parts) == 2 else ""
+        models = _list_runtime_models(runtime)
+        if models is None:
+            console.print("[red]Failed to fetch models from the configured base_url.[/red]")
+            return True
+        if name_filter:
+            models = [model_id for model_id in models if name_filter in model_id]
+        if not models:
+            if name_filter:
+                console.print(
+                    "[yellow]"
+                    f"No models matched name filter: {name_filter}"
+                    "[/yellow]"
+                )
+            else:
+                console.print("[yellow]No models returned by the configured base_url.[/yellow]")
+            return True
+
+        current_model = str(getattr(runtime.get("loop"), "model", ""))
+        console.print(f"[yellow]{len(models)} model(s) available.[/yellow]")
+        for model_id in models:
+            marker = "*" if model_id == current_model else " "
+            console.print(f"{marker} [cyan]{model_id}[/cyan]")
+        return True
+
+    if command.startswith("/model"):
+        if runtime is None:
+            console.print("[yellow]Model switching is unavailable in this context.[/yellow]")
+            return True
+
+        parts = command.split(maxsplit=1)
+        loop = runtime.get("loop")
+        if len(parts) == 1 or not parts[1].strip():
+            current_model = getattr(loop, "model", "unknown")
+            console.print(f"[cyan]Current model:[/cyan] {current_model}")
+            console.print("[dim]Use /models to list models, /model <id> to switch.[/dim]")
+            return True
+
+        model_id = parts[1].strip()
+        models = _list_runtime_models(runtime)
+        if models is None:
+            console.print("[red]Failed to fetch models from the configured base_url.[/red]")
+            return True
+        if model_id not in models:
+            console.print(f"[yellow]Model not found:[/yellow] {model_id}")
+            console.print("[dim]Use /models to list available model ids.[/dim]")
+            return True
+
+        _switch_runtime_model(runtime, model_id)
+        context_limit = getattr(runtime.get("store"), "max_context_tokens", 0)
+        console.print(
+            "[green]Switched model:[/green] "
+            f"[cyan]{model_id}[/cyan] "
+            f"[dim](context {context_limit})[/dim]"
+        )
         return True
 
     if command == "/reload":
@@ -316,3 +381,82 @@ def handle_slash(
         raise SystemExit(0)
 
     return False
+
+
+def _list_runtime_models(runtime: dict[str, Any]) -> list[str] | None:
+    """Fetch model ids from the current OpenAI-compatible client, oldest first."""
+    client = runtime.get("client")
+    if client is None:
+        return None
+    try:
+        response = client.models.list()
+    except Exception:
+        return None
+
+    raw_items = response.get("data", []) if isinstance(response, dict) else getattr(response, "data", [])
+    model_records: list[tuple[int | None, str]] = []
+    for item in raw_items or []:
+        if isinstance(item, dict):
+            model_id = item.get("id")
+            created = item.get("created")
+        else:
+            model_id = getattr(item, "id", None)
+            created = getattr(item, "created", None)
+        if model_id:
+            model_records.append((_parse_created_timestamp(created), str(model_id)))
+
+    deduped: dict[str, int | None] = {}
+    for created, model_id in model_records:
+        if model_id not in deduped or _created_is_newer(created, deduped[model_id]):
+            deduped[model_id] = created
+
+    return [
+        model_id
+        for model_id, _created in sorted(
+            deduped.items(),
+            key=lambda item: (item[1] is not None, item[1] or 0, item[0]),
+        )
+    ]
+
+
+def _parse_created_timestamp(value: Any) -> int | None:
+    if value is None or value == "":
+        return None
+    try:
+        return int(value)
+    except (TypeError, ValueError):
+        return None
+
+
+def _created_is_newer(candidate: int | None, current: int | None) -> bool:
+    if candidate is None:
+        return False
+    if current is None:
+        return True
+    return candidate > current
+
+
+def _switch_runtime_model(runtime: dict[str, Any], model_id: str) -> None:
+    """Switch the active model for subsequent requests in the current REPL."""
+    loop = runtime.get("loop")
+    store = runtime.get("store")
+    optimizer = runtime.get("optimizer")
+    cfg = runtime.get("config")
+    if isinstance(cfg, dict):
+        cfg.setdefault("model", {})["model_name"] = model_id
+
+    if loop is not None:
+        loop.model = model_id
+        loop.token_counter = TokenCounter(model=model_id)
+        loop.last_context_window = {}
+
+    if store is not None:
+        store.token_counter = TokenCounter(model=model_id)
+
+    if optimizer is not None and hasattr(optimizer, "model"):
+        optimizer.model = model_id
+
+    if isinstance(cfg, dict) and store is not None:
+        context_limit = resolve_model_context_limit(cfg)
+        store.max_context_tokens = context_limit.tokens
+        runtime["model_context_limit_source"] = context_limit.source

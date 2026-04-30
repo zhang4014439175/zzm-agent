@@ -54,6 +54,7 @@ class AgentLoop:
         max_tool_iterations: int = 20,
         duplicate_tool_call_limit: int = 3,
         max_tool_retries: int = 1,
+        tool_choice: str | None = "auto",
         on_tool_start: ToolEventCallback | None = None,
         on_tool_end: ToolEventCallback | None = None,
         on_tool_error: ToolEventCallback | None = None,
@@ -70,6 +71,8 @@ class AgentLoop:
             max_tool_iterations: Maximum model tool-call rounds before stopping.
             duplicate_tool_call_limit: Consecutive identical calls before stopping.
             max_tool_retries: Automatic retries for retryable tool execution errors.
+            tool_choice: Tool-choice policy to send when tools are present. Set
+                to None for providers that reject the field.
             on_tool_start: Callback for structured tool start events.
             on_tool_end: Callback for successful or denied tool completion events.
             on_tool_error: Callback for failed tool completion events.
@@ -88,6 +91,8 @@ class AgentLoop:
         self.max_tool_iterations = max(1, max_tool_iterations)
         self.duplicate_tool_call_limit = max(1, duplicate_tool_call_limit)
         self.max_tool_retries = max(0, max_tool_retries)
+        self.tool_choice = tool_choice
+        self._tool_choice_disabled_by_provider = False
         self.on_tool_start = on_tool_start
         self.on_tool_end = on_tool_end
         self.on_tool_error = on_tool_error
@@ -181,25 +186,118 @@ class AgentLoop:
             source="estimated",
         )
 
+    def _apply_tool_kwargs(
+        self,
+        kwargs: dict[str, Any],
+        tools: list[dict[str, Any]],
+    ) -> None:
+        """Attach tool schemas and compatible tool_choice policy to request kwargs."""
+        if not tools:
+            return
+        kwargs["tools"] = tools
+        if self.tool_choice and not self._tool_choice_disabled_by_provider:
+            kwargs["tool_choice"] = self.tool_choice
+
+    def _chat_completion_kwargs(
+        self,
+        messages: list[dict[str, Any]],
+        tools: list[dict[str, Any]],
+        stream: bool,
+    ) -> dict[str, Any]:
+        """Build the provider request payload used for one model call."""
+        kwargs: dict[str, Any] = {
+            "model": self.model,
+            "messages": messages,
+        }
+        if stream:
+            kwargs["stream"] = True
+        if self.temperature is not None:
+            kwargs["temperature"] = self.temperature
+        if self.max_tokens is not None:
+            kwargs["max_tokens"] = self.max_tokens
+        self._apply_tool_kwargs(kwargs, tools)
+        return kwargs
+
+    def _save_context_snapshot(
+        self,
+        *,
+        user_input: str,
+        messages: list[dict[str, Any]],
+        tools: list[dict[str, Any]],
+        stream: bool,
+        tool_iteration: int,
+    ) -> None:
+        """Write the latest complete prompt payload into the active session."""
+        kwargs = self._chat_completion_kwargs(messages, tools, stream=stream)
+        self.store.save_latest_context(
+            {
+                "model": self.model,
+                "latest_user_input": user_input,
+                "stream": stream,
+                "tool_iteration": tool_iteration,
+                "context_window": self.last_context_window,
+                "request": kwargs,
+            }
+        )
+
+    def _provider_rejects_tool_choice(self, exc: Exception) -> bool:
+        """Return whether a provider error indicates unsupported tool_choice."""
+        text = str(exc).lower()
+        return "tool_choice" in text and (
+            "no endpoints found" in text
+            or "unsupported" in text
+            or "not support" in text
+            or "does not support" in text
+        )
+
+    def _retry_without_tool_choice(
+        self,
+        exc: Exception,
+        kwargs: dict[str, Any],
+    ) -> Any:
+        """Retry a request once without tool_choice when a provider rejects it."""
+        if "tool_choice" not in kwargs or not self._provider_rejects_tool_choice(exc):
+            raise exc
+        retry_kwargs = dict(kwargs)
+        retry_kwargs.pop("tool_choice", None)
+        self._tool_choice_disabled_by_provider = True
+        return self.client.chat.completions.create(**retry_kwargs)
+
+    def _raise_for_api_error_response(self, response: Any) -> None:
+        """Raise a useful exception when a provider returns an error payload."""
+        error = getattr(response, "error", None)
+        if not isinstance(error, dict):
+            return
+
+        message = str(error.get("message") or "Unknown chat completion error")
+        code = error.get("code")
+        if code:
+            message = f"{message} (code: {code})"
+        raise RuntimeError(f"Chat completion failed: {message}")
+
+    def _first_choice_message(self, response: Any) -> Any:
+        """Extract the first response message, validating malformed payloads."""
+        self._raise_for_api_error_response(response)
+        choices = getattr(response, "choices", None)
+        if not choices:
+            raise RuntimeError("Chat completion failed: response did not include choices.")
+        message = getattr(choices[0], "message", None)
+        if message is None:
+            raise RuntimeError("Chat completion failed: response choice did not include a message.")
+        return message
+
     def _complete_once(
         self,
         messages: list[dict[str, Any]],
         tools: list[dict[str, Any]],
     ) -> tuple[str, list[dict[str, Any]], bool, TokenUsage]:
-        kwargs = {
-            "model": self.model,
-            "messages": messages,
-        }
-        if self.temperature is not None:
-            kwargs["temperature"] = self.temperature
-        if self.max_tokens is not None:
-            kwargs["max_tokens"] = self.max_tokens
-        if tools:
-            kwargs["tools"] = tools
-            kwargs["tool_choice"] = "auto"
+        kwargs = self._chat_completion_kwargs(messages, tools, stream=False)
 
-        response = self.client.chat.completions.create(**kwargs)
-        msg = response.choices[0].message
+        try:
+            response = self.client.chat.completions.create(**kwargs)
+        except Exception as exc:
+            response = self._retry_without_tool_choice(exc, kwargs)
+        msg = self._first_choice_message(response)
         return (
             msg.content or "",
             self._extract_tool_calls(msg.tool_calls or []),
@@ -213,18 +311,7 @@ class AgentLoop:
         tools: list[dict[str, Any]],
         on_text_chunk: Callable[[str], None] | None,
     ) -> tuple[str, list[dict[str, Any]], bool, TokenUsage]:
-        kwargs = {
-            "model": self.model,
-            "messages": messages,
-            "stream": True,
-        }
-        if self.temperature is not None:
-            kwargs["temperature"] = self.temperature
-        if self.max_tokens is not None:
-            kwargs["max_tokens"] = self.max_tokens
-        if tools:
-            kwargs["tools"] = tools
-            kwargs["tool_choice"] = "auto"
+        kwargs = self._chat_completion_kwargs(messages, tools, stream=True)
 
         text_parts: list[str] = []
         usage = TokenUsage()
@@ -233,7 +320,10 @@ class AgentLoop:
         tool_call_map: dict[int, dict[str, Any]] = {}
 
         try:
-            response = self.client.chat.completions.create(**kwargs)
+            try:
+                response = self.client.chat.completions.create(**kwargs)
+            except Exception as exc:
+                response = self._retry_without_tool_choice(exc, kwargs)
             for chunk in response:
                 chunk_usage = self._usage_from_sdk_object(getattr(chunk, "usage", None))
                 if chunk_usage.has_tokens():
@@ -477,6 +567,14 @@ class AgentLoop:
                 self.store.append(turn_messages)
                 self._commit_turn_usage(turn_usage)
                 return final_reply
+
+            self._save_context_snapshot(
+                user_input=user_input,
+                messages=messages,
+                tools=tools,
+                stream=stream,
+                tool_iteration=tool_iterations,
+            )
 
             if stream:
                 assistant_content, tool_calls_raw, interrupted, call_usage = self._stream_once(

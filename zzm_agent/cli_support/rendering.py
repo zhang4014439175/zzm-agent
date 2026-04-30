@@ -61,8 +61,6 @@ def _install_completion_menu_highlight_patch() -> None:
 
     original_item_fragments = menus._get_menu_item_fragments
     original_meta_fragments = menus.CompletionsMenuControl._get_menu_item_meta_fragments
-    original_menu_width = menus.CompletionsMenuControl._get_menu_width
-
     def get_menu_item_fragments(
         completion: Any,
         is_current_completion: bool,
@@ -72,10 +70,7 @@ def _install_completion_menu_highlight_patch() -> None:
         if not is_current_completion:
             return original_item_fragments(completion, is_current_completion, width, space_after)
 
-        text, text_width = menus._trim_formatted_text(
-            completion.display,
-            width - 2 if space_after else width - 1,
-        )
+        text, text_width = menus._trim_formatted_text(completion.display, width)
         padding = " " * (width - 1 - text_width)
         return menus.to_formatted_text(
             [("", " ")] + text + [("", padding)],
@@ -93,15 +88,8 @@ def _install_completion_menu_highlight_patch() -> None:
             return result[1:]
         return result
 
-    def get_menu_width(self: Any, max_width: int, complete_state: Any) -> int:
-        return min(
-            max_width,
-            max(self.MIN_WIDTH, original_menu_width(self, max_width, complete_state) - 1),
-        )
-
     menus._get_menu_item_fragments = get_menu_item_fragments
     menus.CompletionsMenuControl._get_menu_item_meta_fragments = get_menu_item_meta_fragments
-    menus.CompletionsMenuControl._get_menu_width = get_menu_width
 
     original_float_init = Float.__init__
 
@@ -366,6 +354,8 @@ def build_prompt_session(workspace: str | Path, runtime: dict[str, Any] | None =
             "/help": "显示帮助信息",
             "/tools": "列出所有注册的工具",
             "/reload": "重新加载本地工具插件",
+            "/models": "列出当前 base URL 可用模型",
+            "/model": "查看或切换当前模型",
             "/stream": "查看或切换流式输出",
             "/memory": "显示最近历史和压缩状态",
             "/sessions": "列出所有已知的会话",
@@ -580,6 +570,8 @@ Available Commands:
 /help         - Show this help message
 /tools        - List all registered tools
 /reload       - Reload plugin tools from disk
+/models       - List models from the configured base URL
+/model <id>   - Show or switch the active model
 /stream       - Show or change streaming output mode
 /memory       - Show recent conversation history and compression state
 /sessions     - List all known conversation sessions
@@ -606,6 +598,8 @@ Available Commands:
         ("/help", "Show this help message"),
         ("/tools", "List all registered tools"),
         ("/reload", "Reload plugin tools from disk"),
+        ("/models", "List models from the configured base URL"),
+        ("/model <id>", "Show or switch the active model"),
         ("/stream [on|off|toggle|status]", "Show or change streaming output mode"),
         ("/memory", "Show recent history and compression state"),
         ("/sessions", "List all known conversation sessions"),

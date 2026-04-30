@@ -41,6 +41,10 @@ class SessionStore:
         """Return the path of one session's episodic summary file."""
         return self.session_dir(session_id or self.session_id) / "episodic.json"
 
+    def latest_context_path(self, session_id: str | None = None) -> Path:
+        """Return the path of one session's latest model-context snapshot."""
+        return self.session_dir(session_id or self.session_id) / "latest_context.json"
+
     def initialize(self, session_id: str | None = None) -> None:
         """Finish startup by migrating legacy data and selecting an active session."""
         # Legacy migration must happen before any session is selected so the

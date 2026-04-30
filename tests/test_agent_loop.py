@@ -1,5 +1,7 @@
 import json
 import pytest
+import uuid
+from pathlib import Path
 from unittest.mock import MagicMock
 from types import SimpleNamespace
 from zzm_agent.core.agent_loop import AgentLoop
@@ -40,6 +42,7 @@ def make_response(content=None, tool_calls=None):
     resp = MagicMock()
     resp.choices = [choice]
     resp.usage = None
+    resp.error = None
     return resp
 
 
@@ -51,6 +54,22 @@ def make_response_with_usage(content=None, tool_calls=None, prompt=0, completion
         total_tokens=prompt + completion,
     )
     return resp
+
+
+def make_error_response(message="Internal Server Error", code=500):
+    return SimpleNamespace(
+        choices=None,
+        usage=None,
+        error={"message": message, "code": code},
+    )
+
+
+def make_error_test_store(session_id: str):
+    return MemoryStore(
+        path=Path(".tmp_agent_loop_api_error") / "memory.json",
+        max_history=10,
+        session_id=f"{session_id}-{uuid.uuid4().hex}",
+    )
 
 
 def make_stream_chunk(content=None, tool_calls=None):
@@ -116,6 +135,44 @@ def test_agent_loop_tracks_api_token_usage(registry, store):
     assert loop.cumulative_usage.total_tokens == 17
 
 
+def test_chat_completion_error_payload_raises_clear_error(registry):
+    store = make_error_test_store("api-error-payload")
+    loop = AgentLoop(
+        client=MagicMock(),
+        model="test-model",
+        system_prompt="You are helpful.",
+        registry=registry,
+        store=store,
+    )
+    loop.client.chat.completions.create.return_value = make_error_response()
+
+    with pytest.raises(RuntimeError, match="Internal Server Error .*500"):
+        loop.run("Hi", stream=False)
+
+    assert store.load_history() == []
+
+
+def test_chat_completion_without_choices_raises_clear_error(registry):
+    store = make_error_test_store("missing-choices")
+    loop = AgentLoop(
+        client=MagicMock(),
+        model="test-model",
+        system_prompt="You are helpful.",
+        registry=registry,
+        store=store,
+    )
+    loop.client.chat.completions.create.return_value = SimpleNamespace(
+        choices=None,
+        usage=None,
+        error=None,
+    )
+
+    with pytest.raises(RuntimeError, match="did not include choices"):
+        loop.run("Hi", stream=False)
+
+    assert store.load_history() == []
+
+
 def test_agent_loop_estimates_token_usage_when_provider_omits_usage(registry, store):
     loop = AgentLoop(
         client=MagicMock(),
@@ -153,6 +210,34 @@ def test_agent_loop_exposes_context_window_metadata(registry, store):
         == loop.last_context_window["message_tokens"]
         + loop.last_context_window["tool_schema_tokens"]
     )
+
+
+def test_agent_loop_saves_latest_context_snapshot(registry, store):
+    loop = AgentLoop(
+        client=MagicMock(),
+        model="test-model",
+        system_prompt="You are helpful.",
+        registry=registry,
+        store=store,
+    )
+    loop.client.chat.completions.create.return_value = make_response(content="Hello!")
+
+    loop.run("Hi", stream=False)
+
+    snapshot = json.loads(store.latest_context_path.read_text(encoding="utf-8"))
+    assert snapshot["session_id"] == store.session_id
+    assert snapshot["model"] == "test-model"
+    assert snapshot["latest_user_input"] == "Hi"
+    assert snapshot["stream"] is False
+    assert snapshot["tool_iteration"] == 0
+    assert snapshot["request"]["model"] == "test-model"
+    assert snapshot["request"]["messages"][0] == {
+        "role": "system",
+        "content": "You are helpful.",
+    }
+    assert snapshot["request"]["messages"][-1] == {"role": "user", "content": "Hi"}
+    assert snapshot["request"]["tools"]
+    assert snapshot["context_window"]["total_tokens"] == loop.last_context_window["total_tokens"]
 
 
 def test_tool_call_then_reply(registry, store):
@@ -719,6 +804,50 @@ def test_model_config_is_forwarded_to_chat_completions(registry, store):
     kwargs = loop.client.chat.completions.create.call_args.kwargs
     assert kwargs["temperature"] == 0.2
     assert kwargs["max_tokens"] == 256
+
+
+def test_provider_tool_choice_rejection_retries_without_tool_choice(registry, store):
+    loop = AgentLoop(
+        client=MagicMock(),
+        model="test-model",
+        system_prompt="sys",
+        registry=registry,
+        store=store,
+    )
+    loop.client.chat.completions.create.side_effect = [
+        Exception(
+            "Error code: 404 - No endpoints found that support the provided "
+            "'tool_choice' value"
+        ),
+        make_response(content="ok"),
+    ]
+
+    result = loop.run("hello", stream=False)
+
+    assert result == "ok"
+    first_kwargs = loop.client.chat.completions.create.call_args_list[0].kwargs
+    second_kwargs = loop.client.chat.completions.create.call_args_list[1].kwargs
+    assert first_kwargs["tool_choice"] == "auto"
+    assert "tool_choice" not in second_kwargs
+    assert loop._tool_choice_disabled_by_provider is True
+
+
+def test_tool_choice_can_be_disabled_by_config(registry, store):
+    loop = AgentLoop(
+        client=MagicMock(),
+        model="test-model",
+        system_prompt="sys",
+        registry=registry,
+        store=store,
+        tool_choice=None,
+    )
+    loop.client.chat.completions.create.return_value = make_response(content="ok")
+
+    loop.run("hello", stream=False)
+
+    kwargs = loop.client.chat.completions.create.call_args.kwargs
+    assert "tools" in kwargs
+    assert "tool_choice" not in kwargs
 
 
 def test_memory_injection_includes_semantic_and_episodic_context(registry, tmp_path):

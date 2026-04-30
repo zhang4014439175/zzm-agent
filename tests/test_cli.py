@@ -12,6 +12,7 @@ from zzm_agent.cli_support.runtime import (
 from zzm_agent.core.model_metadata import resolve_model_context_limit
 from zzm_agent.core.observability import TokenUsage, tool_end_event, tool_start_event
 from zzm_agent.core.tool_registry import ToolRegistry
+from zzm_agent.core.agent_loop import AgentLoop
 from zzm_agent.memory.store import MemoryStore
 
 
@@ -65,6 +66,42 @@ class DummyConsole:
         if self.inputs:
             return self.inputs.pop(0)
         return ""
+
+
+class DummyModelsClient:
+    def __init__(self, model_ids):
+        self.model_ids = model_ids
+
+    class _Models:
+        def __init__(self, model_ids):
+            self.model_ids = model_ids
+
+        def list(self):
+            class Response:
+                pass
+
+            response = Response()
+            response.data = []
+            for item in self.model_ids:
+                if isinstance(item, tuple):
+                    model_id, created = item
+                    response.data.append(type("Model", (), {"id": model_id, "created": created})())
+                else:
+                    response.data.append(type("Model", (), {"id": item})())
+            return response
+
+    @property
+    def models(self):
+        return self._Models(self.model_ids)
+
+    class _Chat:
+        class _Completions:
+            def create(self, **kwargs):
+                raise AssertionError("chat completions should not be called")
+
+        completions = _Completions()
+
+    chat = _Chat()
 
 
 def test_tool_approval_choice_default_is_valid(monkeypatch):
@@ -363,6 +400,113 @@ def test_stream_command_handles_missing_runtime(tmp_path):
 
     assert handle_slash("/stream off", DummyRegistry(), store, DummyOptimizer(), console) is True
     assert any("unavailable" in line for line in console.lines)
+
+
+def test_models_command_lists_current_base_url_models(tmp_path):
+    store = MemoryStore(path=tmp_path / "memory.json", max_history=50)
+    console = DummyConsole()
+    registry = DummyRegistry()
+    loop = type("Loop", (), {"model": "demo-a"})()
+    runtime = {
+        "client": DummyModelsClient(["demo-b", "demo-a"]),
+        "loop": loop,
+    }
+
+    handled = handle_slash("/models", registry, store, DummyOptimizer(), console, runtime)
+
+    assert handled is True
+    assert any("2 model(s)" in line for line in console.lines)
+    assert any("* [cyan]demo-a" in line for line in console.lines)
+    assert any("demo-b" in line for line in console.lines)
+
+
+def test_models_command_sorts_by_created_oldest_to_newest(tmp_path):
+    store = MemoryStore(path=tmp_path / "memory.json", max_history=50)
+    console = DummyConsole()
+    runtime = {
+        "client": DummyModelsClient([
+            ("new-model", 300),
+            ("old-model", 100),
+            ("middle-model", 200),
+        ]),
+        "loop": type("Loop", (), {"model": "middle-model"})(),
+    }
+
+    handled = handle_slash("/models", DummyRegistry(), store, DummyOptimizer(), console, runtime)
+
+    assert handled is True
+    rendered = "\n".join(console.lines)
+    assert rendered.index("old-model") < rendered.index("middle-model") < rendered.index("new-model")
+
+
+def test_models_command_filters_by_model_name_substring(tmp_path):
+    store = MemoryStore(path=tmp_path / "memory.json", max_history=50)
+    console = DummyConsole()
+    runtime = {
+        "client": DummyModelsClient(["demo-a", "demo-a:free", "demo-b:free"]),
+        "loop": type("Loop", (), {"model": "demo-a:free"})(),
+    }
+
+    handled = handle_slash("/models :free", DummyRegistry(), store, DummyOptimizer(), console, runtime)
+
+    assert handled is True
+    assert any("2 model(s)" in line for line in console.lines)
+    assert any("* [cyan]demo-a:free" in line for line in console.lines)
+    assert any("demo-b:free" in line for line in console.lines)
+    assert not any("demo-a[/cyan]" in line for line in console.lines)
+
+
+def test_model_command_switches_runtime_model(tmp_path):
+    store = MemoryStore(path=tmp_path / "memory.json", max_history=50, max_context_tokens=32000)
+    registry = ToolRegistry()
+    loop = AgentLoop(
+        client=DummyModelsClient(["demo-a", "demo-b"]),
+        model="demo-a",
+        system_prompt="sys",
+        registry=registry,
+        store=store,
+    )
+    optimizer = DummyOptimizer()
+    optimizer.model = "demo-a"
+    console = DummyConsole()
+    runtime = {
+        "client": DummyModelsClient(["demo-a", "demo-b"]),
+        "config": {
+            "model": {"model_name": "demo-a", "context_window_tokens": 64000},
+            "memory": {"max_context_tokens": 32000},
+        },
+        "loop": loop,
+        "store": store,
+        "optimizer": optimizer,
+    }
+
+    handled = handle_slash("/model demo-b", registry, store, optimizer, console, runtime)
+
+    assert handled is True
+    assert loop.model == "demo-b"
+    assert loop.token_counter.model == "demo-b"
+    assert store.token_counter.model == "demo-b"
+    assert store.max_context_tokens == 64000
+    assert optimizer.model == "demo-b"
+    assert any("Switched model" in line for line in console.lines)
+
+
+def test_model_command_rejects_unknown_model(tmp_path):
+    store = MemoryStore(path=tmp_path / "memory.json", max_history=50)
+    console = DummyConsole()
+    loop = type("Loop", (), {"model": "demo-a"})()
+    runtime = {
+        "client": DummyModelsClient(["demo-a"]),
+        "loop": loop,
+        "store": store,
+        "config": {"model": {"model_name": "demo-a"}, "memory": {"max_context_tokens": 32000}},
+    }
+
+    handled = handle_slash("/model missing", DummyRegistry(), store, DummyOptimizer(), console, runtime)
+
+    assert handled is True
+    assert loop.model == "demo-a"
+    assert any("Model not found" in line for line in console.lines)
 
 
 def test_cli_observer_collects_file_edit_diff(tmp_path):

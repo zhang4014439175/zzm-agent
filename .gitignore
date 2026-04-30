@@ -21,3 +21,5 @@ __pycache__/
 .tmp_manual
 /zzm_agent.egg-info/
 .env
+.codex-test-tmp
+.tmp_agent_loop_api_error

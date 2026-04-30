@@ -462,12 +462,15 @@ def build_runtime(args: argparse.Namespace, cfg: dict[str, Any]) -> dict[str, An
         max_tool_iterations=loop_policy["max_tool_iterations"],
         duplicate_tool_call_limit=loop_policy["duplicate_tool_call_limit"],
         max_tool_retries=loop_policy["max_tool_retries"],
+        tool_choice=cfg.get("agent", {}).get("tool_choice", "auto"),
         on_tool_start=_fanout_tool_callbacks(observer.on_tool_start, tool_event_logger),
         on_tool_end=_fanout_tool_callbacks(observer.on_tool_end, tool_event_logger),
         on_tool_error=_fanout_tool_callbacks(observer.on_tool_error, tool_event_logger),
     )
 
     return {
+        "client": client,
+        "config": cfg,
         "console": console,
         "registry": registry,
         "store": store,

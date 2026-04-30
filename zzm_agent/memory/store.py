@@ -96,6 +96,11 @@ class MemoryStore:
         """Return the path of the active session's episodic summary file."""
         return self.sessions.episodic_path()
 
+    @property
+    def latest_context_path(self) -> Path:
+        """Return the path of the active session's latest context snapshot."""
+        return self.sessions.latest_context_path()
+
     def load_history(self) -> list[dict]:
         """Load the recent transcript for the active session."""
         return self.history_store.load_history()
@@ -104,6 +109,15 @@ class MemoryStore:
         """Append messages to the active session and refresh episodic memory."""
         history = self.history_store.append(messages)
         self.episodic_store.update(self.session_id, history=history)
+
+    def save_latest_context(self, snapshot: dict[str, Any]) -> None:
+        """Persist the latest model prompt snapshot inside the active session."""
+        payload = {
+            "created_at": self.sessions.utc_now(),
+            "session_id": self.session_id,
+            **snapshot,
+        }
+        self.io.write_json(self.latest_context_path, payload)
 
     def list_sessions(self) -> list[dict]:
         """Return every known session ordered by most recent activity."""
