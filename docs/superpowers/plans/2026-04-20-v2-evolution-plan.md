@@ -1320,14 +1320,14 @@ class ReplayLLM:
 
 任务清单：
 
-- [ ] 在 `requirements.txt` 中添加 `tiktoken` 可选依赖
-- [ ] 实现 `TokenCounter` 类，支持 tokenizer fallback 链：模型专用 → tiktoken cl100k_base → `len/4`
-- [ ] `MemoryStore.estimate_text_tokens` 优先使用 `TokenCounter`，不可用时回退到字符估算
-- [ ] 调大默认 `max_context_tokens`，充分利用现代模型的长上下文窗口
-- [ ] 实现 `PinnedContext`，保存用户目标、关键约束、当前文件、错误核心行、未完成计划
-- [ ] History 超出预算时，优先压缩旧消息，而不是简单截断
-- [ ] 增加轻量 / 中量 / 重度压缩策略
-- [ ] CLI 状态栏展示当前 token 使用情况
+- [x] 在 `requirements.txt` 中添加 `tiktoken` 可选依赖
+- [x] 实现 `TokenCounter` 类，支持 tokenizer fallback 链：模型专用 → tiktoken cl100k_base → `len/4`
+- [x] `MemoryStore.estimate_text_tokens` 优先使用 `TokenCounter`，不可用时回退到字符估算
+- [x] 调大默认 `max_context_tokens`，充分利用现代模型的长上下文窗口
+- [x] 实现 `PinnedContext`，保存用户目标、关键约束、当前文件、错误核心行、未完成计划
+- [x] History 超出预算时，优先压缩旧消息，而不是简单截断
+- [x] 增加轻量 / 中量 / 重度压缩策略
+- [x] CLI 状态栏展示当前 token 使用情况
 
 验收标准：
 

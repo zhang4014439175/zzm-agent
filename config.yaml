@@ -5,6 +5,9 @@ model:
   model_name: "${LLM_MODEL_NAME}"
   temperature: 0.7
   max_tokens: 4096
+  # Optional explicit model context window. If omitted, OpenRouter models are
+  # discovered from /models; otherwise memory.max_context_tokens is used.
+  context_window_tokens:
   # Optional pricing for CLI cost estimates, in USD per 1M tokens.
   input_price_per_1m: 0
   output_price_per_1m: 0
@@ -22,7 +25,7 @@ memory:
   path: ".zzm_agent/memory.json"
   max_history: 50
   retrieval_top_k: 3
-  max_context_tokens: 8000
+  max_context_tokens: 32000
   compression_keep_recent: 10
 
 evolution:

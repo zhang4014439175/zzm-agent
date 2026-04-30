@@ -12,6 +12,7 @@ from zzm_agent.core.observability import (
     tool_error_event,
     tool_start_event,
 )
+from zzm_agent.memory.token_counter import TokenCounter
 
 if TYPE_CHECKING:
     from openai import OpenAI
@@ -92,6 +93,8 @@ class AgentLoop:
         self.on_tool_error = on_tool_error
         self.last_turn_usage = TokenUsage()
         self.cumulative_usage = TokenUsage()
+        self.last_context_window: dict[str, Any] = {}
+        self.token_counter = TokenCounter(model=model)
 
     def _build_tool_call_record(
         self,
@@ -152,11 +155,8 @@ class AgentLoop:
         )
 
     def _estimate_text_tokens(self, text: str) -> int:
-        """Small local fallback until the dedicated TokenCounter lands in E5."""
-        stripped = text.strip()
-        if not stripped:
-            return 0
-        return max(1, len(stripped) // 4)
+        """Estimate token count with the E5 tokenizer fallback chain."""
+        return self.token_counter.count_text(text)
 
     def _estimate_messages_tokens(self, messages: list[dict[str, Any]]) -> int:
         serialized = json.dumps(messages, ensure_ascii=False, default=str)
@@ -443,6 +443,7 @@ class AgentLoop:
             user_input=user_input,
             memory_limit=self.memory_injection_limit,
         )
+        self.last_context_window = _compression
 
         # Persist only the current turn once it is safe to do so; this avoids
         # duplicating prior history that was already loaded from disk.
@@ -451,6 +452,16 @@ class AgentLoop:
         
         # Get available tool schemas
         tools = self.registry.get_schemas()
+        tool_schema_tokens = self._estimate_text_tokens(
+            json.dumps(tools, ensure_ascii=False, sort_keys=True, default=str)
+        ) if tools else 0
+        message_tokens = int(self.last_context_window.get("total_tokens", 0) or 0)
+        self.last_context_window = {
+            **self.last_context_window,
+            "message_tokens": message_tokens,
+            "tool_schema_tokens": tool_schema_tokens,
+            "total_tokens": message_tokens + tool_schema_tokens,
+        }
 
         # 2. Start the thinking-action loop
         # print(messages)

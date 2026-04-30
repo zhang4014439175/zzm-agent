@@ -62,7 +62,12 @@ class CliObserver:
         self._stop_live_if_idle()
         self._render_tool_summary(event)
 
-    def finish_turn(self, turn_usage: TokenUsage, cumulative_usage: TokenUsage) -> None:
+    def finish_turn(
+        self,
+        turn_usage: TokenUsage,
+        cumulative_usage: TokenUsage,
+        context_window: dict[str, Any] | None = None,
+    ) -> None:
         """Render end-of-turn observability panels and reset transient state."""
         self.stop()
         self.render_diffs()

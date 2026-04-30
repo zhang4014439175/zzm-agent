@@ -108,13 +108,16 @@ def handle_slash(
         )
         console.print(
             "[dim]"
-            f"Estimated history tokens: {preview['raw_tokens']}/{preview['budget_tokens']}."
+            f"Estimated history tokens: {preview['raw_tokens']}/{preview['budget_tokens']} "
+            f"via {store.token_count_source()}."
             "[/dim]"
         )
         if preview["applied"]:
             console.print(
                 "[yellow]"
-                f"Context compression active. Kept {preview['kept_recent_count']} raw messages."
+                "Context compression active. "
+                f"Kept {preview['kept_recent_count']} raw messages "
+                f"using {preview['compression_strategy']} strategy."
                 "[/yellow]"
             )
             if preview["summary"]:

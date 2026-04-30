@@ -315,12 +315,19 @@ def build_bottom_toolbar(runtime: dict[str, Any] | None = None):
 
     workspace_path = os.environ.get("ZZM_AGENT_WORKSPACE_ROOT", os.getcwd())
     model = loop.model
-    token_count = loop.cumulative_usage.total_tokens
+    context_window = getattr(loop, "last_context_window", {}) or {}
+    context_limit = int(
+        context_window.get("max_context_tokens", 0)
+        or getattr(store, "max_context_tokens", 0)
+        or 0
+    )
+    last_usage = getattr(loop, "last_turn_usage", None)
+    context_used = getattr(last_usage, "prompt_tokens", 0) or 0
 
     return HTML(
         f' <b>{workspace_path}</b> '
         f'| <b>Model:</b> {model} '
-        f'| <b>Tokens:</b> {token_count} '
+        f'| <b>Context:</b> {context_used}/{context_limit} '
     )
 
 

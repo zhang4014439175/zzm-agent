@@ -132,6 +132,29 @@ def test_agent_loop_estimates_token_usage_when_provider_omits_usage(registry, st
     assert loop.last_turn_usage.source == "estimated"
 
 
+def test_agent_loop_exposes_context_window_metadata(registry, store):
+    loop = AgentLoop(
+        client=MagicMock(),
+        model="test-model",
+        system_prompt="You are helpful.",
+        registry=registry,
+        store=store,
+    )
+    loop.client.chat.completions.create.return_value = make_response(content="Hello!")
+
+    loop.run("Hi", stream=False)
+
+    assert loop.last_context_window["max_context_tokens"] == store.max_context_tokens
+    assert loop.last_context_window["total_tokens"] > 0
+    assert loop.last_context_window["message_tokens"] > 0
+    assert loop.last_context_window["tool_schema_tokens"] > 0
+    assert (
+        loop.last_context_window["total_tokens"]
+        == loop.last_context_window["message_tokens"]
+        + loop.last_context_window["tool_schema_tokens"]
+    )
+
+
 def test_tool_call_then_reply(registry, store):
     """Test the loop when the model requests a tool call before responding."""
     # Mock tool call object

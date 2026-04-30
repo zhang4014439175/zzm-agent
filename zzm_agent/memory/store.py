@@ -7,9 +7,11 @@ from typing import Any
 from zzm_agent.memory.episodic_store import EpisodicStore
 from zzm_agent.memory.history_store import HistoryStore
 from zzm_agent.memory.io import StorageIO
+from zzm_agent.memory.pinned_context import PinnedContext
 from zzm_agent.memory.retriever import KeywordMemoryRetriever, MemoryRetriever
 from zzm_agent.memory.semantic_store import SemanticStore
 from zzm_agent.memory.session_store import SessionStore
+from zzm_agent.memory.token_counter import TokenCounter
 
 
 class MemoryStore:
@@ -21,13 +23,16 @@ class MemoryStore:
         max_history: int = 50,
         session_id: str | None = None,
         retrieval_top_k: int = 3,
-        max_context_tokens: int = 8000,
+        max_context_tokens: int = 32000,
         compression_keep_recent: int = 10,
+        model_name: str | None = None,
+        token_counter: TokenCounter | None = None,
     ):
         self.max_history = max_history
         self.retrieval_top_k = retrieval_top_k
         self.max_context_tokens = max_context_tokens
         self.compression_keep_recent = compression_keep_recent
+        self.token_counter = token_counter or TokenCounter(model=model_name)
 
         self.io = StorageIO()
         self.sessions = SessionStore(self.io, path=path)
@@ -225,6 +230,10 @@ class MemoryStore:
         history = self.load_history()
         messages: list[dict[str, Any]] = [{"role": "system", "content": system_prompt}]
         messages.extend(self.build_memory_messages(query=user_input, limit=memory_limit))
+        pinned = PinnedContext.from_turn(user_input=user_input, history=history)
+        pinned_message = pinned.to_message()
+        if pinned_message is not None:
+            messages.append(pinned_message)
 
         reserved_messages = messages + [{"role": "user", "content": user_input}]
         reserved_tokens = self.estimate_messages_tokens(reserved_messages)
@@ -238,6 +247,7 @@ class MemoryStore:
             "reserved_tokens": reserved_tokens,
             "max_context_tokens": self.max_context_tokens,
             "total_tokens": self.estimate_messages_tokens(messages),
+            "pinned_context": pinned_message["content"] if pinned_message else "",
         }
 
     def preview_context_window(self) -> dict[str, Any]:
@@ -269,6 +279,7 @@ class MemoryStore:
                 "raw_tokens": 0,
                 "compressed_tokens": 0,
                 "budget_tokens": token_budget,
+                "compression_strategy": "none",
             }
 
         if token_budget > 0 and raw_tokens <= token_budget:
@@ -283,6 +294,7 @@ class MemoryStore:
                 "raw_tokens": raw_tokens,
                 "compressed_tokens": raw_tokens,
                 "budget_tokens": token_budget,
+                "compression_strategy": "none",
             }
 
         recent_count = min(self.compression_keep_recent, len(current_history))
@@ -309,7 +321,12 @@ class MemoryStore:
             older_messages.append(recent_messages.pop(0))
 
         summary_budget = max(token_budget - self.estimate_messages_tokens(recent_messages), 0)
-        summary_message = self._build_compression_summary(older_messages, summary_budget)
+        strategy = self._select_compression_strategy(raw_tokens, max(token_budget, 1))
+        summary_message = self._build_compression_summary(
+            older_messages,
+            summary_budget,
+            strategy=strategy,
+        )
 
         compressed_messages: list[dict[str, Any]] = []
         if summary_message:
@@ -328,32 +345,47 @@ class MemoryStore:
             "raw_tokens": raw_tokens,
             "compressed_tokens": compressed_tokens,
             "budget_tokens": token_budget,
+            "compression_strategy": strategy,
         }
 
     def estimate_messages_tokens(self, messages: list[dict[str, Any]]) -> int:
-        """Estimate token usage using message text length as a cheap proxy."""
+        """Estimate token usage using the configured tokenizer fallback chain."""
         return sum(self.estimate_text_tokens(self._message_text(message)) for message in messages)
 
     def estimate_text_tokens(self, text: str) -> int:
-        """Approximate token count from characters without extra dependencies."""
-        normalized = " ".join(str(text).split())
-        if not normalized:
-            return 0
-        return max(1, (len(normalized) + 3) // 4)
+        """Estimate token count using model-specific, tiktoken, then len/4 fallback."""
+        return self.token_counter.count_text(text)
+
+    def token_count_source(self, text: str = "probe") -> str:
+        """Return the current token counting strategy for diagnostics."""
+        return self.token_counter.count(text).source
+
+    def _select_compression_strategy(self, raw_tokens: int, token_budget: int) -> str:
+        """Choose light, medium, or heavy compression based on budget pressure."""
+        if token_budget <= 0:
+            return "heavy"
+        pressure = raw_tokens / token_budget
+        if pressure <= 1.25:
+            return "light"
+        if pressure <= 2.5:
+            return "medium"
+        return "heavy"
 
     def _build_compression_summary(
         self,
         messages: list[dict[str, Any]],
         token_budget: int,
+        strategy: str = "medium",
     ) -> dict[str, str] | None:
         """Fold older messages into one system summary within the budget."""
         if not messages or token_budget <= 0:
             return None
 
-        prefix = "Runtime compression summary:"
+        prefix = f"Runtime compression summary ({strategy}):"
+        line_limit = {"light": 220, "medium": 140, "heavy": 90}.get(strategy, 140)
         collected: list[str] = []
         for message in reversed(messages):
-            line = self._summary_line(message)
+            line = self._summary_line(message, limit=line_limit)
             if not line:
                 continue
 
@@ -364,17 +396,17 @@ class MemoryStore:
             collected = candidate
 
         if not collected:
-            content = prefix + "\n- Earlier messages were omitted to fit the context window."
+            content = prefix + "\n- Earlier messages were compressed to fit the context window."
             if self.estimate_text_tokens(content) > token_budget:
                 return None
             return {"role": "system", "content": content}
 
         return {"role": "system", "content": prefix + "\n- " + "\n- ".join(collected)}
 
-    def _summary_line(self, message: dict[str, Any]) -> str:
+    def _summary_line(self, message: dict[str, Any], limit: int = 160) -> str:
         """Render one message as a short bullet inside the runtime summary."""
         role = str(message.get("role", "message")).strip().lower() or "message"
-        content = self._excerpt_text(message.get("content", ""))
+        content = self._excerpt_text(message.get("content", ""), limit=limit)
 
         if role == "assistant" and message.get("tool_calls"):
             tool_names = [

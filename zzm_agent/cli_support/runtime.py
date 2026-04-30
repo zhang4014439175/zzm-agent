@@ -19,6 +19,7 @@ from zzm_agent.cli_support.rendering import (
     render_reply,
 )
 from zzm_agent.core.agent_loop import AgentLoop
+from zzm_agent.core.model_metadata import resolve_model_context_limit
 from zzm_agent.core.observability import ToolEvent, ToolEventCallback, ToolEventLogger
 from zzm_agent.core.tool_registry import ToolRegistry, set_active_registry
 from zzm_agent.evolution.optimizer import EvolutionOptimizer
@@ -398,14 +399,17 @@ def build_runtime(args: argparse.Namespace, cfg: dict[str, Any]) -> dict[str, An
         api_key=api_key,
     )
     registry = build_registry(cfg)
+    context_limit = resolve_model_context_limit(cfg)
+    cfg.setdefault("runtime", {})["model_context_limit_source"] = context_limit.source
     store = MemoryStore(
         path=cfg["memory"]["path"],
         max_history=cfg["memory"]["max_history"],
         session_id=args.session_id,
         # This controls how many long-term memory items are injected per turn.
         retrieval_top_k=cfg["memory"].get("retrieval_top_k", 3),
-        max_context_tokens=cfg["memory"].get("max_context_tokens", 8000),
+        max_context_tokens=context_limit.tokens,
         compression_keep_recent=cfg["memory"].get("compression_keep_recent", 10),
+        model_name=cfg["model"].get("model_name"),
     )
     optimizer = EvolutionOptimizer(
         client=client,
@@ -453,6 +457,7 @@ def build_runtime(args: argparse.Namespace, cfg: dict[str, Any]) -> dict[str, An
         "optimizer": optimizer,
         "loop": loop,
         "observer": observer,
+        "model_context_limit_source": context_limit.source,
     }
 
 
@@ -524,7 +529,11 @@ def run_repl(runtime: dict[str, Any]) -> int:
                 console.print()
                 
             if observer is not None:
-                observer.finish_turn(loop.last_turn_usage, loop.cumulative_usage)
+                observer.finish_turn(
+                    loop.last_turn_usage,
+                    loop.cumulative_usage,
+                    context_window=loop.last_context_window,
+                )
         except Exception as exc:
             if observer is not None:
                 observer.stop()

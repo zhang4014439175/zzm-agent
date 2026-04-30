@@ -3,6 +3,7 @@ import json
 import pytest
 
 from zzm_agent.memory.io import StorageCorruptionError, StorageIO
+from zzm_agent.memory.token_counter import TokenCounter
 from zzm_agent.memory.store import MemoryStore
 
 
@@ -384,3 +385,82 @@ def test_build_turn_messages_respects_context_budget(tmp_path):
         message["role"] == "user" and message["content"] == "latest raw message"
         for message in messages[1:-1]
     )
+
+
+def test_token_counter_uses_model_specific_tokenizer_before_fallback():
+    counter = TokenCounter(
+        model="demo-model",
+        model_tokenizers={"demo-model": lambda text: 7},
+    )
+
+    counted = counter.count("hello world")
+
+    assert counted.tokens == 7
+    assert counted.source == "model"
+
+
+def test_token_counter_falls_back_to_len_over_four_when_tiktoken_missing(monkeypatch):
+    real_import = __import__
+
+    def fake_import(name, *args, **kwargs):
+        if name == "tiktoken":
+            raise ImportError
+        return real_import(name, *args, **kwargs)
+
+    monkeypatch.setattr("builtins.__import__", fake_import)
+    counter = TokenCounter(model="unknown-model")
+
+    counted = counter.count("abcd efgh")
+
+    assert counted.tokens == 3
+    assert counted.source == "len/4"
+
+
+def test_build_turn_messages_injects_pinned_context_before_compressed_history(tmp_path):
+    store = MemoryStore(
+        path=tmp_path / "memory.json",
+        max_history=50,
+        max_context_tokens=60,
+        compression_keep_recent=1,
+    )
+    store.append(
+        [
+            {"role": "user", "content": "old " * 80},
+            {"role": "assistant", "content": "older " * 80},
+            {"role": "user", "content": "latest raw message"},
+        ]
+    )
+
+    messages, compression = store.build_turn_messages(
+        system_prompt="sys",
+        user_input="Fix zzm_agent/memory/store.py and do not remove current behavior",
+    )
+
+    contents = [message["content"] for message in messages if message.get("content")]
+    pinned = next(content for content in contents if "[Pinned Context]" in content)
+    assert "zzm_agent/memory/store.py" in pinned
+    assert "do not remove current behavior" in pinned
+    assert compression["pinned_context"] == pinned
+    assert compression["applied"] is True
+
+
+def test_compress_history_reports_strategy(tmp_path):
+    store = MemoryStore(
+        path=tmp_path / "memory.json",
+        max_history=50,
+        max_context_tokens=30,
+        compression_keep_recent=1,
+    )
+    store.append(
+        [
+            {"role": "user", "content": "alpha " * 60},
+            {"role": "assistant", "content": "beta " * 60},
+            {"role": "user", "content": "recent"},
+        ]
+    )
+
+    preview = store.preview_context_window()
+
+    assert preview["applied"] is True
+    assert preview["compression_strategy"] in {"light", "medium", "heavy"}
+    assert "Runtime compression summary" in preview["summary"]

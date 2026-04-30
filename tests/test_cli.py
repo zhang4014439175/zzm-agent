@@ -1,6 +1,6 @@
 from zzm_agent.cli_support.commands import handle_slash
 from zzm_agent.cli_support.observability import CliObserver
-from zzm_agent.cli_support.rendering import SlashCommandCompleter
+from zzm_agent.cli_support.rendering import SlashCommandCompleter, build_bottom_toolbar
 from zzm_agent.cli_support.runtime import (
     build_tool_confirmation_callback,
     _ask_tool_approval_choice,
@@ -8,6 +8,7 @@ from zzm_agent.cli_support.runtime import (
     load_config,
     parse_args,
 )
+from zzm_agent.core.model_metadata import resolve_model_context_limit
 from zzm_agent.core.observability import TokenUsage, tool_end_event, tool_start_event
 from zzm_agent.core.tool_registry import ToolRegistry
 from zzm_agent.memory.store import MemoryStore
@@ -178,6 +179,68 @@ def test_load_config_expands_env_placeholders(tmp_path, monkeypatch):
     assert cfg["model"]["api_key"] == "secret"
 
 
+def test_model_context_limit_prefers_explicit_config():
+    resolved = resolve_model_context_limit({
+        "model": {"context_window_tokens": 64000},
+        "memory": {"max_context_tokens": 32000},
+    })
+
+    assert resolved.tokens == 64000
+    assert resolved.source == "config"
+
+
+def test_model_context_limit_reads_openrouter_models(monkeypatch):
+    class FakeResponse:
+        def __enter__(self):
+            return self
+
+        def __exit__(self, *args):
+            return False
+
+        def read(self):
+            return (
+                b'{"data":[{"id":"tencent/hy3-preview:free",'
+                b'"context_length":131072,'
+                b'"top_provider":{"context_length":65536}}]}'
+            )
+
+    def fake_urlopen(request, timeout):
+        assert "models" in request.full_url
+        return FakeResponse()
+
+    monkeypatch.setattr("zzm_agent.core.model_metadata.urlopen", fake_urlopen)
+
+    resolved = resolve_model_context_limit({
+        "model": {
+            "base_url": "https://openrouter.ai/api/v1",
+            "api_key": "key",
+            "model_name": "tencent/hy3-preview:free",
+        },
+        "memory": {"max_context_tokens": 32000},
+    })
+
+    assert resolved.tokens == 131072
+    assert resolved.source == "openrouter"
+
+
+def test_model_context_limit_falls_back_to_memory_config(monkeypatch):
+    def fail_urlopen(request, timeout):
+        raise OSError("offline")
+
+    monkeypatch.setattr("zzm_agent.core.model_metadata.urlopen", fail_urlopen)
+
+    resolved = resolve_model_context_limit({
+        "model": {
+            "base_url": "https://openrouter.ai/api/v1",
+            "model_name": "missing/model",
+        },
+        "memory": {"max_context_tokens": 24000},
+    })
+
+    assert resolved.tokens == 24000
+    assert resolved.source == "memory"
+
+
 def test_agent_loop_policy_uses_defaults_for_legacy_config():
     policy = get_agent_loop_policy({"agent": {}})
 
@@ -218,6 +281,29 @@ def test_agent_loop_policy_clamps_values_to_at_least_one():
         "duplicate_tool_call_limit": 1,
         "max_tool_retries": 0,
     }
+
+
+def test_bottom_toolbar_shows_model_context_usage_only(tmp_path, monkeypatch):
+    pytest = __import__("pytest")
+    pytest.importorskip("prompt_toolkit.formatted_text")
+
+    class DummyLoop:
+        model = "demo-model"
+        last_context_window = {"total_tokens": 1200, "max_context_tokens": 64000}
+        last_turn_usage = TokenUsage(prompt_tokens=1000, completion_tokens=80, total_tokens=1080)
+        cumulative_usage = TokenUsage(prompt_tokens=2000, completion_tokens=160, total_tokens=2160)
+
+    store = MemoryStore(path=tmp_path / "memory.json", max_history=1, max_context_tokens=64000)
+    monkeypatch.setenv("ZZM_AGENT_WORKSPACE_ROOT", str(tmp_path))
+
+    toolbar = build_bottom_toolbar({"loop": DummyLoop(), "store": store})
+    rendered = str(toolbar)
+
+    assert "Context:" in rendered
+    assert "1000/64000" in rendered
+    assert "Ctx:" not in rendered
+    assert "Last:" not in rendered
+    assert "Session:" not in rendered
 
 
 def test_tool_confirmation_supports_allow_once_choice():
@@ -304,6 +390,25 @@ def test_cli_observer_finish_turn_does_not_render_usage_table():
     observer.finish_turn(
         TokenUsage(prompt_tokens=10, completion_tokens=5, total_tokens=15, source="api"),
         TokenUsage(prompt_tokens=10, completion_tokens=5, total_tokens=15, source="api"),
+    )
+
+    assert console.lines == []
+
+
+def test_cli_observer_finish_turn_does_not_render_context_status():
+    console = DummyConsole()
+    observer = CliObserver(console, workspace_root=".")
+
+    observer.finish_turn(
+        TokenUsage(prompt_tokens=10, completion_tokens=5, total_tokens=15, source="api"),
+        TokenUsage(prompt_tokens=10, completion_tokens=5, total_tokens=15, source="api"),
+        context_window={
+            "total_tokens": 120,
+            "max_context_tokens": 32000,
+            "tool_schema_tokens": 30,
+            "applied": False,
+            "compression_strategy": "none",
+        },
     )
 
     assert console.lines == []
