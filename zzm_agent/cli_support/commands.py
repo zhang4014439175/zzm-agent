@@ -13,6 +13,7 @@ def handle_slash(
     store: MemoryStore,
     optimizer: EvolutionOptimizer,
     console: Any,
+    runtime: dict[str, Any] | None = None,
 ) -> bool:
     """
     Handle built-in slash commands.
@@ -23,6 +24,7 @@ def handle_slash(
         store: Persistent memory store used to show recent history.
         optimizer: Evolution optimizer invoked by ``/evolve``.
         console: Console-like object used to print feedback.
+        runtime: Optional live runtime state for commands that adjust current REPL behavior.
 
     Returns:
         ``True`` when the command was recognized and handled, otherwise ``False``.
@@ -209,6 +211,33 @@ def handle_slash(
         if candidate.get("rationale"):
             console.print(f"[dim]{candidate['rationale']}[/dim]")
         console.print("[dim]Review with /evolve diff, apply with /evolve apply.[/dim]")
+        return True
+
+    if command.startswith("/stream"):
+        if runtime is None:
+            console.print("[yellow]Streaming control is unavailable in this context.[/yellow]")
+            return True
+
+        parts = command.split(maxsplit=1)
+        current = bool(runtime.get("stream", True))
+        if len(parts) == 1 or parts[1].strip() == "status":
+            state = "on" if current else "off"
+            console.print(f"[cyan]Streaming:[/cyan] {state}")
+            return True
+
+        action = parts[1].strip().lower()
+        if action in {"on", "true", "1", "yes"}:
+            runtime["stream"] = True
+        elif action in {"off", "false", "0", "no"}:
+            runtime["stream"] = False
+        elif action == "toggle":
+            runtime["stream"] = not current
+        else:
+            console.print("[yellow]Usage: /stream [on|off|toggle|status][/yellow]")
+            return True
+
+        state = "on" if runtime["stream"] else "off"
+        console.print(f"[green]Streaming {state}.[/green]")
         return True
 
     if command == "/evolve status":

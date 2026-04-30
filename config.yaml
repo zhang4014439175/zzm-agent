@@ -18,6 +18,7 @@ agent:
   max_tool_iterations: 20
   duplicate_tool_call_limit: 3
   max_tool_retries: 1
+  stream: true
   plugin_dirs:
     - "zzm_agent/plugins"
 

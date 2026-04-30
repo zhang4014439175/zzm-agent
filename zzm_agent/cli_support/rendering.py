@@ -366,6 +366,7 @@ def build_prompt_session(workspace: str | Path, runtime: dict[str, Any] | None =
             "/help": "显示帮助信息",
             "/tools": "列出所有注册的工具",
             "/reload": "重新加载本地工具插件",
+            "/stream": "查看或切换流式输出",
             "/memory": "显示最近历史和压缩状态",
             "/sessions": "列出所有已知的会话",
             "/session": "切换到指定的历史会话",
@@ -579,6 +580,7 @@ Available Commands:
 /help         - Show this help message
 /tools        - List all registered tools
 /reload       - Reload plugin tools from disk
+/stream       - Show or change streaming output mode
 /memory       - Show recent conversation history and compression state
 /sessions     - List all known conversation sessions
 /session <id> - Switch to a specific session
@@ -604,6 +606,7 @@ Available Commands:
         ("/help", "Show this help message"),
         ("/tools", "List all registered tools"),
         ("/reload", "Reload plugin tools from disk"),
+        ("/stream [on|off|toggle|status]", "Show or change streaming output mode"),
         ("/memory", "Show recent history and compression state"),
         ("/sessions", "List all known conversation sessions"),
         ("/session <id>", "Switch to a specific session"),

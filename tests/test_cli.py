@@ -4,6 +4,7 @@ from zzm_agent.cli_support.rendering import SlashCommandCompleter, build_bottom_
 from zzm_agent.cli_support.runtime import (
     build_tool_confirmation_callback,
     _ask_tool_approval_choice,
+    _config_bool,
     get_agent_loop_policy,
     load_config,
     parse_args,
@@ -179,6 +180,13 @@ def test_load_config_expands_env_placeholders(tmp_path, monkeypatch):
     assert cfg["model"]["api_key"] == "secret"
 
 
+def test_config_bool_accepts_common_values():
+    assert _config_bool(True, default=False) is True
+    assert _config_bool("off", default=True) is False
+    assert _config_bool("yes", default=False) is True
+    assert _config_bool(None, default=True) is True
+
+
 def test_model_context_limit_prefers_explicit_config():
     resolved = resolve_model_context_limit({
         "model": {"context_window_tokens": 64000},
@@ -332,6 +340,29 @@ def test_tool_confirmation_denies_by_default():
     confirm = build_tool_confirmation_callback(console)
 
     assert confirm("wipe", {"target": "demo"}, "high") is False
+
+
+def test_stream_command_reports_and_updates_runtime_state(tmp_path):
+    store = MemoryStore(path=tmp_path / "memory.json", max_history=50)
+    console = DummyConsole()
+    runtime = {"stream": True}
+
+    assert handle_slash("/stream", DummyRegistry(), store, DummyOptimizer(), console, runtime) is True
+    assert any("Streaming:" in line and "on" in line for line in console.lines)
+
+    assert handle_slash("/stream off", DummyRegistry(), store, DummyOptimizer(), console, runtime) is True
+    assert runtime["stream"] is False
+
+    assert handle_slash("/stream toggle", DummyRegistry(), store, DummyOptimizer(), console, runtime) is True
+    assert runtime["stream"] is True
+
+
+def test_stream_command_handles_missing_runtime(tmp_path):
+    store = MemoryStore(path=tmp_path / "memory.json", max_history=50)
+    console = DummyConsole()
+
+    assert handle_slash("/stream off", DummyRegistry(), store, DummyOptimizer(), console) is True
+    assert any("unavailable" in line for line in console.lines)
 
 
 def test_cli_observer_collects_file_edit_diff(tmp_path):

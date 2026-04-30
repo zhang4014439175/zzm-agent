@@ -147,6 +147,23 @@ def _expand_env_value(value: Any) -> Any:
     return os.environ.get(env_name, default or "")
 
 
+def _config_bool(value: Any, default: bool = False) -> bool:
+    """Parse permissive boolean config values while keeping YAML bools native."""
+    if value is None:
+        return default
+    if isinstance(value, bool):
+        return value
+    if isinstance(value, (int, float)):
+        return bool(value)
+    if isinstance(value, str):
+        normalized = value.strip().lower()
+        if normalized in {"1", "true", "yes", "on"}:
+            return True
+        if normalized in {"0", "false", "no", "off"}:
+            return False
+    return default
+
+
 def load_config(config_path: str | Path | None = None) -> dict[str, Any]:
     """
     Load the YAML configuration file used to bootstrap the CLI.
@@ -458,6 +475,7 @@ def build_runtime(args: argparse.Namespace, cfg: dict[str, Any]) -> dict[str, An
         "loop": loop,
         "observer": observer,
         "model_context_limit_source": context_limit.source,
+        "stream": _config_bool(cfg.get("agent", {}).get("stream"), default=True),
     }
 
 
@@ -497,12 +515,13 @@ def run_repl(runtime: dict[str, Any]) -> int:
             continue
 
         if user_input.startswith("/"):
-            if not handle_slash(user_input, registry, store, optimizer, console):
+            if not handle_slash(user_input, registry, store, optimizer, console, runtime=runtime):
                 console.print(f"[red]Unknown command: {user_input}[/red]")
             continue
 
         try:
             console.print()
+            stream_enabled = bool(runtime.get("stream", True))
             streamed = {"seen": False}
             stream_renderer = MarkdownStreamRenderer(console)
 
@@ -512,7 +531,14 @@ def run_repl(runtime: dict[str, Any]) -> int:
                 streamed["seen"] = True
                 stream_renderer.push(chunk)
 
-            if not _start_working_status(console):
+            if not stream_enabled:
+                started = _start_working_status(console)
+                try:
+                    reply = loop.run(user_input, stream=False)
+                finally:
+                    if started:
+                        _stop_working_status(console, clear_status=True)
+            elif not _start_working_status(console):
                 reply = loop.run(user_input, stream=True, on_text_chunk=on_text_chunk)
             else:
                 try:
