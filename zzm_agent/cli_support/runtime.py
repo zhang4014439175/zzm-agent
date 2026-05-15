@@ -25,6 +25,7 @@ from zzm_agent.core.tool_registry import ToolRegistry, set_active_registry
 from zzm_agent.evolution.optimizer import EvolutionOptimizer
 from zzm_agent.memory.io import StorageCorruptionError
 from zzm_agent.memory.store import MemoryStore
+from zzm_agent.prompt.manager import PromptManager
 
 CONFIG_PATH = Path("config.yaml")
 _ENV_VALUE_PATTERN = re.compile(r"^\$\{([A-Za-z_][A-Za-z0-9_]*)(?::-(.*))?\}$")
@@ -446,6 +447,11 @@ def build_runtime(args: argparse.Namespace, cfg: dict[str, Any]) -> dict[str, An
         output_price_per_1m=float(model_cfg.get("output_price_per_1m", 0.0) or 0.0),
     )
     tool_event_logger = ToolEventLogger(workspace_root / TOOL_EVENTS_PATH)
+    prompt_manager = PromptManager(
+        base_prompt=system_prompt,
+        workspace_root=workspace_root,
+        registry=registry,
+    )
     loop = AgentLoop(
         client=client,
         model=cfg["model"]["model_name"],
@@ -466,6 +472,7 @@ def build_runtime(args: argparse.Namespace, cfg: dict[str, Any]) -> dict[str, An
         on_tool_start=_fanout_tool_callbacks(observer.on_tool_start, tool_event_logger),
         on_tool_end=_fanout_tool_callbacks(observer.on_tool_end, tool_event_logger),
         on_tool_error=_fanout_tool_callbacks(observer.on_tool_error, tool_event_logger),
+        prompt_manager=prompt_manager,
     )
 
     return {
@@ -476,6 +483,7 @@ def build_runtime(args: argparse.Namespace, cfg: dict[str, Any]) -> dict[str, An
         "store": store,
         "optimizer": optimizer,
         "loop": loop,
+        "prompt_manager": prompt_manager,
         "observer": observer,
         "model_context_limit_source": context_limit.source,
         "stream": _config_bool(cfg.get("agent", {}).get("stream"), default=True),

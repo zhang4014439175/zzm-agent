@@ -95,6 +95,8 @@ def test_tool_metadata_exposes_risk_level():
         "name": "dangerous",
         "description": "dangerous operation",
         "risk_level": "high",
+        "group": "",
+        "examples": [],
     }
 
 

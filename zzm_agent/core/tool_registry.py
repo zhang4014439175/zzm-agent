@@ -64,12 +64,21 @@ class ToolRegistry:
         self._plugin_instances: list[BasePlugin] = []
         self._registration_context_stack: list[_RegistrationContext] = []
 
-    def tool(self, description: str, risk_level: str = "low") -> Callable:
+    def tool(
+        self,
+        description: str,
+        risk_level: str = "low",
+        group: str = "",
+        examples: list[str] | None = None,
+    ) -> Callable:
         """
         Decorator to register a function as a tool.
         
         Args:
             description: A human-readable description of what the tool does.
+            risk_level: Risk level used by confirmation policy.
+            group: Optional display group used in prompt and tool listings.
+            examples: Optional short usage examples for prompt guidance.
             
         Returns:
             A decorator function that registers the tool and returns the original function.
@@ -123,7 +132,8 @@ class ToolRegistry:
                 "plugin_name": context.plugin_name,
                 "plugin_version": context.plugin_version,
                 "namespace": context.namespace,
-                "group": context.group,
+                "group": group or context.group,
+                "examples": list(examples or []),
             }
             return fn
         return decorator
@@ -218,6 +228,8 @@ class ToolRegistry:
             "name": name,
             "description": tool_data["description"],
             "risk_level": tool_data["risk_level"],
+            "group": tool_data.get("group", ""),
+            "examples": list(tool_data.get("examples", [])),
         }
 
     def configure_plugin_dirs(

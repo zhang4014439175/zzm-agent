@@ -14,6 +14,8 @@ PROMPT_SECTION_ENVIRONMENT = "Environment"
 PROMPT_SECTION_WORKING_MEMORY = "Working Memory"
 PROMPT_SECTION_PINNED_CONTEXT = "Pinned Context"
 PROMPT_SECTION_TOOL_GUIDE = "Tools"
+PROMPT_SECTION_PROJECT_RULES = "Project Rules"
+PROMPT_SECTION_OUTPUT_FORMAT = "Output Format"
 
 
 # Internal workspace metadata paths.
@@ -49,3 +51,5 @@ EVENT_TOOL_ERROR = "tool.error"
 
 # Config keys.
 CONFIG_AGENT_MAX_PARALLEL_TOOLS = "agent.max_parallel_tools"
+CONFIG_AGENT_SYSTEM_PROMPT = "agent.system_prompt"
+CONFIG_MEMORY_RETRIEVAL_TOP_K = "memory.retrieval_top_k"

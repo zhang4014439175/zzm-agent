@@ -18,6 +18,7 @@ if TYPE_CHECKING:
     from openai import OpenAI
     from zzm_agent.core.tool_registry import ToolRegistry
     from zzm_agent.memory.store import MemoryStore
+    from zzm_agent.prompt.manager import PromptManager
 
 
 @dataclass
@@ -58,6 +59,7 @@ class AgentLoop:
         on_tool_start: ToolEventCallback | None = None,
         on_tool_end: ToolEventCallback | None = None,
         on_tool_error: ToolEventCallback | None = None,
+        prompt_manager: "PromptManager | None" = None,
     ):
         """
         Initialize the AgentLoop.
@@ -76,6 +78,7 @@ class AgentLoop:
             on_tool_start: Callback for structured tool start events.
             on_tool_end: Callback for successful or denied tool completion events.
             on_tool_error: Callback for failed tool completion events.
+            prompt_manager: Optional dynamic prompt composer for per-turn system prompts.
         """
         self.client = client
         self.model = model
@@ -96,6 +99,7 @@ class AgentLoop:
         self.on_tool_start = on_tool_start
         self.on_tool_end = on_tool_end
         self.on_tool_error = on_tool_error
+        self.prompt_manager = prompt_manager
         self.last_turn_usage = TokenUsage()
         self.cumulative_usage = TokenUsage()
         self.last_context_window: dict[str, Any] = {}
@@ -506,6 +510,13 @@ class AgentLoop:
         self.last_turn_usage = usage.copy()
         self.cumulative_usage.add(usage)
 
+    def _build_system_prompt(self, user_input: str) -> str:
+        """Return the static or dynamically assembled system prompt for this turn."""
+        if self.prompt_manager is None:
+            return self.system_prompt
+        history = self.store.load_history()
+        return self.prompt_manager.build(user_input=user_input, history=history)
+
     def run(
         self,
         user_input: str,
@@ -528,8 +539,9 @@ class AgentLoop:
         """
         # 1. Load runtime context: base instructions + long-term memory +
         # compressed session history + current user input.
+        system_prompt = self._build_system_prompt(user_input)
         messages, _compression = self.store.build_turn_messages(
-            system_prompt=self.system_prompt,
+            system_prompt=system_prompt,
             user_input=user_input,
             memory_limit=self.memory_injection_limit,
         )

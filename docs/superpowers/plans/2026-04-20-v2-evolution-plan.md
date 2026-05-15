@@ -12,6 +12,7 @@
 | 2026-04-22 | 代码审计补充：E3 拆分为 E3a/E3b；新增前置修复任务 E0.5；E4 补充对话成本追踪、结构化输出；E5 补充 tokenizer fallback 链；E8 补充 async 兼容层策略和 Git 工具；E9 补充 Planner 架构约束；E10 补充 auto-evolve 安全红线；新增目标目录结构 |
 | 2026-04-22 | 完成 E4 CLI 可观测性：工具事件、Rich Live 状态、缓冲 Markdown、diff 预览、工具事件日志、token/费用展示和审批选项 |
 | 2026-04-22 | E4 CLI 体验增强：授权菜单接入 Questionary 上下键选择，REPL 输入接入 prompt_toolkit 历史记录，Rich 面板统一圆角、padding、柔和配色和 JSON 高亮 |
+| 2026-05-15 | 完成 E6 PromptManager 与环境适配：新增 prompt 模块、coding/analysis/chat 模板、轻量意图检测、项目规则注入、环境上下文、集中常量、工具指南和 examples/group prompt 注入 |
 
 ---
 
@@ -54,7 +55,7 @@
 
 ## 一、Prompt 系统
 
-**当前状态:** 无独立模块，需新建。
+**当前状态:** 已有独立 `zzm_agent/prompt/` 模块，支持 PromptManager 动态组装、模板选择、项目规则、环境上下文和工具指南注入。
 
 ### 现状问题
 
@@ -1053,12 +1054,12 @@ zzm-agent eval --suite full --llm
 |:---:|------|:------:|------|----------------|------|
 | 0 | E1 工具集补齐 | 已完成 | 让 Agent 具备基本编程工具能力 | 文件工具、搜索工具、Shell 工具、路径安全 | 无 |
 | 1 | E2 Agent 执行安全底座 | 已完成 | 防止失控，保证工具调用可控、可解释 | 3.1 循环保护、4.1 参数描述、4.4 插件生命周期、7.1 结构化错误、7.2 自动重试 | E1 |
-| 1.5 | E0.5 安全与卫生修复 | P0 | 修复明文 API Key 等不应带入后续阶段的安全和卫生问题 | API Key 环境变量化、.env.example、.gitignore 补全 | E2 |
-| 2 | E3a 回放测试底座 | P0 | 让 Agent Loop 的行为可在零 LLM 调用下被测试 | MockLLM/ReplayLLM、核心回放用例、fixtures 目录 | E2 |
-| 2.5 | E3b 基准集与评估命令 | P0 | 建立可比较、可回归的质量基线 | 固定任务基准集、eval 命令行、回归指标记录 | E3a |
+| 1.5 | E0.5 安全与卫生修复 | 已完成 | 修复明文 API Key 等不应带入后续阶段的安全和卫生问题 | API Key 环境变量化、.env.example、.gitignore 补全 | E2 |
+| 2 | E3a 回放测试底座 | 已完成 | 让 Agent Loop 的行为可在零 LLM 调用下被测试 | MockLLM/ReplayLLM、核心回放用例、fixtures 目录 | E2 |
+| 2.5 | E3b 基准集与评估命令 | 已完成 | 建立可比较、可回归的质量基线 | 固定任务基准集、eval 命令行、回归指标记录 | E3a |
 | 3 | E4 CLI 可观测性 | 已完成 | 让用户看得见 Agent 正在做什么 | 3.2 工具事件回调、5.2 工具状态面板、5.1 流式 Markdown、5.4 Diff 预览、对话成本追踪、日志 | E2、E3a |
-| 4 | E5 上下文与 Token 管理 | P0 | 让长会话不再靠粗略估算和硬截断 | 2.2 History 压缩、2.6 Pinning、Token 精确计算（含 fallback 链）、5.3 状态栏 | E2、E3a |
-| 5 | E6 PromptManager 与环境适配 | P1 | 让 Agent 能根据项目、任务和运行环境调整行为 | 1.1 Prompt 模板、1.2 动态组装、1.3 意图检测、1.4 项目规则、1.5 环境适配 | E5 |
+| 4 | E5 上下文与 Token 管理 | 已完成 | 让长会话不再靠粗略估算和硬截断 | 2.2 History 压缩、2.6 Pinning、Token 精确计算（含 fallback 链）、5.3 状态栏 | E2、E3a |
+| 5 | E6 PromptManager 与环境适配 | 已完成 | 让 Agent 能根据项目、任务和运行环境调整行为 | 1.1 Prompt 模板、1.2 动态组装、1.3 意图检测、1.4 项目规则、1.5 环境适配 | E5 |
 | 6 | E7 记忆与检索升级 | P1 | 让记忆真正能被沉淀、召回和利用 | 2.1 Episodic 摘要、2.3 自动记忆、2.5 重要性评分、语义/混合检索 | E5、E6 |
 | 7 | E8 异步执行、项目索引与后台任务 | P2 | 支持并发工具、减少大型项目探索成本，并管理长时间运行任务 | 3.5 async loop（保留 sync 入口）、3.6 并发 tool_calls、4.5 项目索引、4.6 `@tool_chain`、后台命令、Git 工具 | E4 |
 | 8 | E9 多轮规划与工作记忆 | P2 | 让 Agent 能拆解复杂任务并保留中间状态 | 2.4 WorkingMemory、3.4 思维链引导、Planner（AgentLoop 外层编排）、plan-execute | E6、E7、E8 |
@@ -1344,17 +1345,18 @@ class ReplayLLM:
 **为什么现在做:** 有了可靠上下文预算后，prompt 才能稳定注入项目规则、工具说明、环境约束和记忆上下文。  
 **关联章节:** 1.1、1.2、1.3、1.4、1.5、1.6、4.2、4.3。  
 **依赖:** E5。
+**当前状态:** 已完成。已新增 `zzm_agent/prompt/` 动态 prompt 模块，`AgentLoop` 支持每轮通过 `PromptManager` 生成 system prompt；CLI runtime 已接入项目规则、环境上下文、工具元数据和模板选择。已通过 `pytest tests` 回归验证。
 
 任务清单：
 
-- [ ] 新建 `zzm_agent/prompt/` 模块，包含 `manager.py`、`templates.py`、`context_builder.py`
-- [ ] 实现 coding / analysis / chat 三类基础模板
-- [ ] 实现轻量意图检测，按用户输入和历史上下文选择模板
-- [ ] 支持读取 `.zzm_agent/rules.md` 并注入 system prompt
-- [ ] 注入环境上下文：OS、shell、workspace、路径规则、推荐命令风格
-- [ ] 集中定义 Prompt section 标签、事件名、内部路径和配置 key，避免硬编码散落
-- [ ] 根据 Tool Registry 动态生成工具使用指南
-- [ ] 支持工具 examples 和 group 信息注入 prompt 或 `/tools` 展示
+- [x] 新建 `zzm_agent/prompt/` 模块，包含 `manager.py`、`templates.py`、`context_builder.py`
+- [x] 实现 coding / analysis / chat 三类基础模板
+- [x] 实现轻量意图检测，按用户输入和历史上下文选择模板
+- [x] 支持读取 `.zzm_agent/rules.md` 并注入 system prompt
+- [x] 注入环境上下文：OS、shell、workspace、路径规则、推荐命令风格
+- [x] 集中定义 Prompt section 标签、事件名、内部路径和配置 key，避免硬编码散落
+- [x] 根据 Tool Registry 动态生成工具使用指南
+- [x] 支持工具 examples 和 group 信息注入 prompt 或 `/tools` 展示
 
 验收标准：
 
