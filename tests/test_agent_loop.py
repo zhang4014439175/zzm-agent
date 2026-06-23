@@ -415,7 +415,9 @@ def test_agent_loop_stops_repeated_identical_tool_calls(registry, store):
     result = loop.run("repeat", stream=False)
 
     assert "repeatedly requested the same tool call" in result
-    assert loop.client.chat.completions.create.call_count == 2
+    assert "after reflection" in result.lower()
+    assert loop.client.chat.completions.create.call_count == 3
+    assert loop.last_reflection_count == 1
     assert store.load_history()[-1]["content"] == result
 
 
@@ -447,14 +449,107 @@ def test_agent_loop_stops_when_changed_calls_return_same_observation(tmp_path):
         make_response(tool_calls=[tool_call("call_1", "alpha")]),
         make_response(tool_calls=[tool_call("call_2", "beta")]),
         make_response(tool_calls=[tool_call("call_3", "gamma")]),
+        make_response(content="I changed approach and will report the blocker."),
+    ]
+
+    result = loop.run("find it", stream=False)
+
+    assert result == "I changed approach and will report the blocker."
+    assert loop.client.chat.completions.create.call_count == 4
+    reflection_request = loop.client.chat.completions.create.call_args_list[-1]
+    reflection_messages = reflection_request.kwargs["messages"]
+    reflection_prompt = next(
+        message
+        for message in reflection_messages
+        if message.get("role") == "system"
+        and "REFLECTION_REQUIRED" in str(message.get("content", ""))
+    )
+    assert reflection_prompt["role"] == "system"
+    assert "REFLECTION_REQUIRED" in reflection_prompt["content"]
+    assert "repeated_observation" in reflection_prompt["content"]
+    assert loop.last_reflection_count == 1
+    assert store.load_history()[-1]["content"] == result
+    assert not any(
+        message.get("role") == "system"
+        and "REFLECTION_REQUIRED" in str(message.get("content", ""))
+        for message in store.load_history()
+    )
+
+
+def test_agent_loop_stops_when_no_progress_repeats_after_reflection(tmp_path):
+    registry = ToolRegistry()
+
+    @registry.tool(description="search with no results")
+    def search(query: str) -> str:
+        return "no matches"
+
+    store = MemoryStore(path=tmp_path / "memory.json", max_history=10)
+
+    def tool_call(call_id: str, query: str):
+        call = MagicMock()
+        call.id = call_id
+        call.function.name = "search"
+        call.function.arguments = json.dumps({"query": query})
+        return call
+
+    loop = AgentLoop(
+        client=MagicMock(),
+        model="test-model",
+        system_prompt="sys",
+        registry=registry,
+        store=store,
+    )
+    loop.client.chat.completions.create.side_effect = [
+        make_response(tool_calls=[tool_call("call_1", "alpha")]),
+        make_response(tool_calls=[tool_call("call_2", "beta")]),
+        make_response(tool_calls=[tool_call("call_3", "gamma")]),
+        make_response(tool_calls=[tool_call("call_4", "delta")]),
     ]
 
     result = loop.run("find it", stream=False)
 
     assert "no progress" in result.lower()
-    assert "repeated_observation" in result
-    assert loop.client.chat.completions.create.call_count == 3
+    assert "after reflection" in result.lower()
+    assert loop.client.chat.completions.create.call_count == 4
+    assert loop.last_reflection_count == 1
     assert store.load_history()[-1]["content"] == result
+
+
+def test_reflection_does_not_reset_max_tool_iterations(tmp_path):
+    registry = ToolRegistry()
+
+    @registry.tool(description="search with no results")
+    def search(query: str) -> str:
+        return "no matches"
+
+    store = MemoryStore(path=tmp_path / "memory.json", max_history=10)
+
+    def tool_call(call_id: str, query: str):
+        call = MagicMock()
+        call.id = call_id
+        call.function.name = "search"
+        call.function.arguments = json.dumps({"query": query})
+        return call
+
+    loop = AgentLoop(
+        client=MagicMock(),
+        model="test-model",
+        system_prompt="sys",
+        registry=registry,
+        store=store,
+        max_tool_iterations=3,
+    )
+    loop.client.chat.completions.create.side_effect = [
+        make_response(tool_calls=[tool_call("call_1", "alpha")]),
+        make_response(tool_calls=[tool_call("call_2", "beta")]),
+        make_response(tool_calls=[tool_call("call_3", "gamma")]),
+    ]
+
+    result = loop.run("find it", stream=False)
+
+    assert "maximum tool iteration limit" in result
+    assert loop.client.chat.completions.create.call_count == 3
+    assert loop.last_reflection_count == 1
 
 
 def test_tool_exception_is_returned_as_structured_error(tmp_path):

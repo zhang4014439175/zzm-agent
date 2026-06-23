@@ -12,8 +12,7 @@
 
 ## 执行进度总览
 
-> **当前下一任务：6.1 状态生命周期与所有权模型。**  
-> 5.2 Reflection、5.3 错误恢复增强和 5.4 回放扩充依赖正式 LoopState、状态转换与 Hook 边界，因此在 P1 Conversation Runtime 完成后返回执行，避免先写临时版本再重构。
+> **当前下一任务：5.3 工具错误恢复增强。**
 
 ### 当前能力基线
 
@@ -32,8 +31,8 @@
 ### P0：ReAct 可靠性与评测
 
 - [x] 5.1 ProgressMonitor 无进展检测
-- [ ] 5.2 一次性 Reflection 纠偏（依赖 P1）
-- [ ] 5.3 工具错误恢复增强（依赖 P1）
+- [x] 5.2 一次性 Reflection 纠偏
+- [ ] 5.3 工具错误恢复增强
 - [ ] 5.4 回放基准扩充（在 5.2、5.3 后执行）
 - [ ] P0 阶段验收
 
@@ -217,9 +216,11 @@ flowchart TD
 
 ```text
 5.1 ProgressMonitor（已完成）
-→ P1 Conversation Runtime 与完整状态管理
-→ 返回完成 5.2 Reflection、5.3 错误恢复、5.4 回放基准
+→ 5.2 Reflection
+→ 5.3 错误恢复
+→ 5.4 回放基准
 → P0 阶段验收
+→ P1 Conversation Runtime 与完整状态管理
 → P2 本地执行安全与上下文治理
 → P3 工具生态与扩展协议
 → P4 长任务规划与工作记忆
@@ -228,7 +229,7 @@ flowchart TD
 → P7 多 Agent 协作与隔离
 ```
 
-这样安排的原因是：Reflection、Stop Hook、权限恢复和取消都需要正式的 TurnState、LoopState、状态转换和事件边界。如果先在旧 AgentLoop 中加入临时布尔值，后续必然重复迁移，也会掩盖完整架构的学习价值。
+P0 先完成现有 ReAct 的可靠性闭环；进入 P1 后，再把 Reflection 次数、转换原因和运行状态迁移到正式 TurnState / LoopState，并接入 Hook、EventBus 和 QueryEngine。
 
 ### 4.2 完整概念的引入时间
 
@@ -290,6 +291,18 @@ ProgressMonitor 只负责判断执行是否停滞，不替代最大迭代上限�
 - 再次无进展时立即熔断；
 - 正常成功任务不增加额外模型调用；
 - 不要求模型输出或持久化完整隐藏思维链。
+
+完成情况：
+
+- [x] ProgressMonitor 首次检测停滞时注入结构化 `REFLECTION_REQUIRED` System 消息；
+- [x] 相同工具盲目重复达到限制时也先获得一次 Reflection 机会；
+- [x] Reflection 提示包含停滞原因、轮次数、换路要求和阻塞报告要求；
+- [x] 每个用户 Turn 最多触发一次 Reflection；
+- [x] Reflection 不重置 `max_tool_iterations`；
+- [x] Reflection 后再次停滞会明确标记 `after reflection` 并安全停止；
+- [x] Reflection 提示只存在于当前运行上下文，不写入持久会话历史；
+- [x] 正常成功任务不产生额外 Reflection 调用；
+- [x] 单元测试、AgentLoop 集成测试、Replay 测试和全量回归通过。
 
 ### 5.3 工具错误恢复增强
 

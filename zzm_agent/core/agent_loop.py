@@ -109,6 +109,7 @@ class AgentLoop:
         self.cumulative_usage = TokenUsage()
         self.last_context_window: dict[str, Any] = {}
         self.last_progress_signal: ProgressSignal | None = None
+        self.last_reflection_count = 0
         self.token_counter = TokenCounter(model=model)
 
     def _build_tool_call_record(
@@ -523,13 +524,51 @@ class AgentLoop:
         history = self.store.load_history()
         return self.prompt_manager.build(user_input=user_input, history=history)
 
-    def _no_progress_stop_message(self, signal: ProgressSignal) -> str:
+    def _no_progress_stop_message(
+        self,
+        signal: ProgressSignal,
+        *,
+        after_reflection: bool = False,
+    ) -> str:
         """Build the final response when completed tool rounds make no progress."""
+        reflection_context = " after reflection" if after_reflection else ""
         return (
-            "Stopped tool execution because no progress was detected "
+            f"Stopped tool execution because no progress was detected{reflection_context} "
             f"({signal.reason}) after {signal.round_count} tool round(s). "
             f"{signal.detail}"
         )
+
+    def _reflection_prompt(self, signal: ProgressSignal) -> str:
+        """Build a bounded runtime-only prompt that asks the model to change approach."""
+        return (
+            "[REFLECTION_REQUIRED]\n"
+            "The recent tool execution is not making progress.\n"
+            f"Reason: {signal.reason}\n"
+            f"Observed tool rounds: {signal.round_count}\n"
+            f"Details: {signal.detail}\n\n"
+            "Before taking another action:\n"
+            "1. Briefly reassess why the previous approach failed.\n"
+            "2. Do not repeat the same tool call or an equivalent call that yields "
+            "the same observation.\n"
+            "3. Choose a materially different tool, arguments, or strategy.\n"
+            "4. If progress requires missing user input, permission, credentials, "
+            "or an unavailable external condition, stop using tools and report the "
+            "blocker clearly.\n"
+            "This is the only reflection retry available for this turn."
+        )
+
+    def _request_reflection(
+        self,
+        messages: list[dict[str, Any]],
+        signal: ProgressSignal,
+    ) -> bool:
+        """Inject one runtime-only reflection prompt and report whether it was added."""
+        self.last_progress_signal = signal
+        if self.last_reflection_count >= 1:
+            return False
+        messages.append({"role": "system", "content": self._reflection_prompt(signal)})
+        self.last_reflection_count += 1
+        return True
 
     def run(
         self,
@@ -586,6 +625,7 @@ class AgentLoop:
         consecutive_count = 0
         progress_monitor = ProgressMonitor()
         self.last_progress_signal = None
+        self.last_reflection_count = 0
         while True:
             if tool_iterations >= self.max_tool_iterations:
                 final_reply = self._iteration_stop_message()
@@ -657,7 +697,21 @@ class AgentLoop:
                 consecutive_signature is not None
                 and consecutive_count >= self.duplicate_tool_call_limit
             ):
-                final_reply = self._repetition_stop_message(consecutive_signature)
+                name, arguments = consecutive_signature
+                repetition_signal = ProgressSignal(
+                    reason="repeated_tool_call",
+                    round_count=tool_iterations,
+                    detail=(
+                        "The model repeatedly requested the same tool call: "
+                        f"{name}({arguments})."
+                    ),
+                )
+                if self._request_reflection(messages, repetition_signal):
+                    continue
+                final_reply = self._no_progress_stop_message(
+                    repetition_signal,
+                    after_reflection=True,
+                )
                 assistant_msg = {"role": "assistant", "content": final_reply}
                 messages.append(assistant_msg)
                 turn_messages.append(assistant_msg)
@@ -797,8 +851,12 @@ class AgentLoop:
 
             progress_signal = progress_monitor.observe_round(round_observations)
             if progress_signal is not None:
-                self.last_progress_signal = progress_signal
-                final_reply = self._no_progress_stop_message(progress_signal)
+                if self._request_reflection(messages, progress_signal):
+                    continue
+                final_reply = self._no_progress_stop_message(
+                    progress_signal,
+                    after_reflection=True,
+                )
                 assistant_msg = {"role": "assistant", "content": final_reply}
                 messages.append(assistant_msg)
                 turn_messages.append(assistant_msg)

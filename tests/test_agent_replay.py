@@ -108,6 +108,7 @@ def test_duplicate_call_stop(tmp_path):
             ReplayTurn(tool_calls=[ReplayToolCall("grep_search", {"pattern": "needle"})]),
             ReplayTurn(tool_calls=[ReplayToolCall("grep_search", {"pattern": "needle"})]),
             ReplayTurn(tool_calls=[ReplayToolCall("grep_search", {"pattern": "needle"})]),
+            ReplayTurn(tool_calls=[ReplayToolCall("grep_search", {"pattern": "needle"})]),
         ],
         registry,
         duplicate_tool_call_limit=3,
@@ -116,7 +117,9 @@ def test_duplicate_call_stop(tmp_path):
     result = loop.run("Search repeatedly", stream=stream)
 
     assert "repeatedly requested the same tool call" in result
-    assert client.call_count == 3
+    assert "after reflection" in result.lower()
+    assert client.call_count == 4
+    assert loop.last_reflection_count == 1
     assert registry.calls == [
         ("grep_search", {"pattern": "needle"}),
         ("grep_search", {"pattern": "needle"}),
