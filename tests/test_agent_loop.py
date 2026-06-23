@@ -419,6 +419,44 @@ def test_agent_loop_stops_repeated_identical_tool_calls(registry, store):
     assert store.load_history()[-1]["content"] == result
 
 
+def test_agent_loop_stops_when_changed_calls_return_same_observation(tmp_path):
+    registry = ToolRegistry()
+
+    @registry.tool(description="search with no results")
+    def search(query: str) -> str:
+        return "no matches"
+
+    store = MemoryStore(path=tmp_path / "memory.json", max_history=10)
+
+    def tool_call(call_id: str, query: str):
+        call = MagicMock()
+        call.id = call_id
+        call.function.name = "search"
+        call.function.arguments = json.dumps({"query": query})
+        return call
+
+    loop = AgentLoop(
+        client=MagicMock(),
+        model="test-model",
+        system_prompt="sys",
+        registry=registry,
+        store=store,
+        duplicate_tool_call_limit=3,
+    )
+    loop.client.chat.completions.create.side_effect = [
+        make_response(tool_calls=[tool_call("call_1", "alpha")]),
+        make_response(tool_calls=[tool_call("call_2", "beta")]),
+        make_response(tool_calls=[tool_call("call_3", "gamma")]),
+    ]
+
+    result = loop.run("find it", stream=False)
+
+    assert "no progress" in result.lower()
+    assert "repeated_observation" in result
+    assert loop.client.chat.completions.create.call_count == 3
+    assert store.load_history()[-1]["content"] == result
+
+
 def test_tool_exception_is_returned_as_structured_error(tmp_path):
     registry = ToolRegistry()
 

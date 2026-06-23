@@ -12,6 +12,11 @@ from zzm_agent.core.observability import (
     tool_error_event,
     tool_start_event,
 )
+from zzm_agent.core.progress_monitor import (
+    ProgressMonitor,
+    ProgressSignal,
+    ToolObservation,
+)
 from zzm_agent.memory.token_counter import TokenCounter
 
 if TYPE_CHECKING:
@@ -103,6 +108,7 @@ class AgentLoop:
         self.last_turn_usage = TokenUsage()
         self.cumulative_usage = TokenUsage()
         self.last_context_window: dict[str, Any] = {}
+        self.last_progress_signal: ProgressSignal | None = None
         self.token_counter = TokenCounter(model=model)
 
     def _build_tool_call_record(
@@ -517,6 +523,14 @@ class AgentLoop:
         history = self.store.load_history()
         return self.prompt_manager.build(user_input=user_input, history=history)
 
+    def _no_progress_stop_message(self, signal: ProgressSignal) -> str:
+        """Build the final response when completed tool rounds make no progress."""
+        return (
+            "Stopped tool execution because no progress was detected "
+            f"({signal.reason}) after {signal.round_count} tool round(s). "
+            f"{signal.detail}"
+        )
+
     def run(
         self,
         user_input: str,
@@ -570,6 +584,8 @@ class AgentLoop:
         tool_iterations = 0
         consecutive_signature: tuple[str, str] | None = None
         consecutive_count = 0
+        progress_monitor = ProgressMonitor()
+        self.last_progress_signal = None
         while True:
             if tool_iterations >= self.max_tool_iterations:
                 final_reply = self._iteration_stop_message()
@@ -662,10 +678,13 @@ class AgentLoop:
 
             # Tool results stay inside the same turn so the model can immediately
             # consume them on the next loop iteration.
+            round_observations: list[ToolObservation] = []
             for tc in tool_calls_raw:
                 name = ""
                 args: dict[str, Any] = {}
                 risk_level = "unknown"
+                observation_success = False
+                observation_retryable = False
                 started_at = perf_counter()
                 try:
                     # Parse arguments and call the tool through the registry
@@ -702,6 +721,7 @@ class AgentLoop:
                         result_str = outcome.content
                         duration_ms = (perf_counter() - started_at) * 1000
                         if outcome.success:
+                            observation_success = True
                             self._emit_tool_event(
                                 self.on_tool_end,
                                 tool_end_event(
@@ -722,6 +742,7 @@ class AgentLoop:
                                 recovery_hint="Inspect tool execution logs before retrying.",
                                 retryable=False,
                             )
+                            observation_retryable = error.retryable
                             self._emit_tool_event(
                                 self.on_tool_error,
                                 tool_error_event(
@@ -739,6 +760,7 @@ class AgentLoop:
                 except Exception as e:
                     # Capture tool execution errors and feed them back to the model
                     error = tool_error_from_exception(e)
+                    observation_retryable = error.retryable
                     result_str = error.to_json()
                     duration_ms = (perf_counter() - started_at) * 1000
                     self._emit_tool_event(
@@ -763,5 +785,25 @@ class AgentLoop:
                 }
                 messages.append(tool_result_msg)
                 turn_messages.append(tool_result_msg)
+                round_observations.append(
+                    ToolObservation(
+                        tool_name=name or "<unknown>",
+                        arguments=tc.get("function", {}).get("arguments", ""),
+                        content=result_str,
+                        success=observation_success,
+                        retryable=observation_retryable,
+                    )
+                )
+
+            progress_signal = progress_monitor.observe_round(round_observations)
+            if progress_signal is not None:
+                self.last_progress_signal = progress_signal
+                final_reply = self._no_progress_stop_message(progress_signal)
+                assistant_msg = {"role": "assistant", "content": final_reply}
+                messages.append(assistant_msg)
+                turn_messages.append(assistant_msg)
+                self.store.append(turn_messages)
+                self._commit_turn_usage(turn_usage)
+                return final_reply
             
             # Continue the loop to let the model process tool results
