@@ -1,18 +1,20 @@
 # zzm-agent 升级改进路线图
 
-> **执行说明：进入本文档后，先查看下方“执行进度总览”，根据勾选状态确认当前进度；每次只执行一个最小任务点，任务通过验收后立即将对应的 `- [ ]` 更新为 `- [x]`，不得提前勾选或一次笼统勾选多个任务。**
+> **执行说明：进入本文档后，先查看下方“执行进度总览”，根据勾选状态确认当前进度；每次只执行一个最小任务点。任务通过验收后，必须先补齐对应功能说明文档，再将对应的 `- [ ]` 更新为 `- [x]`，不得提前勾选或一次笼统勾选多个任务。**
 
 标记说明：
 
 - [x] 已完成：实现、测试、文档和对应验收均已完成；
 - [ ] 未完成：尚未开始、正在进行或尚未通过完整验收；
 - 任务开始后仍保持 `- [ ]`，只有满足完成定义后才改为 `- [x]`；
+- 每个任务点完成后必须新增或更新对应功能说明文档，文档必须用中文写清楚：功能作用、对应代码文件、关键类/函数、执行链路、测试位置和验证结果；
+- 功能说明不能只写概念描述，必须能让后续执行者直接定位到代码实现位置；
 - 本清单是路线图进度的唯一状态来源，后文章节用于说明设计与验收要求；
 - 默认从上到下执行；如果因依赖关系调整顺序，应在任务旁补充简短说明。
 
 ## 执行进度总览
 
-> **当前下一任务：5.3 工具错误恢复增强。**
+> **当前下一任务：5.4 回放基准扩充。**
 
 ### 当前能力基线
 
@@ -30,103 +32,103 @@
 
 ### P0：ReAct 可靠性与评测
 
-- [x] 5.1 ProgressMonitor 无进展检测
-- [x] 5.2 一次性 Reflection 纠偏
-- [ ] 5.3 工具错误恢复增强
-- [ ] 5.4 回放基准扩充（在 5.2、5.3 后执行）
-- [ ] P0 阶段验收
+- [x] 5.1 ProgressMonitor 无进展检测：识别工具循环、重复结果、连续失败和多轮无新信息等停滞信号
+- [x] 5.2 一次性 Reflection 纠偏：首次停滞时插入结构化反思提示，要求模型换策略而不是盲目重试
+- [x] 5.3 工具错误恢复增强：细分错误类型、重试策略、退避规则和恢复建议，提升模型从失败中恢复的能力
+- [ ] 5.4 回放基准扩充（在 5.2、5.3 后执行）：补充权限错误、空结果循环、参数修正、反思换路和安全停止等固定评测场景
+- [ ] P0 阶段验收：验证 ReAct 可靠性增强不破坏权限、安全熔断、短任务性能和现有回放基线
 
 ### P1：Conversation Runtime 与完整状态管理
 
-- [ ] 6.1 状态生命周期与所有权模型
-- [ ] 6.2 ApplicationState / ConversationState / TurnState / LoopState
-- [ ] 6.3 LoopPhase / LoopTransition 正式状态机
-- [ ] 6.4 运行时消息、待提交消息与持久化消息分层
-- [ ] 6.5 完整 UsageState 及多作用域累计
-- [ ] 6.6 完整 PermissionState 及权限生命周期
-- [ ] 6.7 FileStateCache 文件状态缓存
-- [ ] 6.8 MemoryLoadState 与嵌套记忆去重
-- [ ] 6.9 CancellationController 基础层级模型
-- [ ] 6.10 Hook 系统、Stop Hook 与阻塞重试保护
-- [ ] 6.11 EventBus、ArtifactStore 与 CheckpointStore
+- [ ] 6.1 状态生命周期与所有权模型：定义 Application、Conversation、Turn、Loop、Task 和 WorkingMemory 的创建、修改、持久化和销毁边界
+- [ ] 6.2 ApplicationState / ConversationState / TurnState / LoopState：把当前散落在 AgentLoop 中的计数器、消息、权限、用量和运行状态收敛到明确状态对象
+- [ ] 6.3 LoopPhase / LoopTransition 正式状态机：用显式阶段和转换原因描述 ReAct 循环，支持 follow-up、reflection、stop hook、取消和失败
+- [ ] 6.4 运行时消息、待提交消息与持久化消息分层：区分当前执行视图、未提交消息、已提交历史和模型上下文视图
+- [ ] 6.5 完整 UsageState 及多作用域累计：按模型、Turn、Conversation、Task 和应用层累计 Token、调用次数和费用
+- [ ] 6.6 完整 PermissionState 及权限生命周期：记录权限请求、授权、拒绝、过期、孤立请求和不同作用域的权限决定
+- [ ] 6.7 FileStateCache 文件状态缓存：缓存已读文件内容、Hash、行号范围、摘要和读取时间，避免重复读取和上下文浪费
+- [ ] 6.8 MemoryLoadState 与嵌套记忆去重：记录本轮已加载的记忆和嵌套路径，防止重复注入相同 Memory 内容
+- [ ] 6.9 CancellationController 基础层级模型：为会话、Turn、模型请求和工具调用建立可传播的取消控制基础
+- [ ] 6.10 Hook 系统、Stop Hook 与阻塞重试保护：支持执行前后扩展点，并防止 Stop Hook 无限阻塞最终回复
+- [ ] 6.11 EventBus、ArtifactStore 与 CheckpointStore：统一记录事件、保存大结果/产物，并为恢复与回放提供检查点
 - [ ] 6.12 ToolResult 展示分层：将模型结果、用户界面内容、完整 Artifact 和结构化元数据分开保存
 - [ ] 6.13 ToolProgressEvent：支持工具执行期间连续上报进度、标准输出、错误输出和百分比
 - [ ] 6.14 ToolRenderer / RendererRegistry：允许每种工具注册调用、进度、结果和错误的专属渲染器
 - [ ] 6.15 DisplayMode 与折叠策略：定义行内、折叠、流式、仅摘要和隐藏等展示模式
-- [ ] 6.16 状态序列化、版本迁移与恢复协议
-- [ ] 6.17 QueryEngine 会话编排器
-- [ ] 6.18 CLI 迁移到 QueryEngine
-- [ ] P1 阶段验收
+- [ ] 6.16 状态序列化、版本迁移与恢复协议：让 Conversation、Turn、Task 等状态可持久化、可升级并能在重启后安全恢复
+- [ ] 6.17 QueryEngine 会话编排器：作为跨 Turn 的运行时入口，统一调度消息、状态、工具、权限、记忆和 AgentLoop
+- [ ] 6.18 CLI 迁移到 QueryEngine：让命令行入口通过 QueryEngine 运行，避免 CLI 直接拼装底层 AgentLoop 细节
+- [ ] P1 阶段验收：确认完整状态体系可观察、可恢复，并保持现有同步 ReAct 调用兼容
 
 ### P2：本地执行安全与上下文治理
 
-- [ ] 7.1 工具生命周期与权限网关
-- [ ] 7.2 工具参数运行时校验
-- [ ] 7.3 工具超时与取消
-- [ ] 7.4 ChangeSet 与 `/undo`
-- [ ] 7.5 Token Budget 2.0
-- [ ] 7.6 超长工具结果治理
+- [ ] 7.1 工具生命周期与权限网关：统一工具注册、调用前校验、风险分级、权限确认、执行和结果记录流程
+- [ ] 7.2 工具参数运行时校验：在执行前验证参数类型、路径边界、必填项和危险参数，减少无效或越权调用
+- [ ] 7.3 工具超时与取消：为长时间工具调用提供超时限制、用户取消和清理回调
+- [ ] 7.4 ChangeSet 与 `/undo`：记录受管文件变更并支持按变更集安全撤销
+- [ ] 7.5 Token Budget 2.0：按系统提示、记忆、历史、工具 Schema、工具结果和输出预留空间进行上下文预算分配
+- [ ] 7.6 超长工具结果治理：将大结果转为 Artifact，只向模型注入摘要、关键片段和可追踪引用
 - [ ] 7.7 FileReadRenderer：展示文件路径、读取行号范围、内容预览、截断状态和完整 Artifact 引用
 - [ ] 7.8 FileEditRenderer：展示语法高亮 Diff、增删行统计、目标文件和变更冲突
 - [ ] 7.9 SearchRenderer：按文件分组并高亮匹配内容、行号、结果数量和折叠摘要
 - [ ] 7.10 ShellRenderer：展示命令、实时 stdout/stderr、退出码、执行时间和后台任务状态
 - [ ] 7.11 动态活动描述：根据工具参数显示 Reading、Searching、Running 等具体 Spinner 文案
 - [ ] 7.12 纯文本降级渲染：Rich 或专属 Renderer 不可用时仍输出完整、可读的状态和结果
-- [ ] P2 阶段验收
+- [ ] P2 阶段验收：确认本地工具执行更安全、可取消、可撤销，且长结果不会撑爆模型上下文
 
 ### P3：工具生态与扩展协议
 
-- [ ] 8.1 MCP Client
-- [ ] 8.2 Skills 模块化外化
-- [ ] 8.3 SkillDiscoveryState 完整生命周期
-- [ ] 8.4 Skills 自适应检索与自动激活
-- [ ] 8.5 工具 Schema 按需装载
+- [ ] 8.1 MCP Client：接入 MCP Server，完成连接、能力发现、工具注册、错误隔离和统一权限治理
+- [ ] 8.2 Skills 模块化外化：把专门任务知识、指令、示例、资源和允许工具沉淀为可安装、可启用的 Skill
+- [ ] 8.3 SkillDiscoveryState 完整生命周期：记录可用、发现、激活、固定、拒绝和已加载资源等 Skill 状态
+- [ ] 8.4 Skills 自适应检索与自动激活：根据任务意图自动选择相关 Skill，并控制激活数量和 Token 预算
+- [ ] 8.5 工具 Schema 按需装载：根据任务、Skill 和阶段只暴露必要工具，减少 Schema Token 浪费
 - [ ] 8.6 MCPToolRenderer：展示 MCP Server、远程工具名、连接状态、调用进度和远程错误
 - [ ] 8.7 SkillRenderer：展示 Skill 的发现原因、激活状态、资源加载和执行进度
-- [ ] P3 阶段验收
+- [ ] P3 阶段验收：确认 MCP 和 Skills 可安全扩展工具生态，并且工具装载更按需、更可解释
 
 ### P4：长任务规划与工作记忆
 
-- [ ] 9.1 TaskState
-- [ ] 9.2 WorkingMemory
-- [ ] 9.3 外层 Planner
-- [ ] 9.4 动态 Reflection 与重规划
-- [ ] 9.5 用户干预与任务恢复
+- [ ] 9.1 TaskState：为长任务保存目标、步骤、状态、发现、产物、阻塞原因和更新时间
+- [ ] 9.2 WorkingMemory：保存任务内临时事实、计划、子步骤结果和当前阻塞，避免把完整工具历史塞进上下文
+- [ ] 9.3 外层 Planner：在 AgentLoop 外部拆解目标、调度子任务、接收结果并维护全局计划
+- [ ] 9.4 动态 Reflection 与重规划：在步骤失败、发现新信息或计划失效时反思并调整后续步骤
+- [ ] 9.5 用户干预与任务恢复：支持用户确认、修改、跳过、重试、暂停和从检查点恢复任务
 - [ ] 9.6 PlannerRenderer：展示任务目标、步骤列表、当前步骤、阻塞原因和计划变更
 - [ ] 9.7 TaskProgressRenderer：展示步骤完成比例、Artifacts、Usage 和暂停/恢复状态
-- [ ] P4 阶段验收
+- [ ] P4 阶段验收：确认复杂任务能被拆解、执行、更新、恢复，并且简单任务不会被强制 Planner 化
 
 ### P5：Agent 与模型抽象
 
-- [ ] 10.1 BaseLLM / ModelAdapter
-- [ ] 10.2 多 Provider 支持
-- [ ] 10.3 多 Provider 自动路由
-- [ ] 10.4 BaseAgent 统一继承体系
-- [ ] P5 阶段验收
+- [ ] 10.1 BaseLLM / ModelAdapter：统一不同模型 Provider 的生成、流式事件、Tool Call、Usage 和错误表示
+- [ ] 10.2 多 Provider 支持：支持 OpenAI-compatible、Anthropic、DeepSeek 等 Provider 的配置、凭据和能力声明
+- [ ] 10.3 多 Provider 自动路由：根据任务类型、模型能力、成本和上下文长度选择合适模型并记录路由原因
+- [ ] 10.4 BaseAgent 统一继承体系：提炼 ChatAgent、ReActAgent、PlannerAgent、SubAgent 等共享生命周期和能力接口
+- [ ] P5 阶段验收：确认模型协议与 AgentLoop 解耦，多 Provider 和多个真实 Agent 能通过统一接口运行
 
 ### P6：异步、并发与后台任务
 
-- [ ] 11.1 渐进式只读工具并发
-- [ ] 11.2 Async Agent Loop
-- [ ] 11.3 层级 CancellationController 与取消传播
-- [ ] 11.4 Concurrent Tool Executor
-- [ ] 11.5 后台任务管理
-- [ ] 11.6 孤立权限请求处理与恢复
-- [ ] 11.7 完整 Circuit Breaker
+- [ ] 11.1 渐进式只读工具并发：优先并发低风险、只读、无依赖工具，验证调度和结果回填策略
+- [ ] 11.2 Async Agent Loop：提供异步运行入口，同时保留同步 run 兼容现有调用方式
+- [ ] 11.3 层级 CancellationController 与取消传播：将取消信号从会话传递到模型请求、工具、后台进程和子任务
+- [ ] 11.4 Concurrent Tool Executor：按依赖、风险和副作用分组调度多个 tool call，并保持模型协议要求的结果顺序
+- [ ] 11.5 后台任务管理：支持启动、查询、停止后台进程，并记录日志、状态和清理策略
+- [ ] 11.6 孤立权限请求处理与恢复：识别已失去原始 Tool Call 上下文的权限请求并进行一次性安全补偿
+- [ ] 11.7 完整 Circuit Breaker：为持续失败的 Provider、MCP Server、网络工具和后台服务建立熔断与半开恢复机制
 - [ ] 11.8 ConcurrentToolsRenderer：同时展示多个工具的独立状态、完成顺序、失败和取消
 - [ ] 11.9 BackgroundProcessRenderer：展示进程 ID、运行时长、实时日志、退出码和停止状态
-- [ ] P6 阶段验收
+- [ ] P6 阶段验收：确认只读并发、异步取消、后台任务和熔断机制安全可观测，且写操作不会错误并发
 
 ### P7：多 Agent 协作与隔离
 
-- [ ] 12.1 Sub-Agent / TaskTool
-- [ ] 12.2 Git Worktree 隔离
-- [ ] 12.3 Swarm / Multi-Agent 编排
-- [ ] 12.4 子 Agent 状态、取消和 Usage 汇总
-- [ ] 12.5 资源与失败治理
+- [ ] 12.1 Sub-Agent / TaskTool：允许主 Agent 委派边界清晰的子任务，并接收结构化结果和证据
+- [ ] 12.2 Git Worktree 隔离：让写操作子 Agent 在独立工作树中修改和测试，避免污染用户当前工作区
+- [ ] 12.3 Swarm / Multi-Agent 编排：支持多个专门 Agent 按依赖图并行或串行协作完成复杂目标
+- [ ] 12.4 子 Agent 状态、取消和 Usage 汇总：独立追踪子 Agent 的状态、成本、取消和结果，并汇总到父任务
+- [ ] 12.5 资源与失败治理：限制 Agent 数量、层级、Token、时间、Worktree 和后台进程等资源
 - [ ] 12.6 SubAgentRenderer：展示子 Agent 的任务、阶段、当前动作、Token、耗时和最终摘要
 - [ ] 12.7 SwarmRenderer：展示 Agent 拓扑、任务分配、依赖关系、冲突和整体收敛状态
-- [ ] P7 阶段验收
+- [ ] P7 阶段验收：确认子 Agent 和 Swarm 可控、可取消、可核验，并不会污染主工作区或无限扩张资源
 
 ---
 
@@ -311,6 +313,17 @@ ProgressMonitor 只负责判断执行是否停滞，不替代最大迭代上限�
 - 支持 Retry-After 和指数退避；
 - 对确定性失败禁止盲目重试；
 - 将错误摘要、尝试次数和恢复建议统一反馈给模型。
+
+完成情况：
+
+- [x] `ToolError` 增加 `category`、`deterministic`、`attempts` 和 `retry_after_seconds` 字段，同时保留旧 JSON 字段兼容；
+- [x] 将参数错误、权限错误、超时、环境错误、外部服务错误和业务错误映射为明确分类；
+- [x] 对确定性参数错误、缺失工具、权限拒绝和文件缺失等失败禁止自动重试；
+- [x] 对超时和外部服务错误允许有界自动重试；
+- [x] 支持异常对象上的 `retry_after_seconds` / `retry_after` 以及响应头 `Retry-After`；
+- [x] 自动重试优先遵守 Retry-After，否则使用指数退避；
+- [x] 最终错误结果会反馈尝试次数、错误分类、是否确定性、是否可重试和恢复建议；
+- [x] 新增无磁盘依赖的错误恢复目标测试，覆盖确定性参数错误、指数退避和 Retry-After。
 
 ### 5.4 回放基准扩充
 

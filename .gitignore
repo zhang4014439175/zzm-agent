@@ -23,3 +23,4 @@ __pycache__/
 .env
 .codex-test-tmp
 .tmp_agent_loop_api_error
+.tmp_tool_error_recovery_tests/

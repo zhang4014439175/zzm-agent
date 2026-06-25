@@ -1,6 +1,6 @@
 import json
 from dataclasses import dataclass
-from time import perf_counter
+from time import perf_counter, sleep
 from typing import TYPE_CHECKING, Any, Callable
 
 from zzm_agent.core.errors import ToolError, tool_error_from_exception
@@ -60,6 +60,9 @@ class AgentLoop:
         max_tool_iterations: int = 20,
         duplicate_tool_call_limit: int = 3,
         max_tool_retries: int = 1,
+        retry_base_delay: float = 0.25,
+        retry_max_delay: float = 5.0,
+        retry_sleep: Callable[[float], None] | None = None,
         tool_choice: str | None = "auto",
         on_tool_start: ToolEventCallback | None = None,
         on_tool_end: ToolEventCallback | None = None,
@@ -78,6 +81,10 @@ class AgentLoop:
             max_tool_iterations: Maximum model tool-call rounds before stopping.
             duplicate_tool_call_limit: Consecutive identical calls before stopping.
             max_tool_retries: Automatic retries for retryable tool execution errors.
+            retry_base_delay: First automatic retry delay in seconds.
+            retry_max_delay: Maximum automatic retry delay in seconds.
+            retry_sleep: Optional sleep function used by retry backoff. Primarily
+                useful for tests that should not actually sleep.
             tool_choice: Tool-choice policy to send when tools are present. Set
                 to None for providers that reject the field.
             on_tool_start: Callback for structured tool start events.
@@ -99,6 +106,9 @@ class AgentLoop:
         self.max_tool_iterations = max(1, max_tool_iterations)
         self.duplicate_tool_call_limit = max(1, duplicate_tool_call_limit)
         self.max_tool_retries = max(0, max_tool_retries)
+        self.retry_base_delay = max(0.0, retry_base_delay)
+        self.retry_max_delay = max(self.retry_base_delay, retry_max_delay)
+        self.retry_sleep = retry_sleep or sleep
         self.tool_choice = tool_choice
         self._tool_choice_disabled_by_provider = False
         self.on_tool_start = on_tool_start
@@ -444,14 +454,22 @@ class AgentLoop:
 
     def _format_retried_error(self, error: ToolError, attempts: int) -> str:
         """Annotate the final retryable error with retry context."""
+        error.attempts = attempts
         if attempts <= 1:
+            error.recovery_hint = f"{error.recovery_hint} {error.retry_summary()}"
             return error.to_json()
         retries = attempts - 1
         error.recovery_hint = (
-            f"{error.recovery_hint} Automatic retry exhausted after "
-            f"{retries} retry attempt(s)."
+            f"{error.recovery_hint} {error.retry_summary()} "
+            f"Automatic retry exhausted after {retries} retry attempt(s)."
         )
         return error.to_json()
+
+    def _retry_delay_for_error(self, error: ToolError, retry_index: int) -> float:
+        """Return the bounded delay before the next automatic retry."""
+        if error.retry_after_seconds is not None:
+            return min(self.retry_max_delay, max(0.0, error.retry_after_seconds))
+        return min(self.retry_max_delay, self.retry_base_delay * (2 ** retry_index))
 
     def _execute_tool_with_retries(self, name: str, args: dict[str, Any]) -> _ToolExecutionOutcome:
         """Execute a tool with bounded retries for structured retryable errors."""
@@ -476,6 +494,9 @@ class AgentLoop:
                         attempts=attempts,
                         error=last_error,
                     )
+                delay = self._retry_delay_for_error(last_error, attempts - 1)
+                if delay > 0:
+                    self.retry_sleep(delay)
 
         # This is defensive; the loop always returns on success or final error.
         if last_error is None:
