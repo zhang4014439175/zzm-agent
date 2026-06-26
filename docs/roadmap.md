@@ -7,14 +7,15 @@
 - [x] 已完成：实现、测试、文档和对应验收均已完成；
 - [ ] 未完成：尚未开始、正在进行或尚未通过完整验收；
 - 任务开始后仍保持 `- [ ]`，只有满足完成定义后才改为 `- [x]`；
-- 每个任务点完成后必须新增或更新对应功能说明文档，文档必须用中文写清楚：功能作用、对应代码文件、关键类/函数、执行链路、测试位置和验证结果；
-- 功能说明不能只写概念描述，必须能让后续执行者直接定位到代码实现位置；
+- 每个任务点完成后必须新增或更新对应功能说明文档，文档开头必须先用通俗语言整体说明“这项工作在做什么、为什么要做、解决什么问题”，再展开技术细节；
+- 功能说明文档必须用中文写清楚：功能作用、对应代码文件、关键类/函数、执行链路、测试位置和验证结果；
+- 功能说明不能只写概念描述，也不能一上来就堆类名和函数名，必须先让后续执行者理解整体背景，再能直接定位到代码实现位置；
 - 本清单是路线图进度的唯一状态来源，后文章节用于说明设计与验收要求；
 - 默认从上到下执行；如果因依赖关系调整顺序，应在任务旁补充简短说明。
 
 ## 执行进度总览
 
-> **当前下一任务：6.1 状态生命周期与所有权模型。**
+> **当前下一任务：6.2 ApplicationState / ConversationState / TurnState / LoopState。**
 
 ### 当前能力基线
 
@@ -40,7 +41,7 @@
 
 ### P1：Conversation Runtime 与完整状态管理
 
-- [ ] 6.1 状态生命周期与所有权模型：定义 Application、Conversation、Turn、Loop、Task 和 WorkingMemory 的创建、修改、持久化和销毁边界
+- [x] 6.1 状态生命周期与所有权模型：定义 Application、Conversation、Turn、Loop、Task 和 WorkingMemory 的创建、修改、持久化和销毁边界
 - [ ] 6.2 ApplicationState / ConversationState / TurnState / LoopState：把当前散落在 AgentLoop 中的计数器、消息、权限、用量和运行状态收敛到明确状态对象
 - [ ] 6.3 LoopPhase / LoopTransition 正式状态机：用显式阶段和转换原因描述 ReAct 循环，支持 follow-up、reflection、stop hook、取消和失败
 - [ ] 6.4 运行时消息、待提交消息与持久化消息分层：区分当前执行视图、未提交消息、已提交历史和模型上下文视图
@@ -381,6 +382,14 @@ ApplicationState
 - `WorkingMemory`：Task 内的结构化临时记忆。
 
 每种状态必须明确：创建者、唯一所有者、允许修改者、持久化边界、恢复策略和销毁时机。
+
+完成情况：
+
+- [x] 新增 `zzm_agent/core/state_lifecycle.py`，定义状态范围、生命周期、持久化边界、恢复策略和状态生命周期规则；
+- [x] 定义 `Application / Conversation / Turn / Loop / Task / WorkingMemory` 的父子关系、所有者、允许修改者、创建者、销毁时机和用途；
+- [x] 提供 `get_state_policy()`、`state_lineage()`、`state_children()` 和 `validate_state_lifecycle_policies()` 查询与校验函数；
+- [x] 新增 `tests/test_state_lifecycle.py`，固定状态层级、所有权、持久化边界和恢复策略；
+- [x] 新增 `docs/6.1-state-lifecycle-ownership.md`，说明整体背景、代码位置、执行链路、测试位置和后续 6.2 边界。
 
 ### 6.2 ApplicationState / ConversationState / TurnState / LoopState
 
