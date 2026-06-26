@@ -1,0 +1,36 @@
+name: "retry_after_external_service"
+description: "Retry-After：外部服务限流时按服务建议等待，重试耗尽后返回结构化错误"
+task: "请调用远程索引服务查询 target"
+initial_files: {}
+max_tool_retries: 1
+replay_turns:
+  - tool_calls:
+      - name: "remote_index"
+        arguments:
+          query: "target"
+  - content: "远程索引服务正在限流，已经按 Retry-After 重试但仍失败。"
+mock_tool_results:
+  - name: "remote_index"
+    arguments:
+      query: "target"
+    exception: "ConnectionError"
+    message: "rate limited"
+    retry_after_seconds: 2.0
+expected:
+  expected_tool_calls:
+    - "remote_index"
+  forbidden_tool_calls:
+    - "run_shell"
+  output_match: "限流"
+  model_call_count: 2
+  reflection_count: 0
+  tool_call_count: 2
+  retry_delays:
+    - 2.0
+  tool_result_json_contains:
+    - error_type: "ConnectionError"
+      category: "external_service"
+      deterministic: false
+      retryable: true
+      attempts: 2
+      retry_after_seconds: 2.0

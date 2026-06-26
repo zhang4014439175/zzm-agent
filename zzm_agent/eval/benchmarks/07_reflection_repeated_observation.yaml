@@ -1,0 +1,53 @@
+name: "reflection_repeated_observation"
+description: "Reflection：连续工具结果没有新信息时，注入一次纠偏提示并停止重复探索"
+task: "请查找 target 所在的文件"
+initial_files: {}
+replay_turns:
+  - tool_calls:
+      - name: "read_file"
+        arguments:
+          path: "a.py"
+  - tool_calls:
+      - name: "read_file"
+        arguments:
+          path: "b.py"
+  - tool_calls:
+      - name: "read_file"
+        arguments:
+          path: "c.py"
+  - content: "连续读取不同文件都没有发现 target，我需要停止盲目读取并报告当前阻塞。"
+mock_tool_results:
+  - name: "read_file"
+    arguments:
+      path: "a.py"
+    result: "no target here"
+  - name: "read_file"
+    arguments:
+      path: "b.py"
+    result: "no target here"
+  - name: "read_file"
+    arguments:
+      path: "c.py"
+    result: "no target here"
+expected:
+  expected_tool_calls:
+    - "read_file"
+  forbidden_tool_calls:
+    - "run_shell"
+  output_match: "停止"
+  model_call_count: 4
+  reflection_count: 1
+  progress_reason: "repeated_observation"
+  runtime_prompt_contains:
+    - "REFLECTION_REQUIRED"
+    - "repeated_observation"
+  tool_call_sequence:
+    - name: "read_file"
+      arguments:
+        path: "a.py"
+    - name: "read_file"
+      arguments:
+        path: "b.py"
+    - name: "read_file"
+      arguments:
+        path: "c.py"

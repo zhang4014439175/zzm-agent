@@ -24,3 +24,4 @@ __pycache__/
 .codex-test-tmp
 .tmp_agent_loop_api_error
 .tmp_tool_error_recovery_tests/
+.tmp_eval_*/
