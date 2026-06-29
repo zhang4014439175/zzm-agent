@@ -17,6 +17,7 @@ from zzm_agent.core.progress_monitor import (
     ProgressSignal,
     ToolObservation,
 )
+from zzm_agent.core.runtime_state import LoopState, TurnState
 from zzm_agent.memory.token_counter import TokenCounter
 
 if TYPE_CHECKING:
@@ -120,6 +121,8 @@ class AgentLoop:
         self.last_context_window: dict[str, Any] = {}
         self.last_progress_signal: ProgressSignal | None = None
         self.last_reflection_count = 0
+        self.last_turn_state: TurnState | None = None
+        self.last_loop_state: LoopState | None = None
         self.token_counter = TokenCounter(model=model)
 
     def _build_tool_call_record(
@@ -537,6 +540,8 @@ class AgentLoop:
         """Persist the latest turn and cumulative model usage counters."""
         self.last_turn_usage = usage.copy()
         self.cumulative_usage.add(usage)
+        if self.last_turn_state is not None:
+            self.last_turn_state.usage = self.last_turn_usage.copy()
 
     def _build_system_prompt(self, user_input: str) -> str:
         """Return the static or dynamically assembled system prompt for this turn."""
@@ -585,10 +590,16 @@ class AgentLoop:
     ) -> bool:
         """Inject one runtime-only reflection prompt and report whether it was added."""
         self.last_progress_signal = signal
+        if self.last_loop_state is not None:
+            self.last_loop_state.record_progress_signal(signal)
         if self.last_reflection_count >= 1:
             return False
         messages.append({"role": "system", "content": self._reflection_prompt(signal)})
-        self.last_reflection_count += 1
+        if self.last_loop_state is not None:
+            self.last_loop_state.record_reflection(signal)
+            self.last_reflection_count = self.last_loop_state.reflection_count
+        else:
+            self.last_reflection_count += 1
         return True
 
     def run(
@@ -625,6 +636,11 @@ class AgentLoop:
         # duplicating prior history that was already loaded from disk.
         turn_messages = [{"role": "user", "content": user_input}]
         turn_usage = TokenUsage()
+        turn_state = TurnState(user_input=user_input)
+        turn_state.start()
+        loop_state = turn_state.start_loop()
+        self.last_turn_state = turn_state
+        self.last_loop_state = loop_state
         
         # Get available tool schemas
         tools = self.registry.get_schemas()
@@ -650,6 +666,7 @@ class AgentLoop:
         while True:
             if tool_iterations >= self.max_tool_iterations:
                 final_reply = self._iteration_stop_message()
+                turn_state.block(final_reply, reason="iteration_limit")
                 assistant_msg = {"role": "assistant", "content": final_reply}
                 messages.append(assistant_msg)
                 turn_messages.append(assistant_msg)
@@ -666,12 +683,14 @@ class AgentLoop:
             )
 
             if stream:
+                loop_state.record_model_call()
                 assistant_content, tool_calls_raw, interrupted, call_usage = self._stream_once(
                     messages=messages,
                     tools=tools,
                     on_text_chunk=on_text_chunk,
                 )
             else:
+                loop_state.record_model_call()
                 assistant_content, tool_calls_raw, interrupted, call_usage = self._complete_once(
                     messages=messages,
                     tools=tools,
@@ -688,6 +707,7 @@ class AgentLoop:
             if interrupted:
                 # Interrupted turns intentionally do not write partial assistant
                 # or tool state, preserving a resumable conversation history.
+                turn_state.cancel("interrupted")
                 self._commit_turn_usage(turn_usage)
                 return assistant_content
 
@@ -700,6 +720,7 @@ class AgentLoop:
 
                 # Only the final assistant reply marks the turn as complete.
                 self.store.append(turn_messages)
+                turn_state.complete(final_reply, usage=turn_usage)
                 self._commit_turn_usage(turn_usage)
                 return final_reply
 
@@ -733,6 +754,7 @@ class AgentLoop:
                     repetition_signal,
                     after_reflection=True,
                 )
+                turn_state.block(final_reply, reason="repeated_tool_call")
                 assistant_msg = {"role": "assistant", "content": final_reply}
                 messages.append(assistant_msg)
                 turn_messages.append(assistant_msg)
@@ -871,6 +893,7 @@ class AgentLoop:
                 )
 
             progress_signal = progress_monitor.observe_round(round_observations)
+            loop_state.record_tool_round(tool_calls_raw, round_observations)
             if progress_signal is not None:
                 if self._request_reflection(messages, progress_signal):
                     continue
@@ -878,6 +901,7 @@ class AgentLoop:
                     progress_signal,
                     after_reflection=True,
                 )
+                turn_state.block(final_reply, reason=progress_signal.reason)
                 assistant_msg = {"role": "assistant", "content": final_reply}
                 messages.append(assistant_msg)
                 turn_messages.append(assistant_msg)
