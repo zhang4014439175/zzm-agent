@@ -12,6 +12,8 @@ from zzm_agent.core.runtime_state import (
     ConversationState,
     LoopPhase,
     LoopState,
+    LoopTransition,
+    LoopTransitionError,
     TurnState,
     TurnStatus,
 )
@@ -160,14 +162,32 @@ def test_loop_state_tracks_iterations_observations_and_reflection():
     assert loop.tool_iterations == 1
     assert loop.reflection_count == 1
     assert loop.phase is LoopPhase.REFLECTING
+    assert loop.transition is LoopTransition.REFLECTION_RETRY
     assert loop.needs_follow_up is True
     assert loop.progress_signal is signal
     assert loop.observations == [observation]
+    assert [item["to"] for item in loop.transition_history] == [
+        "preparing",
+        "calling_model",
+        "validating_tool_calls",
+        "executing_tools",
+        "processing_observations",
+        "reflecting",
+    ]
 
 
 def test_loop_state_stop_hook_flags_are_separate_from_reflection():
     loop = LoopState()
+    observation = ToolObservation(
+        tool_name="search",
+        arguments="{}",
+        content="ok",
+        success=True,
+        retryable=False,
+    )
 
+    loop.record_model_call()
+    loop.record_tool_round([], [observation])
     loop.activate_stop_hook()
     loop.activate_stop_hook()
     loop.clear_stop_hook()
@@ -175,6 +195,42 @@ def test_loop_state_stop_hook_flags_are_separate_from_reflection():
     assert loop.stop_hook_active is False
     assert loop.stop_hook_attempts == 2
     assert loop.reflection_count == 0
+    assert loop.phase is LoopPhase.RUNNING_STOP_HOOKS
+    assert loop.transition is LoopTransition.STOP_HOOK_RETRY
+
+
+def test_loop_state_rejects_illegal_transition_from_idle_to_tools():
+    loop = LoopState()
+
+    with pytest.raises(LoopTransitionError, match="idle -> executing_tools"):
+        loop.transition_to(
+            LoopPhase.EXECUTING_TOOLS,
+            LoopTransition.TOOL_EXECUTION,
+        )
+
+
+def test_loop_state_maps_progress_and_duplicate_reasons_to_formal_transitions():
+    loop = LoopState()
+    signal = ProgressSignal(
+        reason="repeating_tool_cycle",
+        round_count=3,
+        detail="cycle",
+    )
+
+    loop.record_model_call()
+    loop.validate_tool_calls([{"id": "call_1", "function": {"name": "search"}}])
+    loop.record_progress_signal(signal)
+    loop.record_reflection(signal)
+
+    assert loop.progress_signal is signal
+    assert loop.transition is LoopTransition.REFLECTION_RETRY
+    assert loop.transition_history[-2]["reason"] == LoopTransition.NO_PROGRESS.value
+    assert loop.transition_history[-1]["reason"] == LoopTransition.REFLECTION_RETRY.value
+
+    loop.mark_blocked("repeated_tool_call")
+
+    assert loop.phase is LoopPhase.BLOCKED
+    assert loop.transition is LoopTransition.DUPLICATE_CALL_LIMIT
 
 
 def test_agent_loop_populates_turn_and_loop_state_for_simple_reply():
@@ -231,3 +287,34 @@ def test_agent_loop_populates_loop_state_for_tool_round():
     assert loop.last_loop_state.needs_follow_up is False
     assert len(loop.last_loop_state.observations) == 1
     assert loop.last_loop_state.observations[0].content == "ECHO:world"
+    assert loop.last_loop_state.transition_history[-1]["to"] == "completed"
+
+
+def test_agent_loop_records_permission_wait_and_denial_state():
+    registry = ToolRegistry()
+
+    @registry.tool(description="danger", risk_level="high")
+    def dangerous() -> str:
+        return "should not run"
+
+    loop = AgentLoop(
+        client=MagicMock(),
+        model="test-model",
+        system_prompt="sys",
+        registry=registry,
+        store=FakeStore(),
+        confirm_tool=lambda name, arguments, risk: False,
+    )
+    loop.client.chat.completions.create.side_effect = [
+        make_response(tool_calls=[make_tool_call("dangerous", {})]),
+        make_response(content="denied handled"),
+    ]
+
+    result = loop.run("call dangerous", stream=False)
+
+    assert result == "denied handled"
+    assert loop.last_loop_state is not None
+    reasons = [item["reason"] for item in loop.last_loop_state.transition_history]
+    assert LoopTransition.PERMISSION_REQUESTED.value in reasons
+    assert LoopTransition.PERMISSION_DENIED.value in reasons
+    assert loop.last_loop_state.observations[0].content == "User denied tool execution."

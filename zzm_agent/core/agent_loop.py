@@ -17,7 +17,7 @@ from zzm_agent.core.progress_monitor import (
     ProgressSignal,
     ToolObservation,
 )
-from zzm_agent.core.runtime_state import LoopState, TurnState
+from zzm_agent.core.runtime_state import LoopState, LoopTransition, TurnState
 from zzm_agent.memory.token_counter import TokenCounter
 
 if TYPE_CHECKING:
@@ -666,7 +666,7 @@ class AgentLoop:
         while True:
             if tool_iterations >= self.max_tool_iterations:
                 final_reply = self._iteration_stop_message()
-                turn_state.block(final_reply, reason="iteration_limit")
+                turn_state.block(final_reply, reason=LoopTransition.ITERATION_LIMIT)
                 assistant_msg = {"role": "assistant", "content": final_reply}
                 messages.append(assistant_msg)
                 turn_messages.append(assistant_msg)
@@ -684,6 +684,7 @@ class AgentLoop:
 
             if stream:
                 loop_state.record_model_call()
+                loop_state.record_streaming_response()
                 assistant_content, tool_calls_raw, interrupted, call_usage = self._stream_once(
                     messages=messages,
                     tools=tools,
@@ -725,6 +726,7 @@ class AgentLoop:
                 return final_reply
 
             # If the model wants to call tools
+            loop_state.validate_tool_calls(tool_calls_raw)
             current_signatures = [self._tool_call_signature(tc) for tc in tool_calls_raw]
             if len(current_signatures) == 1 and current_signatures[0] == consecutive_signature:
                 consecutive_count += 1
@@ -754,7 +756,10 @@ class AgentLoop:
                     repetition_signal,
                     after_reflection=True,
                 )
-                turn_state.block(final_reply, reason="repeated_tool_call")
+                turn_state.block(
+                    final_reply,
+                    reason=LoopTransition.DUPLICATE_CALL_LIMIT,
+                )
                 assistant_msg = {"role": "assistant", "content": final_reply}
                 messages.append(assistant_msg)
                 turn_messages.append(assistant_msg)
@@ -788,7 +793,10 @@ class AgentLoop:
                     name = tc["function"]["name"]
                     args = json.loads(tc["function"]["arguments"])
                     risk_level = self.registry.get_tool_meta(name).get("risk_level", "low")
+                    if self._requires_tool_confirmation(risk_level):
+                        loop_state.await_permission()
                     if not self._is_tool_execution_approved(name, args):
+                        loop_state.record_permission_denial()
                         result_str = "User denied tool execution."
                         duration_ms = (perf_counter() - started_at) * 1000
                         self._emit_tool_event(
@@ -805,6 +813,7 @@ class AgentLoop:
                             ),
                         )
                     else:
+                        loop_state.record_tool_execution_start(tool_calls_raw)
                         self._emit_tool_event(
                             self.on_tool_start,
                             tool_start_event(
@@ -892,8 +901,8 @@ class AgentLoop:
                     )
                 )
 
-            progress_signal = progress_monitor.observe_round(round_observations)
             loop_state.record_tool_round(tool_calls_raw, round_observations)
+            progress_signal = progress_monitor.observe_round(round_observations)
             if progress_signal is not None:
                 if self._request_reflection(messages, progress_signal):
                     continue
