@@ -254,6 +254,12 @@ def test_agent_loop_populates_turn_and_loop_state_for_simple_reply():
     assert loop.last_loop_state.model_iterations == 1
     assert loop.last_loop_state.tool_iterations == 0
     assert loop.last_loop_state.phase is LoopPhase.COMPLETED
+    assert loop.last_message_store is not None
+    assert loop.last_message_store.pending_messages == []
+    assert loop.last_message_store.committed_messages == [
+        {"role": "user", "content": "hi"},
+        {"role": "assistant", "content": "hello"},
+    ]
 
 
 def test_agent_loop_populates_loop_state_for_tool_round():
@@ -288,6 +294,13 @@ def test_agent_loop_populates_loop_state_for_tool_round():
     assert len(loop.last_loop_state.observations) == 1
     assert loop.last_loop_state.observations[0].content == "ECHO:world"
     assert loop.last_loop_state.transition_history[-1]["to"] == "completed"
+    assert loop.last_message_store is not None
+    assert [message["role"] for message in loop.last_message_store.committed_messages] == [
+        "user",
+        "assistant",
+        "tool",
+        "assistant",
+    ]
 
 
 def test_agent_loop_records_permission_wait_and_denial_state():
@@ -318,3 +331,41 @@ def test_agent_loop_records_permission_wait_and_denial_state():
     assert LoopTransition.PERMISSION_REQUESTED.value in reasons
     assert LoopTransition.PERMISSION_DENIED.value in reasons
     assert loop.last_loop_state.observations[0].content == "User denied tool execution."
+
+
+def test_agent_loop_keeps_reflection_prompt_out_of_persisted_messages():
+    registry = ToolRegistry()
+
+    @registry.tool(description="echo")
+    def echo(text: str) -> str:
+        return f"ECHO:{text}"
+
+    loop = AgentLoop(
+        client=MagicMock(),
+        model="test-model",
+        system_prompt="sys",
+        registry=registry,
+        store=FakeStore(),
+        duplicate_tool_call_limit=1,
+    )
+    loop.client.chat.completions.create.side_effect = [
+        make_response(tool_calls=[make_tool_call("echo", {"text": "same"})]),
+        make_response(content="changed approach"),
+    ]
+
+    result = loop.run("call echo", stream=False)
+
+    assert result == "changed approach"
+    assert loop.last_message_store is not None
+    runtime_contents = [
+        message.get("content")
+        for message in loop.last_message_store.runtime_messages
+        if message.get("content")
+    ]
+    committed_contents = [
+        message.get("content")
+        for message in loop.last_message_store.committed_messages
+        if message.get("content")
+    ]
+    assert any("[REFLECTION_REQUIRED]" in content for content in runtime_contents)
+    assert not any("[REFLECTION_REQUIRED]" in content for content in committed_contents)

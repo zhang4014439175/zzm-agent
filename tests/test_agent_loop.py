@@ -274,6 +274,195 @@ def test_tool_call_then_reply(registry, store):
     assert history[2]["content"] == "ECHO:world"
 
 
+def test_text_tool_call_fallback_executes_shell_alias(store):
+    registry = ToolRegistry()
+
+    @registry.tool(description="run shell")
+    def run_shell(command: str) -> str:
+        return f"RAN:{command}"
+
+    loop = AgentLoop(
+        client=MagicMock(),
+        model="test-model",
+        system_prompt="sys",
+        registry=registry,
+        store=store,
+    )
+    loop.client.chat.completions.create.side_effect = [
+        make_response(
+            content=(
+                "<tool_call>shell\n"
+                "<arg_key>cmd</arg_key>\n"
+                "<arg_value>Get-ChildItem -Path E:\\PythonProject\\study\\EatToday "
+                "-Recurse -File</arg_value>\n"
+                "</tool_call>"
+            )
+        ),
+        make_response(content="检查完成"),
+    ]
+
+    result = loop.run("看看项目问题", stream=False)
+
+    assert result == "检查完成"
+    assert loop.client.chat.completions.create.call_count == 2
+    history = store.load_history()
+    assert history[1]["role"] == "assistant"
+    assert history[1]["content"] is None
+    assert history[1]["tool_calls"][0]["function"]["name"] == "run_shell"
+    assert json.loads(history[1]["tool_calls"][0]["function"]["arguments"]) == {
+        "command": "Get-ChildItem -Path E:\\PythonProject\\study\\EatToday -Recurse -File"
+    }
+    assert history[2]["role"] == "tool"
+    assert history[2]["content"].startswith("RAN:Get-ChildItem")
+
+
+def test_text_tool_call_fallback_executes_after_preamble(store):
+    registry = ToolRegistry()
+
+    @registry.tool(description="run shell")
+    def run_shell(command: str) -> str:
+        return f"RAN:{command}"
+
+    loop = AgentLoop(
+        client=MagicMock(),
+        model="test-model",
+        system_prompt="sys",
+        registry=registry,
+        store=store,
+    )
+    loop.client.chat.completions.create.side_effect = [
+        make_response(
+            content=(
+                "好的，我来帮您查看项目结构。首先，我会列出项目中的所有文件。"
+                "<tool_call>shell"
+                "<arg_key>cmd</arg_key>"
+                "<arg_value>Get-ChildItem -Path E:\\PythonProject\\study\\EatToday "
+                "-Recurse -File | Select-Object FullName</arg_value>"
+                "</tool_call>"
+            )
+        ),
+        make_response(content="项目结构如下"),
+    ]
+
+    result = loop.run("你好，请帮我看看现在的项目结构", stream=False)
+
+    assert result == "项目结构如下"
+    history = store.load_history()
+    assert len(history) == 4
+    assert history[1]["content"] is None
+    assert history[1]["tool_calls"][0]["function"]["name"] == "run_shell"
+    assert json.loads(history[1]["tool_calls"][0]["function"]["arguments"]) == {
+        "command": (
+            "Get-ChildItem -Path E:\\PythonProject\\study\\EatToday "
+            "-Recurse -File | Select-Object FullName"
+        )
+    }
+    assert history[2]["content"].startswith("RAN:Get-ChildItem")
+
+
+def test_native_tool_calls_take_precedence_over_text_tool_call_fallback(registry, store):
+    native_call = MagicMock()
+    native_call.id = "call_native"
+    native_call.function.name = "echo"
+    native_call.function.arguments = json.dumps({"text": "native"})
+
+    loop = AgentLoop(
+        client=MagicMock(),
+        model="test-model",
+        system_prompt="sys",
+        registry=registry,
+        store=store,
+    )
+    loop.client.chat.completions.create.side_effect = [
+        make_response(
+            content=(
+                "<tool_call>shell\n"
+                "<arg_key>cmd</arg_key><arg_value>ignored</arg_value>\n"
+                "</tool_call>"
+            ),
+            tool_calls=[native_call],
+        ),
+        make_response(content="done"),
+    ]
+
+    assert loop.run("call echo", stream=False) == "done"
+    history = store.load_history()
+    assert history[1]["tool_calls"][0]["function"]["name"] == "echo"
+    assert history[2]["content"] == "ECHO:native"
+
+
+def test_stream_text_tool_call_fallback_does_not_render_pseudo_xml(store):
+    registry = ToolRegistry()
+
+    @registry.tool(description="run shell")
+    def run_shell(command: str) -> str:
+        return f"RAN:{command}"
+
+    loop = AgentLoop(
+        client=MagicMock(),
+        model="test-model",
+        system_prompt="sys",
+        registry=registry,
+        store=store,
+    )
+    first_stream = iter(
+        [
+            make_stream_chunk(content="<tool"),
+            make_stream_chunk(content="_call>shell\n"),
+            make_stream_chunk(content="<arg_key>cmd</arg_key>"),
+            make_stream_chunk(content="<arg_value>dir</arg_value>"),
+            make_stream_chunk(content="</tool_call>"),
+        ]
+    )
+    second_stream = iter([make_stream_chunk(content="完成")])
+    loop.client.chat.completions.create.side_effect = [first_stream, second_stream]
+
+    chunks = []
+    result = loop.run("看看项目", stream=True, on_text_chunk=chunks.append)
+
+    assert result == "完成"
+    assert chunks == ["完成"]
+    history = store.load_history()
+    assert history[1]["tool_calls"][0]["function"]["name"] == "run_shell"
+    assert history[2]["content"] == "RAN:dir"
+
+
+def test_stream_text_tool_call_after_preamble_hides_pseudo_xml(store):
+    registry = ToolRegistry()
+
+    @registry.tool(description="run shell")
+    def run_shell(command: str) -> str:
+        return f"RAN:{command}"
+
+    loop = AgentLoop(
+        client=MagicMock(),
+        model="test-model",
+        system_prompt="sys",
+        registry=registry,
+        store=store,
+    )
+    first_stream = iter(
+        [
+            make_stream_chunk(content="好的，我来帮您查看项目结构。"),
+            make_stream_chunk(content="<tool_call>shell"),
+            make_stream_chunk(content="<arg_key>cmd</arg_key>"),
+            make_stream_chunk(content="<arg_value>dir</arg_value>"),
+            make_stream_chunk(content="</tool_call>"),
+        ]
+    )
+    second_stream = iter([make_stream_chunk(content="完成")])
+    loop.client.chat.completions.create.side_effect = [first_stream, second_stream]
+
+    chunks = []
+    result = loop.run("看看项目", stream=True, on_text_chunk=chunks.append)
+
+    assert result == "完成"
+    assert chunks == ["好的，我来帮您查看项目结构。", "完成"]
+    history = store.load_history()
+    assert history[1]["tool_calls"][0]["function"]["name"] == "run_shell"
+    assert history[2]["content"] == "RAN:dir"
+
+
 def test_tool_callbacks_receive_start_and_end_events(registry, store):
     tool_call = MagicMock()
     tool_call.id = "call_1"

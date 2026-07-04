@@ -191,7 +191,22 @@ def load_config(config_path: str | Path | None = None) -> dict[str, Any]:
 
     path = resolve_config_path(config_path)
     with path.open(encoding="utf-8") as handle:
-        return _expand_env_value(yaml.safe_load(handle) or {})
+        cfg = _expand_env_value(yaml.safe_load(handle) or {})
+    cfg["_config_path"] = str(path)
+    cfg["_config_dir"] = str(path.parent)
+    return cfg
+
+
+def _resolve_plugin_dirs(cfg: dict[str, Any]) -> list[Path]:
+    """Resolve plugin directories relative to the loaded config file."""
+    config_dir = Path(cfg.get("_config_dir") or Path.cwd()).resolve()
+    resolved_dirs: list[Path] = []
+    for raw_dir in cfg.get("agent", {}).get("plugin_dirs", []):
+        path = Path(str(raw_dir)).expanduser()
+        if not path.is_absolute():
+            path = config_dir / path
+        resolved_dirs.append(path.resolve())
+    return resolved_dirs
 
 
 def build_tool_confirmation_callback(console: Any):
@@ -366,7 +381,7 @@ def build_registry(cfg: dict[str, Any]) -> ToolRegistry:
     registry = ToolRegistry()
     set_active_registry(registry)
     registry.configure_plugin_dirs(
-        cfg.get("agent", {}).get("plugin_dirs", []),
+        _resolve_plugin_dirs(cfg),
         plugin_config=cfg.get("plugins", {}),
     )
     registry.load_configured_plugins()

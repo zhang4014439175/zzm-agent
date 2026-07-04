@@ -1,4 +1,5 @@
 import json
+import re
 from dataclasses import dataclass
 from time import perf_counter, sleep
 from typing import TYPE_CHECKING, Any, Callable
@@ -17,6 +18,7 @@ from zzm_agent.core.progress_monitor import (
     ProgressSignal,
     ToolObservation,
 )
+from zzm_agent.core.runtime_messages import ConversationMessageStore
 from zzm_agent.core.runtime_state import LoopState, LoopTransition, TurnState
 from zzm_agent.memory.token_counter import TokenCounter
 
@@ -35,6 +37,28 @@ class _ToolExecutionOutcome:
     success: bool
     attempts: int = 1
     error: ToolError | None = None
+
+
+_TEXT_TOOL_CALL_PATTERN = re.compile(
+    r"<tool_call>\s*(?P<name>[A-Za-z_][\w.\-]*)\s*(?P<body>.*?)</tool_call>",
+    re.DOTALL | re.IGNORECASE,
+)
+_TEXT_TOOL_ARG_PAIR_PATTERN = re.compile(
+    r"<arg_key>\s*(?P<key>.*?)\s*</arg_key>\s*"
+    r"<arg_value>\s*(?P<value>.*?)\s*</arg_value>",
+    re.DOTALL | re.IGNORECASE,
+)
+_TEXT_TOOL_NAME_ALIASES = {
+    "shell": "run_shell",
+    "powershell": "run_shell",
+    "bash": "run_shell",
+    "cmd": "run_shell",
+}
+_TEXT_TOOL_ARG_ALIASES = {
+    "run_shell": {
+        "cmd": "command",
+    }
+}
 
 
 class AgentLoop:
@@ -123,6 +147,7 @@ class AgentLoop:
         self.last_reflection_count = 0
         self.last_turn_state: TurnState | None = None
         self.last_loop_state: LoopState | None = None
+        self.last_message_store: ConversationMessageStore | None = None
         self.token_counter = TokenCounter(model=model)
 
     def _build_tool_call_record(
@@ -153,6 +178,79 @@ class AgentLoop:
                 )
             )
         return records
+
+    def _resolve_text_tool_name(self, name: str) -> str | None:
+        """Map text-emitted tool names to registered native tool names."""
+        normalized = name.strip()
+        alias = _TEXT_TOOL_NAME_ALIASES.get(normalized.lower())
+        if alias is not None:
+            return alias
+        if normalized in self.registry.tools:
+            return normalized
+        return None
+
+    def _normalize_text_tool_arguments(
+        self,
+        tool_name: str,
+        arguments: dict[str, str],
+    ) -> dict[str, Any]:
+        """Map text-emitted argument names to the registered tool schema."""
+        aliases = _TEXT_TOOL_ARG_ALIASES.get(tool_name, {})
+        normalized: dict[str, Any] = {}
+        for key, value in arguments.items():
+            normalized_key = aliases.get(key.strip(), key.strip())
+            normalized[normalized_key] = value.strip()
+        return normalized
+
+    def _extract_text_tool_calls(self, content: str) -> list[dict[str, Any]]:
+        """Parse model-emitted pseudo tool calls from assistant text.
+
+        This is a compatibility fallback for providers/models that ignore native
+        OpenAI tool calling and instead print a tool call as text.
+        """
+        if "<tool_call>" not in content.lower():
+            return []
+
+        records: list[dict[str, Any]] = []
+        for index, match in enumerate(_TEXT_TOOL_CALL_PATTERN.finditer(content), start=1):
+            tool_name = self._resolve_text_tool_name(match.group("name"))
+            if tool_name is None:
+                continue
+
+            raw_arguments: dict[str, str] = {}
+            for arg_match in _TEXT_TOOL_ARG_PAIR_PATTERN.finditer(match.group("body")):
+                key = arg_match.group("key").strip()
+                if not key:
+                    continue
+                raw_arguments[key] = arg_match.group("value").strip()
+
+            arguments = self._normalize_text_tool_arguments(tool_name, raw_arguments)
+            records.append(
+                self._build_tool_call_record(
+                    tool_call_id=f"text_call_{index}",
+                    name=tool_name,
+                    arguments=json.dumps(arguments, ensure_ascii=False),
+                )
+            )
+        return records
+
+    def _text_tool_call_start(self, text: str, tools: list[dict[str, Any]]) -> int:
+        """Return the first pseudo tool-call/candidate start index, or -1."""
+        lowered = text.lower()
+        marker = "<tool_call"
+        marker_index = lowered.find(marker)
+        if marker_index >= 0:
+            return marker_index
+
+        # Streamed text can split "<tool_call" across chunks. If the current
+        # suffix is a prefix of the marker, keep it buffered until the next chunk
+        # proves whether it is a pseudo tool call or normal text.
+        start = max(0, len(lowered) - len(marker) + 1)
+        for index in range(start, len(lowered)):
+            suffix = lowered[index:]
+            if suffix and marker.startswith(suffix):
+                return index
+        return -1
 
     def _usage_from_sdk_object(self, usage: Any) -> TokenUsage:
         """Normalize OpenAI-compatible usage metadata when the SDK provides it."""
@@ -322,9 +420,15 @@ class AgentLoop:
         except Exception as exc:
             response = self._retry_without_tool_choice(exc, kwargs)
         msg = self._first_choice_message(response)
+        content = msg.content or ""
+        tool_calls = self._extract_tool_calls(msg.tool_calls or [])
+        if not tool_calls:
+            tool_calls = self._extract_text_tool_calls(content)
+            if tool_calls:
+                content = ""
         return (
-            msg.content or "",
-            self._extract_tool_calls(msg.tool_calls or []),
+            content,
+            tool_calls,
             False,
             self._usage_from_sdk_object(getattr(response, "usage", None)),
         )
@@ -338,6 +442,7 @@ class AgentLoop:
         kwargs = self._chat_completion_kwargs(messages, tools, stream=True)
 
         text_parts: list[str] = []
+        emitted_text_length = 0
         usage = TokenUsage()
         # Streamed tool calls are incremental: the model can emit the same call
         # over multiple chunks, so we rebuild each call by its stable index.
@@ -369,7 +474,15 @@ class AgentLoop:
                     # push each fragment to the caller for real-time rendering.
                     text_parts.append(content)
                     if on_text_chunk is not None:
-                        on_text_chunk(content)
+                        full_text = "".join(text_parts)
+                        tool_call_start = self._text_tool_call_start(full_text, tools)
+                        if tool_call_start >= 0:
+                            if emitted_text_length < tool_call_start:
+                                on_text_chunk(full_text[emitted_text_length:tool_call_start])
+                                emitted_text_length = tool_call_start
+                        else:
+                            on_text_chunk(full_text[emitted_text_length:])
+                            emitted_text_length = len(full_text)
 
                 for tc_delta in getattr(delta, "tool_calls", None) or []:
                     index = getattr(tc_delta, "index", 0)
@@ -406,7 +519,14 @@ class AgentLoop:
 
         # Tool calls must be replayed in their original order for downstream execution.
         tool_calls = [tool_call_map[i] for i in sorted(tool_call_map)]
-        return "".join(text_parts), tool_calls, False, usage
+        content = "".join(text_parts)
+        if not tool_calls:
+            tool_calls = self._extract_text_tool_calls(content)
+            if tool_calls:
+                return "", tool_calls, False, usage
+        if on_text_chunk is not None and emitted_text_length < len(content):
+            on_text_chunk(content[emitted_text_length:])
+        return content, tool_calls, False, usage
 
     def _requires_tool_confirmation(self, risk_level: str) -> bool:
         """Return whether a tool call needs interactive approval."""
@@ -585,7 +705,7 @@ class AgentLoop:
 
     def _request_reflection(
         self,
-        messages: list[dict[str, Any]],
+        message_store: ConversationMessageStore,
         signal: ProgressSignal,
     ) -> bool:
         """Inject one runtime-only reflection prompt and report whether it was added."""
@@ -594,7 +714,9 @@ class AgentLoop:
             self.last_loop_state.record_progress_signal(signal)
         if self.last_reflection_count >= 1:
             return False
-        messages.append({"role": "system", "content": self._reflection_prompt(signal)})
+        message_store.append_runtime_only(
+            {"role": "system", "content": self._reflection_prompt(signal)}
+        )
         if self.last_loop_state is not None:
             self.last_loop_state.record_reflection(signal)
             self.last_reflection_count = self.last_loop_state.reflection_count
@@ -632,9 +754,13 @@ class AgentLoop:
         )
         self.last_context_window = _compression
 
-        # Persist only the current turn once it is safe to do so; this avoids
-        # duplicating prior history that was already loaded from disk.
-        turn_messages = [{"role": "user", "content": user_input}]
+        user_message = {"role": "user", "content": user_input}
+        message_store = ConversationMessageStore.begin_turn(
+            persisted_messages=self.store.load_history(),
+            model_context_messages=messages,
+            user_message=user_message,
+        )
+        self.last_message_store = message_store
         turn_usage = TokenUsage()
         turn_state = TurnState(user_input=user_input)
         turn_state.start()
@@ -668,15 +794,15 @@ class AgentLoop:
                 final_reply = self._iteration_stop_message()
                 turn_state.block(final_reply, reason=LoopTransition.ITERATION_LIMIT)
                 assistant_msg = {"role": "assistant", "content": final_reply}
-                messages.append(assistant_msg)
-                turn_messages.append(assistant_msg)
-                self.store.append(turn_messages)
+                message_store.append_pending(assistant_msg)
+                message_store.commit(self.store.append)
                 self._commit_turn_usage(turn_usage)
                 return final_reply
 
+            model_context_messages = message_store.prepare_model_context()
             self._save_context_snapshot(
                 user_input=user_input,
-                messages=messages,
+                messages=model_context_messages,
                 tools=tools,
                 stream=stream,
                 tool_iteration=tool_iterations,
@@ -686,20 +812,20 @@ class AgentLoop:
                 loop_state.record_model_call()
                 loop_state.record_streaming_response()
                 assistant_content, tool_calls_raw, interrupted, call_usage = self._stream_once(
-                    messages=messages,
+                    messages=model_context_messages,
                     tools=tools,
                     on_text_chunk=on_text_chunk,
                 )
             else:
                 loop_state.record_model_call()
                 assistant_content, tool_calls_raw, interrupted, call_usage = self._complete_once(
-                    messages=messages,
+                    messages=model_context_messages,
                     tools=tools,
                 )
 
             if not call_usage.has_tokens():
                 call_usage = self._estimate_call_usage(
-                    messages=messages,
+                    messages=model_context_messages,
                     assistant_content=assistant_content,
                     tool_calls=tool_calls_raw,
                 )
@@ -709,6 +835,7 @@ class AgentLoop:
                 # Interrupted turns intentionally do not write partial assistant
                 # or tool state, preserving a resumable conversation history.
                 turn_state.cancel("interrupted")
+                message_store.rollback_pending()
                 self._commit_turn_usage(turn_usage)
                 return assistant_content
 
@@ -716,11 +843,10 @@ class AgentLoop:
             if not tool_calls_raw:
                 final_reply = assistant_content
                 assistant_msg = {"role": "assistant", "content": final_reply}
-                messages.append(assistant_msg)
-                turn_messages.append(assistant_msg)
+                message_store.append_pending(assistant_msg)
 
                 # Only the final assistant reply marks the turn as complete.
-                self.store.append(turn_messages)
+                message_store.commit(self.store.append)
                 turn_state.complete(final_reply, usage=turn_usage)
                 self._commit_turn_usage(turn_usage)
                 return final_reply
@@ -750,7 +876,7 @@ class AgentLoop:
                         f"{name}({arguments})."
                     ),
                 )
-                if self._request_reflection(messages, repetition_signal):
+                if self._request_reflection(message_store, repetition_signal):
                     continue
                 final_reply = self._no_progress_stop_message(
                     repetition_signal,
@@ -761,9 +887,8 @@ class AgentLoop:
                     reason=LoopTransition.DUPLICATE_CALL_LIMIT,
                 )
                 assistant_msg = {"role": "assistant", "content": final_reply}
-                messages.append(assistant_msg)
-                turn_messages.append(assistant_msg)
-                self.store.append(turn_messages)
+                message_store.append_pending(assistant_msg)
+                message_store.commit(self.store.append)
                 self._commit_turn_usage(turn_usage)
                 return final_reply
 
@@ -775,8 +900,7 @@ class AgentLoop:
                 "content": assistant_content or None,  # Use None if empty for tool calls
                 "tool_calls": tool_calls_raw,
             }
-            messages.append(assistant_intent_msg)
-            turn_messages.append(assistant_intent_msg)
+            message_store.append_pending(assistant_intent_msg)
 
             # Tool results stay inside the same turn so the model can immediately
             # consume them on the next loop iteration.
@@ -889,8 +1013,7 @@ class AgentLoop:
                     "tool_call_id": tc["id"],
                     "content": result_str,
                 }
-                messages.append(tool_result_msg)
-                turn_messages.append(tool_result_msg)
+                message_store.append_pending(tool_result_msg)
                 round_observations.append(
                     ToolObservation(
                         tool_name=name or "<unknown>",
@@ -904,7 +1027,7 @@ class AgentLoop:
             loop_state.record_tool_round(tool_calls_raw, round_observations)
             progress_signal = progress_monitor.observe_round(round_observations)
             if progress_signal is not None:
-                if self._request_reflection(messages, progress_signal):
+                if self._request_reflection(message_store, progress_signal):
                     continue
                 final_reply = self._no_progress_stop_message(
                     progress_signal,
@@ -912,9 +1035,8 @@ class AgentLoop:
                 )
                 turn_state.block(final_reply, reason=progress_signal.reason)
                 assistant_msg = {"role": "assistant", "content": final_reply}
-                messages.append(assistant_msg)
-                turn_messages.append(assistant_msg)
-                self.store.append(turn_messages)
+                message_store.append_pending(assistant_msg)
+                message_store.commit(self.store.append)
                 self._commit_turn_usage(turn_usage)
                 return final_reply
             

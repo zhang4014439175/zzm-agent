@@ -5,6 +5,7 @@ from zzm_agent.cli_support.runtime import (
     build_tool_confirmation_callback,
     _ask_tool_approval_choice,
     _config_bool,
+    _resolve_plugin_dirs,
     get_agent_loop_policy,
     load_config,
     parse_args,
@@ -215,6 +216,27 @@ def test_load_config_expands_env_placeholders(tmp_path, monkeypatch):
     cfg = load_config(config_path)
 
     assert cfg["model"]["api_key"] == "secret"
+    assert cfg["_config_dir"] == str(config_path.parent)
+
+
+def test_plugin_dirs_resolve_relative_to_config_file(tmp_path, monkeypatch):
+    config_dir = tmp_path / "agent"
+    config_dir.mkdir()
+    config_path = config_dir / "config.yaml"
+    config_path.write_text(
+        "agent:\n"
+        "  plugin_dirs:\n"
+        "    - zzm_agent/plugins\n",
+        encoding="utf-8",
+    )
+    other_cwd = tmp_path / "other-project"
+    other_cwd.mkdir()
+    monkeypatch.chdir(other_cwd)
+
+    cfg = load_config(config_path)
+    plugin_dirs = _resolve_plugin_dirs(cfg)
+
+    assert plugin_dirs == [(config_dir / "zzm_agent" / "plugins").resolve()]
 
 
 def test_config_bool_accepts_common_values():
