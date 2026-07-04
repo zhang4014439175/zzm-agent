@@ -46,12 +46,21 @@ def make_response(content=None, tool_calls=None):
     return resp
 
 
-def make_response_with_usage(content=None, tool_calls=None, prompt=0, completion=0):
+def make_response_with_usage(
+    content=None,
+    tool_calls=None,
+    prompt=0,
+    completion=0,
+    cached=0,
+    reasoning=0,
+):
     resp = make_response(content=content, tool_calls=tool_calls)
     resp.usage = SimpleNamespace(
         prompt_tokens=prompt,
         completion_tokens=completion,
         total_tokens=prompt + completion,
+        prompt_tokens_details=SimpleNamespace(cached_tokens=cached),
+        completion_tokens_details=SimpleNamespace(reasoning_tokens=reasoning),
     )
     return resp
 
@@ -133,6 +142,46 @@ def test_agent_loop_tracks_api_token_usage(registry, store):
     assert loop.last_turn_usage.total_tokens == 17
     assert loop.last_turn_usage.source == "api"
     assert loop.cumulative_usage.total_tokens == 17
+
+
+def test_agent_loop_records_usage_state_across_scopes(registry, store):
+    loop = AgentLoop(
+        client=MagicMock(),
+        model="test-model",
+        system_prompt="You are helpful.",
+        registry=registry,
+        store=store,
+    )
+    tool_call = MagicMock()
+    tool_call.id = "call_1"
+    tool_call.function.name = "echo"
+    tool_call.function.arguments = json.dumps({"text": "world"})
+    loop.client.chat.completions.create.side_effect = [
+        make_response_with_usage(
+            tool_calls=[tool_call],
+            prompt=12,
+            completion=4,
+            cached=3,
+            reasoning=2,
+        ),
+        make_response_with_usage(content="done", prompt=20, completion=5),
+    ]
+
+    result = loop.run("call echo", stream=False)
+
+    assert result == "done"
+    assert loop.last_turn_usage.prompt_tokens == 32
+    assert loop.last_turn_usage.completion_tokens == 9
+    assert loop.last_turn_usage.total_tokens == 41
+    assert loop.last_turn_usage.model_calls == 2
+    assert loop.last_turn_usage.tool_calls == 1
+    assert loop.last_turn_usage.cache_read_tokens == 3
+    assert loop.last_turn_usage.reasoning_tokens == 2
+    assert loop.last_turn_usage.tool_schema_tokens > 0
+    assert loop.usage_state.snapshot_for_model("test-model").model_calls == 2
+    assert loop.usage_state.conversation.total_tokens == 41
+    assert loop.last_turn_state is not None
+    assert loop.last_turn_state.usage_state.turn.tool_calls == 1
 
 
 def test_chat_completion_error_payload_raises_clear_error(registry):

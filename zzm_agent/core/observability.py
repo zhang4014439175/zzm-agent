@@ -1,7 +1,8 @@
 from __future__ import annotations
 
 import json
-from dataclasses import asdict, dataclass
+from dataclasses import asdict, dataclass, field
+from enum import Enum
 from datetime import datetime, timezone
 from pathlib import Path
 from typing import Any, Callable
@@ -80,6 +81,12 @@ class TokenUsage:
     prompt_tokens: int = 0
     completion_tokens: int = 0
     total_tokens: int = 0
+    cache_creation_tokens: int = 0
+    cache_read_tokens: int = 0
+    reasoning_tokens: int = 0
+    tool_schema_tokens: int = 0
+    model_calls: int = 0
+    tool_calls: int = 0
     source: str = "unavailable"
 
     def add(self, other: "TokenUsage") -> None:
@@ -87,6 +94,12 @@ class TokenUsage:
         self.prompt_tokens += other.prompt_tokens
         self.completion_tokens += other.completion_tokens
         self.total_tokens += other.total_tokens
+        self.cache_creation_tokens += other.cache_creation_tokens
+        self.cache_read_tokens += other.cache_read_tokens
+        self.reasoning_tokens += other.reasoning_tokens
+        self.tool_schema_tokens += other.tool_schema_tokens
+        self.model_calls += other.model_calls
+        self.tool_calls += other.tool_calls
         if other.source == "unavailable":
             return
         if self.source in {"unavailable", other.source}:
@@ -100,12 +113,31 @@ class TokenUsage:
             prompt_tokens=self.prompt_tokens,
             completion_tokens=self.completion_tokens,
             total_tokens=self.total_tokens,
+            cache_creation_tokens=self.cache_creation_tokens,
+            cache_read_tokens=self.cache_read_tokens,
+            reasoning_tokens=self.reasoning_tokens,
+            tool_schema_tokens=self.tool_schema_tokens,
+            model_calls=self.model_calls,
+            tool_calls=self.tool_calls,
             source=self.source,
         )
 
     def has_tokens(self) -> bool:
         """Return whether any usage value is available."""
         return self.total_tokens > 0 or self.prompt_tokens > 0 or self.completion_tokens > 0
+
+    def to_record(self) -> dict[str, Any]:
+        """Serialize usage for persisted state and debug records."""
+        return asdict(self)
+
+    @classmethod
+    def from_record(cls, record: dict[str, Any] | None) -> "TokenUsage":
+        """Restore usage while tolerating records created before 6.5."""
+        if not record:
+            return cls()
+        allowed = cls.__dataclass_fields__.keys()
+        values = {key: record[key] for key in allowed if key in record}
+        return cls(**values)
 
     def estimated_cost_usd(
         self,
@@ -117,6 +149,128 @@ class TokenUsage:
             (self.prompt_tokens / 1_000_000) * input_price_per_1m
             + (self.completion_tokens / 1_000_000) * output_price_per_1m
         )
+
+
+class UsageScope(str, Enum):
+    """Aggregation scope for model and tool usage."""
+
+    MODEL = "model"
+    TURN = "turn"
+    CONVERSATION = "conversation"
+    TASK = "task"
+    APPLICATION = "application"
+
+
+@dataclass
+class UsageState:
+    """Multi-scope usage accounting for one agent runtime.
+
+    The state keeps old turn/session counters possible through TokenUsage, while
+    also exposing explicit model, turn, conversation, task, and application totals.
+    """
+
+    turn: TokenUsage = field(default_factory=TokenUsage)
+    conversation: TokenUsage = field(default_factory=TokenUsage)
+    task: TokenUsage = field(default_factory=TokenUsage)
+    application: TokenUsage = field(default_factory=TokenUsage)
+    by_model: dict[str, TokenUsage] = field(default_factory=dict)
+    current_turn_id: str | None = None
+    conversation_id: str | None = None
+    task_id: str | None = None
+
+    def start_turn(self, turn_id: str | None = None) -> None:
+        """Reset turn-scoped usage for a new user turn."""
+        self.current_turn_id = turn_id
+        self.turn = TokenUsage()
+
+    def set_conversation(self, conversation_id: str | None) -> None:
+        """Attach usage to the active conversation/session."""
+        self.conversation_id = conversation_id
+
+    def set_task(self, task_id: str | None) -> None:
+        """Attach usage to the active task when a planner/task layer exists."""
+        self.task_id = task_id
+
+    def record_model_call(
+        self,
+        usage: TokenUsage,
+        *,
+        model: str,
+        tool_schema_tokens: int = 0,
+    ) -> TokenUsage:
+        """Record one model call across all active usage scopes."""
+        sample = usage.copy()
+        sample.model_calls += 1
+        sample.tool_schema_tokens += max(0, int(tool_schema_tokens or 0))
+        self._add_to_scopes(sample, model=model)
+        return sample
+
+    def record_tool_calls(self, count: int) -> TokenUsage:
+        """Record tool call count across non-model aggregate scopes."""
+        sample = TokenUsage(tool_calls=max(0, int(count or 0)))
+        self.turn.add(sample)
+        self.conversation.add(sample)
+        self.task.add(sample)
+        self.application.add(sample)
+        return sample
+
+    def _add_to_scopes(self, usage: TokenUsage, *, model: str) -> None:
+        self.turn.add(usage)
+        self.conversation.add(usage)
+        self.task.add(usage)
+        self.application.add(usage)
+        self.by_model.setdefault(model, TokenUsage()).add(usage)
+
+    def snapshot(self, scope: UsageScope | str) -> TokenUsage:
+        """Return a detached usage total for one aggregate scope."""
+        scope_value = UsageScope(scope)
+        if scope_value is UsageScope.TURN:
+            return self.turn.copy()
+        if scope_value is UsageScope.CONVERSATION:
+            return self.conversation.copy()
+        if scope_value is UsageScope.TASK:
+            return self.task.copy()
+        if scope_value is UsageScope.APPLICATION:
+            return self.application.copy()
+        raise ValueError("Model usage requires snapshot_for_model(model).")
+
+    def snapshot_for_model(self, model: str) -> TokenUsage:
+        """Return a detached usage total for one model name."""
+        return self.by_model.get(model, TokenUsage()).copy()
+
+    def to_record(self) -> dict[str, Any]:
+        """Serialize the full usage state for session/task persistence."""
+        return {
+            "turn": self.turn.to_record(),
+            "conversation": self.conversation.to_record(),
+            "task": self.task.to_record(),
+            "application": self.application.to_record(),
+            "by_model": {
+                model: usage.to_record()
+                for model, usage in sorted(self.by_model.items())
+            },
+            "current_turn_id": self.current_turn_id,
+            "conversation_id": self.conversation_id,
+            "task_id": self.task_id,
+        }
+
+    @classmethod
+    def from_record(cls, record: dict[str, Any] | None) -> "UsageState":
+        """Restore UsageState while tolerating missing fields."""
+        if not record:
+            return cls()
+        state = cls(
+            turn=TokenUsage.from_record(record.get("turn")),
+            conversation=TokenUsage.from_record(record.get("conversation")),
+            task=TokenUsage.from_record(record.get("task")),
+            application=TokenUsage.from_record(record.get("application")),
+            current_turn_id=record.get("current_turn_id"),
+            conversation_id=record.get("conversation_id"),
+            task_id=record.get("task_id"),
+        )
+        for model, usage_record in dict(record.get("by_model") or {}).items():
+            state.by_model[str(model)] = TokenUsage.from_record(usage_record)
+        return state
 
 
 class ToolEventLogger:

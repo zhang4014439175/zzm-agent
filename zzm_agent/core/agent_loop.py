@@ -9,6 +9,7 @@ from zzm_agent.core.observability import (
     TokenUsage,
     ToolEvent,
     ToolEventCallback,
+    UsageState,
     tool_end_event,
     tool_error_event,
     tool_start_event,
@@ -142,6 +143,7 @@ class AgentLoop:
         self.prompt_manager = prompt_manager
         self.last_turn_usage = TokenUsage()
         self.cumulative_usage = TokenUsage()
+        self.usage_state = UsageState()
         self.last_context_window: dict[str, Any] = {}
         self.last_progress_signal: ProgressSignal | None = None
         self.last_reflection_count = 0
@@ -269,6 +271,22 @@ class AgentLoop:
             except (TypeError, ValueError):
                 return 0
 
+        def get_nested_int(parent_field: str, field: str) -> int:
+            if isinstance(usage, dict):
+                parent = usage.get(parent_field, {})
+            else:
+                parent = getattr(usage, parent_field, {})
+            if parent is None:
+                return 0
+            if isinstance(parent, dict):
+                value = parent.get(field, 0)
+            else:
+                value = getattr(parent, field, 0)
+            try:
+                return int(value or 0)
+            except (TypeError, ValueError):
+                return 0
+
         prompt_tokens = get_int("prompt_tokens")
         completion_tokens = get_int("completion_tokens")
         total_tokens = get_int("total_tokens") or prompt_tokens + completion_tokens
@@ -278,6 +296,19 @@ class AgentLoop:
             prompt_tokens=prompt_tokens,
             completion_tokens=completion_tokens,
             total_tokens=total_tokens,
+            cache_creation_tokens=(
+                get_int("cache_creation_input_tokens")
+                or get_nested_int("prompt_tokens_details", "cache_creation_tokens")
+            ),
+            cache_read_tokens=(
+                get_int("cache_read_input_tokens")
+                or get_nested_int("prompt_tokens_details", "cached_tokens")
+                or get_nested_int("prompt_tokens_details", "cache_read_tokens")
+            ),
+            reasoning_tokens=get_nested_int(
+                "completion_tokens_details",
+                "reasoning_tokens",
+            ),
             source="api",
         )
 
@@ -662,6 +693,10 @@ class AgentLoop:
         self.cumulative_usage.add(usage)
         if self.last_turn_state is not None:
             self.last_turn_state.usage = self.last_turn_usage.copy()
+            self.last_turn_state.usage_state.turn = self.last_turn_usage.copy()
+        save_usage_state = getattr(self.store, "save_usage_state", None)
+        if callable(save_usage_state):
+            save_usage_state(self.usage_state)
 
     def _build_system_prompt(self, user_input: str) -> str:
         """Return the static or dynamically assembled system prompt for this turn."""
@@ -767,6 +802,13 @@ class AgentLoop:
         loop_state = turn_state.start_loop()
         self.last_turn_state = turn_state
         self.last_loop_state = loop_state
+        session_id = getattr(self.store, "session_id", None)
+        load_usage_state = getattr(self.store, "load_usage_state", None)
+        if callable(load_usage_state):
+            self.usage_state = load_usage_state()
+        self.usage_state.start_turn(turn_state.turn_id)
+        self.usage_state.set_conversation(session_id)
+        turn_state.usage_state = self.usage_state
         
         # Get available tool schemas
         tools = self.registry.get_schemas()
@@ -829,7 +871,12 @@ class AgentLoop:
                     assistant_content=assistant_content,
                     tool_calls=tool_calls_raw,
                 )
-            turn_usage.add(call_usage)
+            accounted_call_usage = self.usage_state.record_model_call(
+                call_usage,
+                model=self.model,
+                tool_schema_tokens=tool_schema_tokens,
+            )
+            turn_usage.add(accounted_call_usage)
 
             if interrupted:
                 # Interrupted turns intentionally do not write partial assistant
@@ -853,6 +900,8 @@ class AgentLoop:
 
             # If the model wants to call tools
             loop_state.validate_tool_calls(tool_calls_raw)
+            tool_count_usage = self.usage_state.record_tool_calls(len(tool_calls_raw))
+            turn_usage.add(tool_count_usage)
             current_signatures = [self._tool_call_signature(tc) for tc in tool_calls_raw]
             if len(current_signatures) == 1 and current_signatures[0] == consecutive_signature:
                 consecutive_count += 1

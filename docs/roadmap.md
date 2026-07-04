@@ -15,7 +15,7 @@
 
 ## 执行进度总览
 
-> **当前下一任务：6.5 完整 UsageState 及多作用域累计。**
+> **当前下一任务：6.6 完整 PermissionState 及权限生命周期。**
 
 ### 当前能力基线
 
@@ -45,7 +45,7 @@
 - [x] 6.2 ApplicationState / ConversationState / TurnState / LoopState：把当前散落在 AgentLoop 中的计数器、消息、权限、用量和运行状态收敛到明确状态对象
 - [x] 6.3 LoopPhase / LoopTransition 正式状态机：用显式阶段和转换原因描述 ReAct 循环，支持 follow-up、reflection、stop hook、取消和失败
 - [x] 6.4 运行时消息、待提交消息与持久化消息分层：区分当前执行视图、未提交消息、已提交历史和模型上下文视图
-- [ ] 6.5 完整 UsageState 及多作用域累计：按模型、Turn、Conversation、Task 和应用层累计 Token、调用次数和费用
+- [x] 6.5 完整 UsageState 及多作用域累计：按模型、Turn、Conversation、Task 和应用层累计 Token、调用次数和费用
 - [ ] 6.6 完整 PermissionState 及权限生命周期：记录权限请求、授权、拒绝、过期、孤立请求和不同作用域的权限决定
 - [ ] 6.7 FileStateCache 文件状态缓存：缓存已读文件内容、Hash、行号范围、摘要和读取时间，避免重复读取和上下文浪费
 - [ ] 6.8 MemoryLoadState 与嵌套记忆去重：记录本轮已加载的记忆和嵌套路径，防止重复注入相同 Memory 内容
@@ -548,6 +548,19 @@ UsageState 完整记录：
 - 按 Model、Turn、Conversation、Task 和 Application 聚合。
 
 Usage 必须随 Session 和 Task 持久化，进程重启后可恢复，切换 Session 时不能串账。
+
+已完成：
+
+- [x] 扩展 `TokenUsage`，记录 cache creation、cache read、reasoning、tool schema、模型调用次数和工具调用次数；
+- [x] 新增 `UsageState`，支持 Turn、Conversation、Task、Application 和 Model 维度累计；
+- [x] 为 `UsageState` 增加 `to_record()` / `from_record()`，为后续 Session / Task 持久化恢复预留结构；
+- [x] `TurnState`、`ConversationState` 和 `ApplicationState` 接入 `usage_state`；
+- [x] `MemoryStore` 支持把 `UsageState` 保存到当前 Session 的 `meta.json`，并在恢复或切换 Session 时读取对应账本；
+- [x] `AgentLoop` 在每次模型调用后记录 usage，在工具调用时记录工具调用次数；
+- [x] `_usage_from_sdk_object()` 兼容 cache 和 reasoning token 明细；
+- [x] 保留 `last_turn_usage`、`cumulative_usage` 等旧字段，兼容 CLI 和已有调用方；
+- [x] 扩充 `tests/test_runtime_state.py` 和 `tests/test_agent_loop.py`，覆盖多作用域累计、模型维度、序列化恢复和 AgentLoop 接入；
+- [x] 新增 `docs/6.5-usage-state.md`，说明整体作用、代码位置、关键类/函数、执行链路、测试位置和验证结果。
 
 ### 6.6 完整 PermissionState 及权限生命周期
 

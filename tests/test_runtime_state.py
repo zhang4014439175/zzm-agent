@@ -5,7 +5,7 @@ from unittest.mock import MagicMock
 import pytest
 
 from zzm_agent.core.agent_loop import AgentLoop
-from zzm_agent.core.observability import TokenUsage
+from zzm_agent.core.observability import TokenUsage, UsageScope, UsageState
 from zzm_agent.core.progress_monitor import ProgressSignal, ToolObservation
 from zzm_agent.core.runtime_state import (
     ApplicationState,
@@ -101,7 +101,41 @@ def test_conversation_state_starts_and_finishes_turn():
     assert loop.phase is LoopPhase.COMPLETED
     assert conversation.active_turn is None
     assert conversation.usage.total_tokens == 15
+    assert conversation.usage_state.conversation.total_tokens == 15
     assert len(conversation.messages) == 2
+
+
+def test_usage_state_accumulates_model_turn_conversation_task_and_application():
+    usage_state = UsageState(conversation_id="session-a", task_id="task-1")
+    usage_state.start_turn("turn-1")
+    call_usage = TokenUsage(
+        prompt_tokens=20,
+        completion_tokens=7,
+        total_tokens=27,
+        cache_creation_tokens=3,
+        cache_read_tokens=4,
+        reasoning_tokens=2,
+        source="api",
+    )
+
+    accounted = usage_state.record_model_call(
+        call_usage,
+        model="demo-model",
+        tool_schema_tokens=5,
+    )
+    usage_state.record_tool_calls(2)
+    restored = UsageState.from_record(usage_state.to_record())
+
+    assert accounted.model_calls == 1
+    assert accounted.tool_schema_tokens == 5
+    assert usage_state.snapshot(UsageScope.TURN).total_tokens == 27
+    assert usage_state.snapshot(UsageScope.CONVERSATION).model_calls == 1
+    assert usage_state.snapshot(UsageScope.TASK).tool_calls == 2
+    assert usage_state.snapshot(UsageScope.APPLICATION).cache_read_tokens == 4
+    assert usage_state.snapshot_for_model("demo-model").reasoning_tokens == 2
+    assert restored.conversation_id == "session-a"
+    assert restored.task_id == "task-1"
+    assert restored.snapshot_for_model("demo-model").tool_schema_tokens == 5
 
 
 def test_conversation_state_rejects_overlapping_active_turns():

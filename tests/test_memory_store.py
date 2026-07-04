@@ -2,6 +2,7 @@ import json
 
 import pytest
 
+from zzm_agent.core.observability import TokenUsage, UsageState
 from zzm_agent.memory.io import StorageCorruptionError, StorageIO
 from zzm_agent.memory.token_counter import TokenCounter
 from zzm_agent.memory.store import MemoryStore
@@ -97,6 +98,34 @@ def test_explicit_session_id_resumes_or_creates_target_session(tmp_path):
 
     resumed = MemoryStore(path=path, max_history=50, session_id="alpha")
     assert resumed.load_history()[-1]["content"] == "hello"
+
+
+def test_usage_state_persists_per_session_without_crossing_accounts(tmp_path):
+    path = tmp_path / "memory.json"
+    alpha = MemoryStore(path=path, max_history=50, session_id="alpha")
+    usage_state = UsageState(conversation_id="alpha")
+    usage_state.record_model_call(
+        TokenUsage(prompt_tokens=10, completion_tokens=4, total_tokens=14, source="api"),
+        model="demo-model",
+        tool_schema_tokens=3,
+    )
+    usage_state.record_tool_calls(1)
+
+    alpha.save_usage_state(usage_state)
+
+    resumed_alpha = MemoryStore(path=path, max_history=50, session_id="alpha")
+    beta = MemoryStore(path=path, max_history=50, session_id="beta")
+
+    alpha_usage = resumed_alpha.load_usage_state()
+    beta_usage = beta.load_usage_state()
+
+    assert alpha_usage.conversation_id == "alpha"
+    assert alpha_usage.conversation.total_tokens == 14
+    assert alpha_usage.conversation.tool_calls == 1
+    assert alpha_usage.snapshot_for_model("demo-model").tool_schema_tokens == 3
+    assert beta_usage.conversation_id == "beta"
+    assert beta_usage.conversation.total_tokens == 0
+    assert beta_usage.snapshot_for_model("demo-model").total_tokens == 0
 
 
 def test_explicit_session_id_rejects_path_traversal(tmp_path):

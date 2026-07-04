@@ -4,6 +4,7 @@ import json
 from pathlib import Path
 from typing import Any
 
+from zzm_agent.core.observability import UsageState
 from zzm_agent.memory.episodic_store import EpisodicStore
 from zzm_agent.memory.history_store import HistoryStore
 from zzm_agent.memory.io import StorageIO
@@ -118,6 +119,21 @@ class MemoryStore:
             **snapshot,
         }
         self.io.write_json(self.latest_context_path, payload)
+
+    def save_usage_state(self, usage_state: UsageState) -> None:
+        """Persist usage accounting in the active session metadata."""
+        meta = self.sessions.ensure_session(self.session_id)
+        meta["usage_state"] = usage_state.to_record()
+        meta["updated_at"] = self.sessions.utc_now()
+        self.io.write_json(self.meta_path, meta)
+        self.sessions.upsert_index(meta)
+
+    def load_usage_state(self) -> UsageState:
+        """Load usage accounting from the active session metadata."""
+        meta = self.sessions.load_meta(self.session_id) or {}
+        usage_state = UsageState.from_record(meta.get("usage_state"))
+        usage_state.set_conversation(self.session_id)
+        return usage_state
 
     def list_sessions(self) -> list[dict]:
         """Return every known session ordered by most recent activity."""

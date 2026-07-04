@@ -5,7 +5,7 @@ from enum import Enum
 from typing import Any, ClassVar
 from uuid import uuid4
 
-from zzm_agent.core.observability import TokenUsage
+from zzm_agent.core.observability import TokenUsage, UsageState
 from zzm_agent.core.progress_monitor import ProgressSignal, ToolObservation
 from zzm_agent.core.state_lifecycle import (
     StateLifecyclePolicy,
@@ -387,6 +387,7 @@ class TurnState:
     turn_id: str = field(default_factory=lambda: f"turn-{uuid4().hex[:8]}")
     status: TurnStatus | str = TurnStatus.PENDING
     usage: TokenUsage = field(default_factory=TokenUsage)
+    usage_state: UsageState = field(default_factory=UsageState)
     discovered_skills: set[str] = field(default_factory=set)
     loaded_memory_paths: set[str] = field(default_factory=set)
     permission_requests: list[dict[str, Any]] = field(default_factory=list)
@@ -404,6 +405,7 @@ class TurnState:
 
     def start(self) -> None:
         self.status = TurnStatus.IN_PROGRESS
+        self.usage_state.start_turn(self.turn_id)
 
     def start_loop(self) -> LoopState:
         self.loop = LoopState()
@@ -413,10 +415,12 @@ class TurnState:
 
     def add_usage(self, usage: TokenUsage) -> None:
         self.usage.add(usage)
+        self.usage_state.turn.add(usage)
 
     def complete(self, final_response: str, usage: TokenUsage | None = None) -> None:
         if usage is not None:
             self.usage = usage.copy()
+            self.usage_state.turn = usage.copy()
         self.final_response = final_response
         self.error = None
         self.status = TurnStatus.COMPLETED
@@ -450,6 +454,7 @@ class ConversationState:
     session_id: str
     messages: list[dict[str, Any]] = field(default_factory=list)
     usage: TokenUsage = field(default_factory=TokenUsage)
+    usage_state: UsageState = field(default_factory=UsageState)
     permissions: dict[str, Any] = field(default_factory=dict)
     file_reads: dict[str, Any] = field(default_factory=dict)
     skills: set[str] = field(default_factory=set)
@@ -477,6 +482,7 @@ class ConversationState:
             turn_id=turn_id or f"turn-{uuid4().hex[:8]}",
             user_input=user_input,
         )
+        self.active_turn.usage_state.set_conversation(self.session_id)
         self.active_turn.start()
         return self.active_turn
 
@@ -492,6 +498,7 @@ class ConversationState:
         self.active_turn.complete(final_response, usage=usage)
         if usage is not None:
             self.usage.add(usage)
+            self.usage_state.conversation.add(usage)
         if messages:
             self.append_messages(messages)
         finished = self.active_turn
@@ -518,6 +525,7 @@ class ApplicationState:
     mcp_connections: dict[str, Any] = field(default_factory=dict)
     active_session_id: str | None = None
     conversations: dict[str, ConversationState] = field(default_factory=dict)
+    usage_state: UsageState = field(default_factory=UsageState)
 
     scope: ClassVar[StateScope] = StateScope.APPLICATION
 
