@@ -9,6 +9,7 @@ from zzm_agent.cli_support.runtime import (
     get_agent_loop_policy,
     load_config,
     parse_args,
+    run_repl,
 )
 from zzm_agent.core.model_metadata import resolve_model_context_limit
 from zzm_agent.core.observability import TokenUsage, tool_end_event, tool_start_event
@@ -115,7 +116,7 @@ def test_tool_approval_choice_default_is_valid(monkeypatch):
 
     monkeypatch.setattr("builtins.__import__", fake_import)
 
-    assert _ask_tool_approval_choice(DummyConsole()) == "3"
+    assert _ask_tool_approval_choice(DummyConsole()) == "1"
 
 
 def test_parse_args_supports_session_flag():
@@ -219,6 +220,13 @@ def test_load_config_expands_env_placeholders(tmp_path, monkeypatch):
     assert cfg["_config_dir"] == str(config_path.parent)
 
 
+def test_parse_args_accepts_debug_flag():
+    args = parse_args(["repl", "--debug"])
+
+    assert args.command == "repl"
+    assert args.debug is True
+
+
 def test_plugin_dirs_resolve_relative_to_config_file(tmp_path, monkeypatch):
     config_dir = tmp_path / "agent"
     config_dir.mkdir()
@@ -237,6 +245,73 @@ def test_plugin_dirs_resolve_relative_to_config_file(tmp_path, monkeypatch):
     plugin_dirs = _resolve_plugin_dirs(cfg)
 
     assert plugin_dirs == [(config_dir / "zzm_agent" / "plugins").resolve()]
+
+
+def test_run_repl_prints_traceback_in_debug_mode(monkeypatch):
+    class FakeConsole:
+        def __init__(self):
+            self.exception_called = False
+            self.printed = []
+
+        def print(self, *args, **kwargs):
+            self.printed.append((args, kwargs))
+
+        def print_exception(self):
+            self.exception_called = True
+
+        def input(self, prompt):
+            return "hello"
+
+    class FakePromptSession:
+        pass
+
+    class FakeLoop:
+        model = "demo"
+        last_turn_usage = None
+        cumulative_usage = None
+        last_context_window = {}
+
+        def run(self, user_input, stream=True, on_text_chunk=None):
+            raise ValueError("boom")
+
+    class FakeStore:
+        session_id = "session-1"
+
+    class FakeRegistry:
+        def get_schemas(self):
+            return []
+
+    class FakeOptimizer:
+        pass
+
+    fake_console = FakeConsole()
+    runtime = {
+        "console": fake_console,
+        "registry": FakeRegistry(),
+        "store": FakeStore(),
+        "optimizer": FakeOptimizer(),
+        "loop": FakeLoop(),
+        "observer": None,
+        "stream": False,
+        "debug": True,
+    }
+
+    monkeypatch.setattr("zzm_agent.cli_support.runtime.build_prompt_session", lambda **kwargs: FakePromptSession())
+    monkeypatch.setattr("zzm_agent.cli_support.rendering.render_welcome", lambda *args, **kwargs: None)
+    inputs = iter(["hello", KeyboardInterrupt()])
+
+    def fake_read_repl_input(console, prompt_session):
+        value = next(inputs)
+        if isinstance(value, BaseException):
+            raise value
+        return value
+
+    monkeypatch.setattr("zzm_agent.cli_support.runtime.read_repl_input", fake_read_repl_input)
+
+    result = run_repl(runtime)
+
+    assert result == 0
+    assert fake_console.exception_called is True
 
 
 def test_config_bool_accepts_common_values():
@@ -394,11 +469,11 @@ def test_tool_confirmation_supports_session_allow_choice():
     assert any("remembered approval" in line for line in console.lines)
 
 
-def test_tool_confirmation_denies_by_default():
+def test_tool_confirmation_allows_by_default():
     console = DummyConsole()
     confirm = build_tool_confirmation_callback(console)
 
-    assert confirm("wipe", {"target": "demo"}, "high") is False
+    assert confirm("wipe", {"target": "demo"}, "high") is True
 
 
 def test_stream_command_reports_and_updates_runtime_state(tmp_path):

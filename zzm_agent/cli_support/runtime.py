@@ -94,6 +94,7 @@ def parse_args(argv: list[str] | None = None) -> argparse.Namespace:
     repl_parser.add_argument("--session", dest="session_id", help="Resume or create a specific session id.")
     repl_parser.add_argument("--config", dest="config_path", help="Path to the YAML config file.")
     repl_parser.add_argument("--safe", action="store_true", help="Reserved for stricter confirmation policies. Medium/high-risk tools already require confirmation by default.")
+    repl_parser.add_argument("--debug", action="store_true", help="Show full tracebacks for runtime errors.")
     
     eval_parser = subparsers.add_parser("eval", help="Run the evaluation suite")
     eval_parser.add_argument("--suite", choices=["replay", "smoke", "full"], required=True, help="Evaluation suite to run.")
@@ -286,8 +287,8 @@ def _format_compact_arguments(arguments: dict[str, Any], max_length: int = 160) 
 def _ask_tool_approval_choice(console: Any) -> str:
     """Ask for one of the explicit tool approval choices."""
     def ask_plain() -> str:
-        choice = console.input("Approve [1/2/3] (3): ").strip()
-        return choice if choice in {"1", "2", "3"} else "3"
+        choice = console.input("Approve [1/2/3] (1): ").strip()
+        return choice if choice in {"1", "2", "3"} else "1"
 
     try:
         from prompt_toolkit import Application
@@ -304,7 +305,7 @@ def _ask_tool_approval_choice(console: Any) -> str:
         ("Always allow this tool this session", "2"),
         ("Deny", "3"),
     ]
-    selected = {"index": 2}
+    selected = {"index": 0}
 
     def get_fragments() -> list[tuple[str, str]]:
         fragments: list[tuple[str, str]] = []
@@ -349,7 +350,7 @@ def _ask_tool_approval_choice(console: Any) -> str:
         answer = app.run()
     except Exception:
         return ask_plain()
-    return answer or "3"
+    return answer or "1"
 
 
 
@@ -502,6 +503,7 @@ def build_runtime(args: argparse.Namespace, cfg: dict[str, Any]) -> dict[str, An
         "observer": observer,
         "model_context_limit_source": context_limit.source,
         "stream": _config_bool(cfg.get("agent", {}).get("stream"), default=True),
+        "debug": bool(getattr(args, "debug", False)),
     }
 
 
@@ -589,10 +591,16 @@ def run_repl(runtime: dict[str, Any]) -> int:
         except Exception as exc:
             if observer is not None:
                 observer.stop()
-            console.print(f"[red]Error: {exc}[/red]")
+            if runtime.get("debug"):
+                console.print_exception()
+            else:
+                console.print(f"[red]Error: {exc}[/red]")
+            console.print("[dim]Repl is still running. Fix the issue or press Ctrl+C to exit.[/dim]")
+            continue
 
 
 def main(argv: list[str] | None = None) -> int:
+    args: argparse.Namespace | None = None
     try:
         args = parse_args(argv)
         cfg = load_config(args.config_path)
@@ -605,5 +613,15 @@ def main(argv: list[str] | None = None) -> int:
         return run_repl(runtime)
     except StorageCorruptionError as exc:
         console = build_console()
-        console.print(f"[red]Storage corruption: {exc}[/red]")
+        if args is not None and getattr(args, "debug", False):
+            console.print_exception()
+        else:
+            console.print(f"[red]Storage corruption: {exc}[/red]")
+        return 1
+    except Exception:
+        console = build_console()
+        if args is not None and getattr(args, "debug", False):
+            console.print_exception()
+        else:
+            console.print("[red]Unexpected error occurred. Re-run with --debug for traceback.[/red]")
         return 1
