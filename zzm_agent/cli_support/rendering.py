@@ -15,6 +15,7 @@ _EMOJI_PATTERN = re.compile(
     "\U00002600-\U000026FF"
     "]+"
 )
+PROMPT_COMPLETION_MENU_RESERVED_LINES = 1
 
 try:
     from rich.markdown import CodeBlock
@@ -385,7 +386,7 @@ def build_prompt_session(workspace: str | Path, runtime: dict[str, Any] | None =
         completer=completer,
         bottom_toolbar=bottom_toolbar,
         complete_while_typing=True,
-        reserve_space_for_menu=10
+        reserve_space_for_menu=PROMPT_COMPLETION_MENU_RESERVED_LINES,
     )
     _pin_completion_menu_position(prompt_session)
     return prompt_session

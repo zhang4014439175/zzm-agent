@@ -403,6 +403,15 @@ class AgentLoop:
             or "does not support" in text
         )
 
+    def _provider_rejects_streaming(self, exc: Exception) -> bool:
+        """Return whether a provider error looks specific to streaming/upstream transport."""
+        text = str(exc).lower()
+        return (
+            "bad_response_status_code" in text
+            or "upstream service temporarily unavailable" in text
+            or ("openai_error" in text and "stream" in text)
+        )
+
     def _retry_without_tool_choice(
         self,
         exc: Exception,
@@ -483,7 +492,12 @@ class AgentLoop:
             try:
                 response = self.client.chat.completions.create(**kwargs)
             except Exception as exc:
-                response = self._retry_without_tool_choice(exc, kwargs)
+                try:
+                    response = self._retry_without_tool_choice(exc, kwargs)
+                except Exception as retry_exc:
+                    if self._provider_rejects_streaming(retry_exc):
+                        return self._complete_once(messages=messages, tools=tools)
+                    raise
             for chunk in response:
                 chunk_usage = self._usage_from_sdk_object(getattr(chunk, "usage", None))
                 if chunk_usage.has_tokens():

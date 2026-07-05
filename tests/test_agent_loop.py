@@ -1203,6 +1203,32 @@ def test_provider_tool_choice_rejection_retries_without_tool_choice(registry, st
     assert loop._tool_choice_disabled_by_provider is True
 
 
+def test_stream_bad_response_status_falls_back_to_non_stream(registry, store):
+    loop = AgentLoop(
+        client=MagicMock(),
+        model="test-model",
+        system_prompt="sys",
+        registry=registry,
+        store=store,
+    )
+    loop.client.chat.completions.create.side_effect = [
+        RuntimeError(
+            "Error code: 400 - {'error': {'message': 'openai_error', "
+            "'type': 'bad_response_status_code', 'param': '', "
+            "'code': 'bad_response_status_code'}}"
+        ),
+        make_response(content="ok"),
+    ]
+
+    result = loop.run("hello", stream=True)
+
+    assert result == "ok"
+    first_kwargs = loop.client.chat.completions.create.call_args_list[0].kwargs
+    second_kwargs = loop.client.chat.completions.create.call_args_list[1].kwargs
+    assert first_kwargs["stream"] is True
+    assert "stream" not in second_kwargs
+
+
 def test_tool_choice_can_be_disabled_by_config(registry, store):
     loop = AgentLoop(
         client=MagicMock(),

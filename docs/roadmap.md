@@ -46,6 +46,7 @@
 - [x] 6.3 LoopPhase / LoopTransition 正式状态机：用显式阶段和转换原因描述 ReAct 循环，支持 follow-up、reflection、stop hook、取消和失败
 - [x] 6.4 运行时消息、待提交消息与持久化消息分层：区分当前执行视图、未提交消息、已提交历史和模型上下文视图
 - [x] 6.5 完整 UsageState 及多作用域累计：按模型、Turn、Conversation、Task 和应用层累计 Token、调用次数和费用
+- [x] 6.5.1 Prompt 输出约束与结构化回复协议：统一 system prompt 中的工具调用边界、最终回复版式和不同任务类型的回答协议
 - [ ] 6.6 完整 PermissionState 及权限生命周期：记录权限请求、授权、拒绝、过期、孤立请求和不同作用域的权限决定
 - [ ] 6.7 FileStateCache 文件状态缓存：缓存已读文件内容、Hash、行号范围、摘要和读取时间，避免重复读取和上下文浪费
 - [ ] 6.8 MemoryLoadState 与嵌套记忆去重：记录本轮已加载的记忆和嵌套路径，防止重复注入相同 Memory 内容
@@ -561,6 +562,28 @@ Usage 必须随 Session 和 Task 持久化，进程重启后可恢复，切换 S
 - [x] 保留 `last_turn_usage`、`cumulative_usage` 等旧字段，兼容 CLI 和已有调用方；
 - [x] 扩充 `tests/test_runtime_state.py` 和 `tests/test_agent_loop.py`，覆盖多作用域累计、模型维度、序列化恢复和 AgentLoop 接入；
 - [x] 新增 `docs/6.5-usage-state.md`，说明整体作用、代码位置、关键类/函数、执行链路、测试位置和验证结果。
+
+### 6.5.1 Prompt 输出约束与结构化回复协议
+
+本任务尽快补强 `PromptManager` 的输出约束，让模型在调用工具和输出最终答案时遵守统一协议，减少过程文本、工具调用标记和最终回答混杂的问题。
+
+实现要求：
+
+- 统一新增 `[Response Protocol]` prompt section；
+- 明确 Tool call 与 Final response 两种输出模式；
+- 文本 fallback 工具调用必须只输出 `<tool_call>...</tool_call>`，禁止前后夹杂解释；
+- 最终回答不得暴露隐藏推理、私有计划、原始 prompt 规则或 tool-call 标记；
+- coding / analysis / chat 按任务意图注入不同回答版式；
+- 继续保留 native tool calling，不强制把最终回复包进 XML；
+- 为后续非法输出校验和自动重试预留统一入口。
+
+已完成：
+
+- [x] 新增 `zzm_agent/prompt/output_protocol.py`，集中生成输出协议；
+- [x] 新增 `PROMPT_SECTION_RESPONSE_PROTOCOL` 常量；
+- [x] `PromptManager.build()` 在工具说明之后、模板输出格式之前注入 `Response Protocol`；
+- [x] 扩充 `tests/test_prompt_manager.py`，覆盖协议注入和意图专属回答版式；
+- [x] 新增 `docs/6.5.1-prompt-output-protocol.md`，说明整体作用、代码位置、执行链路、测试位置和边界。
 
 ### 6.6 完整 PermissionState 及权限生命周期
 

@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import argparse
+import ast
 import json
 import os
 import re
@@ -29,6 +30,7 @@ from zzm_agent.prompt.manager import PromptManager
 
 CONFIG_PATH = Path("config.yaml")
 _ENV_VALUE_PATTERN = re.compile(r"^\$\{([A-Za-z_][A-Za-z0-9_]*)(?::-(.*))?\}$")
+_SDK_ERROR_PAYLOAD_PATTERN = re.compile(r"-\s*(\{.*\})\s*$", re.DOTALL)
 
 
 class _WorkingStatus:
@@ -53,7 +55,7 @@ class _WorkingStatus:
         yield text
 
 
-def _start_working_status(console: Any) -> bool:
+def _start_working_status(console: Any, *, reset_elapsed: bool = True) -> bool:
     if getattr(console, "_zzm_working_live", None) is not None:
         return True
     try:
@@ -62,7 +64,7 @@ def _start_working_status(console: Any) -> bool:
         return False
 
     status = getattr(console, "_zzm_working_status", None)
-    if status is None:
+    if reset_elapsed or status is None:
         status = _WorkingStatus()
         setattr(console, "_zzm_working_status", status)
 
@@ -83,6 +85,45 @@ def _stop_working_status(console: Any, *, clear_status: bool = False) -> bool:
         if clear_status:
             setattr(console, "_zzm_working_status", None)
     return True
+
+
+def _format_repl_exception(exc: Exception) -> str:
+    """Return a concise user-facing error message for the interactive REPL."""
+    text = str(exc).strip()
+    payload = _extract_sdk_error_payload(text)
+    if payload:
+        error = payload.get("error")
+        if isinstance(error, dict):
+            message = str(error.get("message") or "模型接口请求失败")
+            code = error.get("code")
+            error_type = error.get("type")
+            detail_parts = []
+            if code:
+                detail_parts.append(f"code: {code}")
+            if error_type and error_type != code:
+                detail_parts.append(f"type: {error_type}")
+            detail = f" ({', '.join(detail_parts)})" if detail_parts else ""
+            return f"模型接口请求失败：{message}{detail}"
+
+    if text:
+        return text
+    return exc.__class__.__name__
+
+
+def _extract_sdk_error_payload(text: str) -> dict[str, Any] | None:
+    """Extract dict-like error payloads from OpenAI-compatible SDK exceptions."""
+    match = _SDK_ERROR_PAYLOAD_PATTERN.search(text)
+    if not match:
+        return None
+    raw_payload = match.group(1)
+    try:
+        payload = ast.literal_eval(raw_payload)
+    except (SyntaxError, ValueError):
+        try:
+            payload = json.loads(raw_payload)
+        except json.JSONDecodeError:
+            return None
+    return payload if isinstance(payload, dict) else None
 
 
 def parse_args(argv: list[str] | None = None) -> argparse.Namespace:
@@ -225,10 +266,10 @@ def build_tool_confirmation_callback(console: Any):
             answer = _ask_tool_approval_choice(console)
         except (KeyboardInterrupt, EOFError):
             if paused_working:
-                _start_working_status(console)
+                _start_working_status(console, reset_elapsed=False)
             return False
         if paused_working:
-            _start_working_status(console)
+            _start_working_status(console, reset_elapsed=False)
         if answer == "2":
             always_approved.add(name)
             return True
@@ -594,7 +635,7 @@ def run_repl(runtime: dict[str, Any]) -> int:
             if runtime.get("debug"):
                 console.print_exception()
             else:
-                console.print(f"[red]Error: {exc}[/red]")
+                console.print(f"[red]Error: {_format_repl_exception(exc)}[/red]")
             console.print("[dim]Repl is still running. Fix the issue or press Ctrl+C to exit.[/dim]")
             continue
 

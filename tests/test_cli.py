@@ -1,11 +1,18 @@
 from zzm_agent.cli_support.commands import handle_slash
 from zzm_agent.cli_support.observability import CliObserver
-from zzm_agent.cli_support.rendering import SlashCommandCompleter, build_bottom_toolbar
+from zzm_agent.cli_support.rendering import (
+    PROMPT_COMPLETION_MENU_RESERVED_LINES,
+    SlashCommandCompleter,
+    build_bottom_toolbar,
+)
 from zzm_agent.cli_support.runtime import (
     build_tool_confirmation_callback,
     _ask_tool_approval_choice,
     _config_bool,
+    _format_repl_exception,
     _resolve_plugin_dirs,
+    _start_working_status,
+    _stop_working_status,
     get_agent_loop_policy,
     load_config,
     parse_args,
@@ -225,6 +232,82 @@ def test_parse_args_accepts_debug_flag():
 
     assert args.command == "repl"
     assert args.debug is True
+
+
+def test_prompt_session_reserves_only_one_completion_menu_line():
+    assert PROMPT_COMPLETION_MENU_RESERVED_LINES == 1
+
+
+def test_format_repl_exception_summarizes_sdk_error_payload():
+    exc = RuntimeError(
+        "Error code: 400 - {'error': {'message': 'openai_error', "
+        "'type': 'bad_response_status_code', 'param': '', "
+        "'code': 'bad_response_status_code'}}"
+    )
+
+    message = _format_repl_exception(exc)
+
+    assert message == (
+        "模型接口请求失败：openai_error "
+        "(code: bad_response_status_code)"
+    )
+
+
+def test_working_status_resets_elapsed_for_each_new_request(monkeypatch):
+    class FakeConsole:
+        pass
+
+    class FakeLive:
+        def __init__(self, status, console, refresh_per_second, transient):
+            self.status = status
+
+        def start(self):
+            return None
+
+        def stop(self):
+            return None
+
+    times = iter([10.0, 20.0])
+    console = FakeConsole()
+    monkeypatch.setattr("zzm_agent.cli_support.runtime.time.monotonic", lambda: next(times))
+    monkeypatch.setattr("rich.live.Live", FakeLive)
+
+    assert _start_working_status(console) is True
+    first_status = console._zzm_working_status
+    assert first_status.started_at == 10.0
+    assert _stop_working_status(console) is True
+
+    assert _start_working_status(console) is True
+    second_status = console._zzm_working_status
+
+    assert second_status is not first_status
+    assert second_status.started_at == 20.0
+
+
+def test_working_status_resume_can_keep_elapsed_timer(monkeypatch):
+    class FakeConsole:
+        pass
+
+    class FakeLive:
+        def __init__(self, status, console, refresh_per_second, transient):
+            self.status = status
+
+        def start(self):
+            return None
+
+        def stop(self):
+            return None
+
+    console = FakeConsole()
+    monkeypatch.setattr("zzm_agent.cli_support.runtime.time.monotonic", lambda: 10.0)
+    monkeypatch.setattr("rich.live.Live", FakeLive)
+
+    assert _start_working_status(console) is True
+    first_status = console._zzm_working_status
+    assert _stop_working_status(console) is True
+    assert _start_working_status(console, reset_elapsed=False) is True
+
+    assert console._zzm_working_status is first_status
 
 
 def test_plugin_dirs_resolve_relative_to_config_file(tmp_path, monkeypatch):

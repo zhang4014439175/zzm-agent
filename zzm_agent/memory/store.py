@@ -104,7 +104,7 @@ class MemoryStore:
 
     def load_history(self) -> list[dict]:
         """Load the recent transcript for the active session."""
-        return self.history_store.load_history()
+        return self._drop_orphan_tool_results(self.history_store.load_history())
 
     def append(self, messages: list[dict]) -> None:
         """Append messages to the active session and refresh episodic memory."""
@@ -293,7 +293,9 @@ class MemoryStore:
         budget_tokens: int | None = None,
     ) -> dict[str, Any]:
         """Compress older history into one runtime-only summary when needed."""
-        current_history = list(history if history is not None else self.load_history())
+        current_history = self._drop_orphan_tool_results(
+            list(history if history is not None else self.load_history())
+        )
         token_budget = self.max_context_tokens if budget_tokens is None else budget_tokens
         raw_tokens = self.estimate_messages_tokens(current_history)
 
@@ -349,6 +351,7 @@ class MemoryStore:
             token_budget, 0
         ):
             older_messages.append(recent_messages.pop(0))
+            recent_messages = self._drop_orphan_tool_results(recent_messages)
 
         summary_budget = max(token_budget - self.estimate_messages_tokens(recent_messages), 0)
         strategy = self._select_compression_strategy(raw_tokens, max(token_budget, 1))
@@ -377,6 +380,31 @@ class MemoryStore:
             "budget_tokens": token_budget,
             "compression_strategy": strategy,
         }
+
+    def _drop_orphan_tool_results(self, messages: list[dict]) -> list[dict]:
+        """Remove tool results whose assistant tool call is outside the context."""
+        kept: list[dict] = []
+        available_tool_call_ids: set[str] = set()
+
+        for message in messages:
+            role = message.get("role")
+            if role == "tool":
+                tool_call_id = message.get("tool_call_id")
+                if tool_call_id in available_tool_call_ids:
+                    kept.append(message)
+                    available_tool_call_ids.discard(tool_call_id)
+                continue
+
+            kept.append(message)
+            if role == "assistant":
+                for tool_call in message.get("tool_calls") or []:
+                    if not isinstance(tool_call, dict):
+                        continue
+                    tool_call_id = tool_call.get("id")
+                    if tool_call_id:
+                        available_tool_call_ids.add(tool_call_id)
+
+        return kept
 
     def estimate_messages_tokens(self, messages: list[dict[str, Any]]) -> int:
         """Estimate token usage using the configured tokenizer fallback chain."""

@@ -13,6 +13,7 @@ from zzm_agent.prompt.context_builder import (
     build_tool_guide_context,
     section,
 )
+from zzm_agent.prompt.output_protocol import build_response_protocol
 from zzm_agent.prompt.templates import get_template
 
 _CODING_KEYWORDS = (
@@ -94,6 +95,7 @@ class PromptManager:
         ]
         if self.include_tool_guide:
             parts.append(build_tool_guide_context(self.registry))
+        parts.append(build_response_protocol(intent))
         parts.append(section(PROMPT_SECTION_OUTPUT_FORMAT, template.output_format))
         return "\n\n".join(part for part in parts if part.strip())
 

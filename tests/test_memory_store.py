@@ -36,6 +36,28 @@ def test_max_history_truncation(store):
     assert loaded[0]["content"] == "5"
 
 
+def test_load_history_drops_tool_result_orphaned_by_truncation(tmp_path):
+    store = MemoryStore(path=tmp_path / "memory.json", max_history=1)
+    store.append(
+        [
+            {
+                "role": "assistant",
+                "content": None,
+                "tool_calls": [
+                    {
+                        "id": "call_1",
+                        "type": "function",
+                        "function": {"name": "echo", "arguments": "{}"},
+                    }
+                ],
+            },
+            {"role": "tool", "tool_call_id": "call_1", "content": "ok"},
+        ]
+    )
+
+    assert store.load_history() == []
+
+
 def test_persists_across_instances(tmp_path):
     path = tmp_path / "memory.json"
     store1 = MemoryStore(path=path, max_history=50)
@@ -380,6 +402,35 @@ def test_compress_history_preserves_recent_messages_and_adds_summary(tmp_path):
     assert "Runtime compression summary" in compressed["messages"][0]["content"]
     assert compressed["messages"][-2]["content"] == "recent user"
     assert compressed["messages"][-1]["content"] == "recent assistant"
+
+
+def test_compress_history_drops_tool_result_orphaned_by_budget_trim(tmp_path):
+    store = MemoryStore(
+        path=tmp_path / "memory.json",
+        max_history=50,
+        max_context_tokens=1,
+        compression_keep_recent=2,
+    )
+    store.append(
+        [
+            {
+                "role": "assistant",
+                "content": None,
+                "tool_calls": [
+                    {
+                        "id": "call_1",
+                        "type": "function",
+                        "function": {"name": "echo", "arguments": "{}"},
+                    }
+                ],
+            },
+            {"role": "tool", "tool_call_id": "call_1", "content": "x" * 80},
+        ]
+    )
+
+    compressed = store.preview_context_window()
+
+    assert all(message["role"] != "tool" for message in compressed["messages"])
 
 
 def test_build_turn_messages_respects_context_budget(tmp_path):

@@ -55,7 +55,28 @@ def test_prompt_manager_injects_project_rules_environment_and_tools(tmp_path):
     assert "[Tools]" in prompt
     assert "read_file (low, group=files): 读取文件内容" in prompt
     assert "example: read_file(path='README.md')" in prompt
+    assert "[Response Protocol]" in prompt
+    assert "Mode A - Tool call" in prompt
+    assert "Mode B - Final response" in prompt
+    assert "Analysis response shape" in prompt
+    assert "Do not expose hidden reasoning" in prompt
     assert "[Output Format]" in prompt
+
+
+def test_prompt_manager_uses_intent_specific_response_protocol(tmp_path):
+    manager = PromptManager(
+        base_prompt="基础身份",
+        workspace_root=tmp_path,
+        registry=ToolRegistry(),
+    )
+
+    coding_prompt = manager.build("请修复 tests/test_demo.py 里的 bug", history=[])
+    chat_prompt = manager.build("你好", history=[])
+
+    assert "Coding response shape" in coding_prompt
+    assert "Analysis response shape" not in coding_prompt
+    assert "Chat response shape" in chat_prompt
+    assert "Coding response shape" not in chat_prompt
 
 
 def test_agent_loop_uses_prompt_manager_per_turn(tmp_path):
