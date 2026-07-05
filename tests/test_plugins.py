@@ -66,6 +66,40 @@ class TestReadFile:
         result = registry.call("read_file", {"path": str(f)})
         assert "empty" in result.lower()
 
+    def test_read_file_records_cache_and_ranges(self, registry, workspace):
+        import zzm_agent.plugins.file_ops as file_ops_mod
+
+        f = workspace / "cached.txt"
+        f.write_text("line1\nline2\nline3\n", encoding="utf-8")
+
+        registry.call("read_file", {"path": str(f), "start_line": 1, "end_line": 2})
+        registry.call("read_file", {"path": str(f), "start_line": 2, "end_line": 3})
+        cache = file_ops_mod.get_file_state_cache()
+        state = cache.files[str(f.resolve(strict=False))]
+
+        assert state.line_count == 3
+        assert state.content == "line1\nline2\nline3\n"
+        assert [(item.start_line, item.end_line) for item in state.read_ranges] == [
+            (1, 2),
+            (2, 3),
+        ]
+
+    def test_read_file_invalidates_cache_after_external_change(self, registry, workspace):
+        import zzm_agent.plugins.file_ops as file_ops_mod
+
+        f = workspace / "external.txt"
+        f.write_text("old\n", encoding="utf-8")
+        registry.call("read_file", {"path": str(f)})
+
+        f.write_text("new content\n", encoding="utf-8")
+        result = registry.call("read_file", {"path": str(f)})
+        cache = file_ops_mod.get_file_state_cache()
+        state = cache.files[str(f.resolve(strict=False))]
+
+        assert "new content" in result
+        assert state.content == "new content\n"
+        assert state.content_hash
+
 
 # ─── file_edit ───────────────────────────────────────────────────────────────
 
@@ -124,6 +158,22 @@ class TestFileEdit:
         })
         assert "Success" in result
         assert f.read_text(encoding="utf-8") == "key1: value1\nkey2: new_value\nkey3: value3\n"
+
+    def test_file_edit_updates_file_cache_after_agent_write(self, registry, workspace):
+        import zzm_agent.plugins.file_ops as file_ops_mod
+
+        f = workspace / "cache_edit.txt"
+        f.write_text("hello\n", encoding="utf-8")
+
+        registry.call("file_edit", {
+            "path": str(f),
+            "target": "hello",
+            "replacement": "world",
+        })
+        state = file_ops_mod.get_file_state_cache().files[str(f.resolve(strict=False))]
+
+        assert state.content == "world\n"
+        assert state.agent_last_modified_at is not None
 
 
 # ─── file_append ─────────────────────────────────────────────────────────────

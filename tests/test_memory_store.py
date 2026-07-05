@@ -376,6 +376,32 @@ def test_build_turn_messages_uses_related_memory_retrieval(tmp_path):
     assert any("Project language is Python." in content for content in contents)
     assert any("Build the Python CLI first." in content for content in contents)
     assert not any("User prefers concise answers." in content for content in contents)
+    memory_state = _compression["memory_load_state"]
+    assert len(memory_state["injected_semantic_memory_ids"]) == 1
+    assert len(memory_state["injected_episodic_memory_ids"]) == 1
+    assert str(store.semantic_path.resolve(strict=False)) in memory_state["memory_file_versions"]
+
+
+def test_build_memory_messages_deduplicates_retrieved_memory_sources(tmp_path):
+    store = MemoryStore(
+        path=tmp_path / "memory.json",
+        max_history=50,
+        retrieval_top_k=2,
+        session_id="alpha",
+    )
+    semantic = store.remember_fact("Project language is Python.")
+
+    class DuplicateRetriever:
+        def search(self, query, semantic_entries, episodic_entries, limit):
+            return {"semantic": [semantic, semantic], "episodic": []}
+
+    store.retriever = DuplicateRetriever()
+
+    messages = store.build_memory_messages(query="python", limit=2)
+
+    assert len(messages) == 1
+    assert messages[0]["content"].count("Project language is Python.") == 1
+    assert len(store.memory_load_state.duplicate_sources) == 1
 
 
 def test_compress_history_preserves_recent_messages_and_adds_summary(tmp_path):

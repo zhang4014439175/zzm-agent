@@ -10,10 +10,12 @@ from zzm_agent.core.progress_monitor import ProgressSignal, ToolObservation
 from zzm_agent.core.runtime_state import (
     ApplicationState,
     ConversationState,
+    FileStateCache,
     LoopPhase,
     LoopState,
     LoopTransition,
     LoopTransitionError,
+    MemoryLoadState,
     PermissionScope,
     PermissionState,
     PermissionStatus,
@@ -229,6 +231,85 @@ def test_permission_state_orphans_pending_requests_once():
     assert permissions.pending_requests == {}
     assert permissions.orphaned_requests[0].status is PermissionStatus.ORPHANED
     assert permissions.has_handled_orphaned_permission is True
+
+
+def test_file_state_cache_tracks_ranges_versions_and_restore():
+    cache = FileStateCache()
+    state = cache.record_read(
+        normalized_path="/workspace/app.py",
+        content="a\nb\nc\n",
+        size_bytes=6,
+        mtime_ns=10,
+        start_line=1,
+        end_line=2,
+    )
+    same = cache.get_valid(
+        normalized_path="/workspace/app.py",
+        size_bytes=6,
+        mtime_ns=10,
+    )
+    changed = cache.get_valid(
+        normalized_path="/workspace/app.py",
+        size_bytes=7,
+        mtime_ns=11,
+    )
+    restored = FileStateCache.from_record(cache.to_record())
+
+    assert same is state
+    assert state.has_range(1, 2)
+    assert changed is None
+    assert "/workspace/app.py" in cache.invalidated_paths
+    assert restored.invalidated_paths == {"/workspace/app.py"}
+
+
+def test_file_state_cache_updates_after_agent_write():
+    cache = FileStateCache()
+
+    state = cache.update_after_write(
+        normalized_path="/workspace/app.py",
+        content="new\ncontent\n",
+        size_bytes=12,
+        mtime_ns=20,
+    )
+
+    assert state.agent_last_modified_at is not None
+    assert state.line_count == 2
+    assert state.version == 1
+    assert cache.files["/workspace/app.py"].content == "new\ncontent\n"
+
+
+def test_memory_load_state_tracks_sources_and_duplicates():
+    state = MemoryLoadState()
+    semantic = {
+        "fact": "Project language is Python.",
+        "normalized_fact": "project language is python.",
+        "updated_at": "2026-01-01T00:00:00Z",
+    }
+    episodic = {
+        "session_id": "alpha",
+        "summary": "Build the CLI first.",
+        "updated_at": "2026-01-02T00:00:00Z",
+    }
+
+    assert state.record_file_source(
+        path="/workspace/MEMORY.md",
+        source_type="project_memory",
+        version="1:20",
+    )
+    assert not state.record_file_source(
+        path="/workspace/MEMORY.md",
+        source_type="project_memory",
+        version="1:20",
+    )
+    assert state.record_semantic_memory(semantic)
+    assert not state.record_semantic_memory(semantic)
+    assert state.record_episodic_memory(episodic)
+    restored = MemoryLoadState.from_record(state.to_record())
+
+    assert restored.loaded_project_memory_paths["/workspace/MEMORY.md"] == "1:20"
+    assert len(restored.injected_semantic_memory_ids) == 1
+    assert len(restored.injected_episodic_memory_ids) == 1
+    assert len(restored.duplicate_sources) == 2
 
 
 def test_loop_state_tracks_iterations_observations_and_reflection():

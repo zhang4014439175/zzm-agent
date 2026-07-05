@@ -5,6 +5,7 @@ from pathlib import Path
 from typing import Any
 
 from zzm_agent.core.observability import UsageState
+from zzm_agent.core.runtime_state import MemoryLoadState
 from zzm_agent.memory.episodic_store import EpisodicStore
 from zzm_agent.memory.history_store import HistoryStore
 from zzm_agent.memory.io import StorageIO
@@ -45,6 +46,7 @@ class MemoryStore:
         self.episodic_store = EpisodicStore(self.io, self.sessions)
         self.semantic_store = SemanticStore(self.io, self.sessions.base_dir)
         self.retriever: MemoryRetriever = KeywordMemoryRetriever()
+        self.memory_load_state = MemoryLoadState()
         self.sessions.initialize(session_id=session_id)
 
     @property
@@ -211,8 +213,10 @@ class MemoryStore:
         limit: int | None = None,
     ) -> list[dict[str, str]]:
         """Build system messages used to inject long-term memory into a turn."""
+        memory_load_state = MemoryLoadState()
         max_items = limit if limit is not None else self.retrieval_top_k
         if max_items <= 0:
+            self.memory_load_state = memory_load_state
             return []
 
         # Memory injection is bounded so retrieval cannot silently overwhelm the
@@ -225,12 +229,26 @@ class MemoryStore:
             semantic_entries = self.load_semantic_memory()[:max_items]
             episodic_entries = self.list_episodic(exclude_session_id=self.session_id)[:max_items]
 
-        semantic_lines = [entry["fact"] for entry in semantic_entries if entry.get("fact")]
+        self._record_memory_file_version(
+            memory_load_state,
+            path=self.semantic_path,
+            source_type="project_memory",
+        )
+        semantic_lines = []
+        for entry in semantic_entries:
+            if entry.get("fact") and memory_load_state.record_semantic_memory(entry):
+                semantic_lines.append(entry["fact"])
+
         episodic_lines = []
         for entry in episodic_entries:
             session_id = entry.get("session_id", "unknown-session")
+            self._record_memory_file_version(
+                memory_load_state,
+                path=self.sessions.episodic_path(session_id),
+                source_type="nested_memory",
+            )
             summary = entry.get("summary", "").strip()
-            if summary:
+            if summary and memory_load_state.record_episodic_memory(entry):
                 episodic_lines.append(f"{session_id}: {summary}")
 
         messages: list[dict[str, str]] = []
@@ -248,6 +266,7 @@ class MemoryStore:
                     "content": "Episodic memory:\n- " + "\n- ".join(episodic_lines),
                 }
             )
+        self.memory_load_state = memory_load_state
         return messages
 
     def build_turn_messages(
@@ -260,6 +279,7 @@ class MemoryStore:
         history = self.load_history()
         messages: list[dict[str, Any]] = [{"role": "system", "content": system_prompt}]
         messages.extend(self.build_memory_messages(query=user_input, limit=memory_limit))
+        memory_load_state = self.memory_load_state
         pinned = PinnedContext.from_turn(user_input=user_input, history=history)
         pinned_message = pinned.to_message()
         if pinned_message is not None:
@@ -278,7 +298,28 @@ class MemoryStore:
             "max_context_tokens": self.max_context_tokens,
             "total_tokens": self.estimate_messages_tokens(messages),
             "pinned_context": pinned_message["content"] if pinned_message else "",
+            "memory_load_state": memory_load_state.to_record(),
         }
+
+    def _record_memory_file_version(
+        self,
+        state: MemoryLoadState,
+        *,
+        path: Path,
+        source_type: str,
+    ) -> None:
+        """Record the current file version for a memory source when available."""
+        normalized_path = str(path.resolve(strict=False))
+        if path.exists():
+            stat = path.stat()
+            version = f"{stat.st_mtime_ns}:{stat.st_size}"
+        else:
+            version = "missing"
+        state.record_file_source(
+            path=normalized_path,
+            source_type=source_type,
+            version=version,
+        )
 
     def preview_context_window(self) -> dict[str, Any]:
         """Return a history-only preview of runtime compression for `/memory`."""

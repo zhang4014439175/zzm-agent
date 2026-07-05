@@ -1,7 +1,22 @@
 import os
 from pathlib import Path
 
+from zzm_agent.core.runtime_state import FileStateCache
 from zzm_agent.core.tool_registry import tool
+
+
+_FILE_STATE_CACHE = FileStateCache()
+
+
+def get_file_state_cache() -> FileStateCache:
+    """Return the process-local file state cache used by file tools."""
+    return _FILE_STATE_CACHE
+
+
+def reset_file_state_cache() -> None:
+    """Clear cached file state. Primarily useful for tests and session resets."""
+    global _FILE_STATE_CACHE
+    _FILE_STATE_CACHE = FileStateCache()
 
 
 def _workspace_root() -> Path:
@@ -46,6 +61,11 @@ def _resolve_workspace_path(path: str) -> Path:
     return candidate
 
 
+def _file_stat_payload(path: Path) -> tuple[int, int]:
+    stat = path.stat()
+    return stat.st_size, stat.st_mtime_ns
+
+
 @tool(
     description=(
         "读取工作区内指定路径的文件内容。支持指定起止行号（1-indexed）进行分页读取。"
@@ -74,8 +94,28 @@ def read_file(path: str, start_line: int = 0, end_line: int = 0) -> str:
         if not p.is_file():
             return f"Error: Path is not a file: {path}"
 
-        content = p.read_text(encoding="utf-8", errors="replace")
+        normalized_path = str(p)
+        size_bytes, mtime_ns = _file_stat_payload(p)
+        cache = get_file_state_cache()
+        cached = cache.get_valid(
+            normalized_path=normalized_path,
+            size_bytes=size_bytes,
+            mtime_ns=mtime_ns,
+        )
+        if cached is not None and cached.content is not None:
+            content = cached.content
+        else:
+            content = p.read_text(encoding="utf-8", errors="replace")
+
         if not content:
+            cache.record_read(
+                normalized_path=normalized_path,
+                content=content,
+                size_bytes=size_bytes,
+                mtime_ns=mtime_ns,
+                start_line=1,
+                end_line=1,
+            )
             return "(empty file)"
 
         lines = content.splitlines(keepends=True)
@@ -89,6 +129,18 @@ def read_file(path: str, start_line: int = 0, end_line: int = 0) -> str:
             return f"Error: start_line {s} exceeds total lines {total_lines}"
         if s > e:
             return f"Error: start_line {s} > end_line {e}"
+
+        if cached is not None and cached.content is not None:
+            cached.record_range(s, e)
+        else:
+            cache.record_read(
+                normalized_path=normalized_path,
+                content=content,
+                size_bytes=size_bytes,
+                mtime_ns=mtime_ns,
+                start_line=s,
+                end_line=e,
+            )
 
         selected = lines[s - 1 : e]
 
@@ -160,6 +212,13 @@ def file_edit(path: str, target: str, replacement: str, replace_all: str = "fals
             new_content = content.replace(target, replacement, 1)
 
         p.write_text(new_content, encoding="utf-8")
+        size_bytes, mtime_ns = _file_stat_payload(p)
+        get_file_state_cache().update_after_write(
+            normalized_path=str(p),
+            content=new_content,
+            size_bytes=size_bytes,
+            mtime_ns=mtime_ns,
+        )
 
         # Show a brief diff preview
         target_preview = target[:80].replace("\n", "\\n")
@@ -196,6 +255,13 @@ def write_file(path: str, content: str) -> str:
 
         # Write content with UTF-8 encoding
         p.write_text(content, encoding="utf-8")
+        size_bytes, mtime_ns = _file_stat_payload(p)
+        get_file_state_cache().update_after_write(
+            normalized_path=str(p),
+            content=content,
+            size_bytes=size_bytes,
+            mtime_ns=mtime_ns,
+        )
 
         return f"Success: Written {len(content)} characters to {path}"
     except Exception as e:
@@ -223,6 +289,14 @@ def file_append(path: str, content: str) -> str:
 
         with p.open("a", encoding="utf-8") as f:
             f.write(content)
+        new_content = p.read_text(encoding="utf-8", errors="replace")
+        size_bytes, mtime_ns = _file_stat_payload(p)
+        get_file_state_cache().update_after_write(
+            normalized_path=str(p),
+            content=new_content,
+            size_bytes=size_bytes,
+            mtime_ns=mtime_ns,
+        )
 
         return f"Success: Appended {len(content)} characters to {path}"
     except Exception as e:
