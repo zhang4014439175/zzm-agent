@@ -442,7 +442,6 @@ def _plain_terminal_reply(reply: str) -> str:
     text = _strip_reply_emoji(reply)
     cleaned: list[str] = []
     in_fence = False
-    need_bullet = True
 
     for raw_line in text.splitlines():
         line = raw_line.rstrip()
@@ -456,22 +455,11 @@ def _plain_terminal_reply(reply: str) -> str:
         if not in_fence:
             heading_match = re.match(r"^\s{0,3}#{1,6}\s*(.+?)\s*$", line)
             if heading_match is not None:
-                line = f"\u2022{heading_match.group(1)}"
+                line = heading_match.group(1)
             line = re.sub(r"\*\*(.*?)\*\*", r"\1", line)
             line = re.sub(r"__(.*?)__", r"\1", line)
             line = re.sub(r"`([^`]+)`", r"\1", line)
             line = re.sub(r"\[([^\]]+)\]\(([^)]+)\)", r"\1 (\2)", line)
-        is_code_line = _is_code_like_line(line)
-        if line and not is_code_line and line.lstrip().startswith("\u2022"):
-            need_bullet = False
-        elif line and not is_code_line and not line.lstrip().startswith("\u2022"):
-            if need_bullet:
-                line = f"\u2022{line.lstrip()}"
-            else:
-                line = line.lstrip()
-            need_bullet = False
-        elif is_code_line:
-            need_bullet = True
 
         cleaned.append(line)
 
@@ -680,4 +668,3 @@ def render_welcome(console: Any, session_id: str, model: str, workspace: str, to
             expand=False,
         )
     )
-

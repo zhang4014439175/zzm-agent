@@ -3,9 +3,11 @@ from zzm_agent.cli_support.observability import CliObserver
 from zzm_agent.cli_support.rendering import (
     PROMPT_COMPLETION_MENU_RESERVED_LINES,
     SlashCommandCompleter,
+    _plain_terminal_reply,
     build_bottom_toolbar,
 )
 from zzm_agent.cli_support.runtime import (
+    _build_working_footer,
     build_tool_confirmation_callback,
     _ask_tool_approval_choice,
     _config_bool,
@@ -238,6 +240,21 @@ def test_prompt_session_reserves_only_one_completion_menu_line():
     assert PROMPT_COMPLETION_MENU_RESERVED_LINES == 1
 
 
+def test_plain_terminal_reply_does_not_invent_bullets():
+    reply = (
+        "# 结论\n"
+        "你好！这是普通段落。\n"
+        "\n"
+        "1. 第一项\n"
+        "- 第二项\n"
+    )
+
+    rendered = _plain_terminal_reply(reply)
+
+    assert rendered == "结论\n你好！这是普通段落。\n\n1. 第一项\n- 第二项"
+    assert "\u2022" not in rendered
+
+
 def test_format_repl_exception_summarizes_sdk_error_payload():
     exc = RuntimeError(
         "Error code: 400 - {'error': {'message': 'openai_error', "
@@ -308,6 +325,23 @@ def test_working_status_resume_can_keep_elapsed_timer(monkeypatch):
     assert _start_working_status(console, reset_elapsed=False) is True
 
     assert console._zzm_working_status is first_status
+
+
+def test_working_footer_matches_bottom_toolbar_runtime_data(tmp_path, monkeypatch):
+    class DummyLoop:
+        model = "demo-model"
+        last_context_window = {"max_context_tokens": 64000}
+        last_turn_usage = TokenUsage(prompt_tokens=1000, completion_tokens=80, total_tokens=1080)
+
+    store = MemoryStore(path=tmp_path / "memory.json", max_history=1, max_context_tokens=64000)
+    monkeypatch.setenv("ZZM_AGENT_WORKSPACE_ROOT", str(tmp_path))
+
+    footer = _build_working_footer({"loop": DummyLoop(), "store": store})
+    rendered = str(footer)
+
+    assert str(tmp_path) in rendered
+    assert "Model: demo-model" in rendered
+    assert "Context: 1000/64000" in rendered
 
 
 def test_plugin_dirs_resolve_relative_to_config_file(tmp_path, monkeypatch):

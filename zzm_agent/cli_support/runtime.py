@@ -38,8 +38,13 @@ class _WorkingStatus:
 
     _shades = ("#555555", "#777777", "#999999", "#bbbbbb", "#dddddd", "#ffffff")
 
-    def __init__(self) -> None:
+    def __init__(self, runtime: dict[str, Any] | None = None) -> None:
         self.started_at = time.monotonic()
+        self.runtime = runtime
+
+    def update_runtime(self, runtime: dict[str, Any] | None) -> None:
+        if runtime is not None:
+            self.runtime = runtime
 
     def __rich_console__(self, console: Any, options: Any) -> Any:
         from rich.text import Text
@@ -53,10 +58,53 @@ class _WorkingStatus:
             text.append(char, style=self._shades[shade_index])
         text.append(f" {elapsed:.1f}s", style="#777777")
         yield text
+        footer = _build_working_footer(self.runtime)
+        if footer:
+            yield footer
 
 
-def _start_working_status(console: Any, *, reset_elapsed: bool = True) -> bool:
+def _build_working_footer(runtime: dict[str, Any] | None) -> Any | None:
+    if not runtime:
+        return None
+    try:
+        from rich.text import Text
+    except ImportError:
+        return None
+
+    loop = runtime.get("loop")
+    store = runtime.get("store")
+    if not loop or not store:
+        return None
+
+    workspace_path = os.environ.get("ZZM_AGENT_WORKSPACE_ROOT", os.getcwd())
+    context_window = getattr(loop, "last_context_window", {}) or {}
+    context_limit = int(
+        context_window.get("max_context_tokens", 0)
+        or getattr(store, "max_context_tokens", 0)
+        or 0
+    )
+    last_usage = getattr(loop, "last_turn_usage", None)
+    context_used = getattr(last_usage, "prompt_tokens", 0) or 0
+
+    footer = Text(" ")
+    footer.append(str(workspace_path), style="bold #777777")
+    footer.append(" | Model: ", style="#777777")
+    footer.append(str(getattr(loop, "model", "")), style="bold #777777")
+    footer.append(" | Context: ", style="#777777")
+    footer.append(f"{context_used}/{context_limit} ", style="bold #777777")
+    return footer
+
+
+def _start_working_status(
+    console: Any,
+    *,
+    runtime: dict[str, Any] | None = None,
+    reset_elapsed: bool = True,
+) -> bool:
     if getattr(console, "_zzm_working_live", None) is not None:
+        status = getattr(console, "_zzm_working_status", None)
+        if status is not None:
+            status.update_runtime(runtime)
         return True
     try:
         from rich.live import Live
@@ -65,8 +113,10 @@ def _start_working_status(console: Any, *, reset_elapsed: bool = True) -> bool:
 
     status = getattr(console, "_zzm_working_status", None)
     if reset_elapsed or status is None:
-        status = _WorkingStatus()
+        status = _WorkingStatus(runtime)
         setattr(console, "_zzm_working_status", status)
+    else:
+        status.update_runtime(runtime)
 
     live = Live(status, console=console, refresh_per_second=12, transient=True)
     live.start()
@@ -601,13 +651,13 @@ def run_repl(runtime: dict[str, Any]) -> int:
                 stream_renderer.push(chunk)
 
             if not stream_enabled:
-                started = _start_working_status(console)
+                started = _start_working_status(console, runtime=runtime)
                 try:
                     reply = loop.run(user_input, stream=False)
                 finally:
                     if started:
                         _stop_working_status(console, clear_status=True)
-            elif not _start_working_status(console):
+            elif not _start_working_status(console, runtime=runtime):
                 reply = loop.run(user_input, stream=True, on_text_chunk=on_text_chunk)
             else:
                 try:
