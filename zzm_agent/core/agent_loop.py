@@ -20,7 +20,13 @@ from zzm_agent.core.progress_monitor import (
     ToolObservation,
 )
 from zzm_agent.core.runtime_messages import ConversationMessageStore
-from zzm_agent.core.runtime_state import LoopState, LoopTransition, TurnState
+from zzm_agent.core.runtime_state import (
+    LoopState,
+    LoopTransition,
+    PermissionScope,
+    PermissionState,
+    TurnState,
+)
 from zzm_agent.memory.token_counter import TokenCounter
 
 if TYPE_CHECKING:
@@ -150,6 +156,7 @@ class AgentLoop:
         self.last_turn_state: TurnState | None = None
         self.last_loop_state: LoopState | None = None
         self.last_message_store: ConversationMessageStore | None = None
+        self.permission_state = PermissionState()
         self.token_counter = TokenCounter(model=model)
 
     def _build_tool_call_record(
@@ -581,14 +588,71 @@ class AgentLoop:
             return True
         return False
 
-    def _is_tool_execution_approved(self, name: str, arguments: dict[str, Any]) -> bool:
+    def _is_tool_execution_approved(
+        self,
+        name: str,
+        arguments: dict[str, Any],
+        risk_level: str | None = None,
+    ) -> bool:
         """Check whether a requested tool call is allowed to execute."""
-        risk_level = self.registry.get_tool_meta(name).get("risk_level", "low")
+        risk_level = risk_level or self.registry.get_tool_meta(name).get("risk_level", "low")
         if not self._requires_tool_confirmation(risk_level):
             return True
         if self.confirm_tool is None:
             return False
         return bool(self.confirm_tool(name, arguments, risk_level))
+
+    def _record_permission_request(
+        self,
+        *,
+        name: str,
+        arguments: dict[str, Any],
+        risk_level: str,
+        tool_call_id: str,
+        turn_state: TurnState,
+    ) -> str:
+        """Create a PermissionState request and mirror legacy turn fields."""
+        request = self.permission_state.request_permission(
+            tool_name=name,
+            arguments=arguments,
+            risk_level=risk_level,
+            tool_call_id=tool_call_id,
+            scope=PermissionScope.ONCE,
+            turn_id=turn_state.turn_id,
+        )
+        turn_state.permissions.pending_requests[request.request_id] = request
+        turn_state.permission_requests.append(request.to_record())
+        return request.request_id
+
+    def _record_permission_approval(
+        self,
+        request_id: str,
+        *,
+        turn_state: TurnState,
+        reason: str = "user approved tool execution",
+    ) -> None:
+        """Record a one-shot approval for the active tool request."""
+        decision = self.permission_state.approve_request(
+            request_id,
+            scope=PermissionScope.ONCE,
+            reason=reason,
+        )
+        turn_state.permissions.decisions.append(decision)
+        turn_state.permissions.pending_requests.pop(request_id, None)
+
+    def _record_permission_denial(
+        self,
+        request_id: str,
+        *,
+        turn_state: TurnState,
+        reason: str,
+    ) -> None:
+        """Record a denied permission request in both new and legacy state."""
+        decision = self.permission_state.deny_request(request_id, reason=reason)
+        turn_state.permissions.decisions.append(decision)
+        turn_state.permissions.denials.append(decision)
+        turn_state.permissions.pending_requests.pop(request_id, None)
+        turn_state.permission_denials.append(decision.to_record())
 
     def _tool_call_signature(self, tool_call: dict[str, Any]) -> tuple[str, str]:
         """Return a stable signature used to detect repeated tool calls."""
@@ -980,10 +1044,32 @@ class AgentLoop:
                     name = tc["function"]["name"]
                     args = json.loads(tc["function"]["arguments"])
                     risk_level = self.registry.get_tool_meta(name).get("risk_level", "low")
-                    if self._requires_tool_confirmation(risk_level):
+                    request_id: str | None = None
+                    granted_decision = self.permission_state.find_active_grant(
+                        tool_name=name,
+                        arguments=args,
+                    )
+                    if granted_decision is None and self._requires_tool_confirmation(risk_level):
                         loop_state.await_permission()
-                    if not self._is_tool_execution_approved(name, args):
+                        request_id = self._record_permission_request(
+                            name=name,
+                            arguments=args,
+                            risk_level=risk_level,
+                            tool_call_id=tc["id"],
+                            turn_state=turn_state,
+                        )
+                    if granted_decision is None and not self._is_tool_execution_approved(
+                        name,
+                        args,
+                        risk_level,
+                    ):
                         loop_state.record_permission_denial()
+                        if request_id is not None:
+                            self._record_permission_denial(
+                                request_id,
+                                turn_state=turn_state,
+                                reason="user denied tool execution",
+                            )
                         result_str = "User denied tool execution."
                         duration_ms = (perf_counter() - started_at) * 1000
                         self._emit_tool_event(
@@ -1000,6 +1086,11 @@ class AgentLoop:
                             ),
                         )
                     else:
+                        if request_id is not None:
+                            self._record_permission_approval(
+                                request_id,
+                                turn_state=turn_state,
+                            )
                         loop_state.record_tool_execution_start(tool_calls_raw)
                         self._emit_tool_event(
                             self.on_tool_start,

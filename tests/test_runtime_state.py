@@ -14,6 +14,9 @@ from zzm_agent.core.runtime_state import (
     LoopState,
     LoopTransition,
     LoopTransitionError,
+    PermissionScope,
+    PermissionState,
+    PermissionStatus,
     TurnState,
     TurnStatus,
 )
@@ -166,6 +169,66 @@ def test_turn_state_tracks_skills_memory_permissions_artifacts_and_failure():
     assert turn.permission_requests[0]["tool"] == "shell"
     assert turn.permission_denials[0]["reason"] == "user"
     assert turn.artifacts[0]["path"] == "report.md"
+
+
+def test_permission_state_tracks_request_decision_grants_and_restore():
+    permissions = PermissionState()
+    request = permissions.request_permission(
+        tool_name="run_shell",
+        arguments={"command": "pytest"},
+        risk_level="high",
+        tool_call_id="call_1",
+        turn_id="turn-1",
+    )
+
+    decision = permissions.approve_request(
+        request.request_id,
+        scope=PermissionScope.SESSION,
+        reason="trusted for this session",
+    )
+    restored = PermissionState.from_record(permissions.to_record())
+
+    assert request.request_id not in permissions.pending_requests
+    assert decision.status is PermissionStatus.APPROVED_SESSION
+    assert restored.decisions[0].tool_name == "run_shell"
+    assert restored.find_active_grant(
+        tool_name="run_shell",
+        arguments={"command": "pytest"},
+    ) is not None
+
+
+def test_permission_state_denials_do_not_become_grants():
+    permissions = PermissionState()
+    request = permissions.request_permission(
+        tool_name="write_file",
+        arguments={"path": "x.txt", "content": "hello"},
+        risk_level="high",
+    )
+
+    decision = permissions.deny_request(request.request_id, reason="user declined")
+
+    assert decision.status is PermissionStatus.DENIED
+    assert permissions.denials == [decision]
+    assert permissions.find_active_grant(
+        tool_name="write_file",
+        arguments={"path": "x.txt", "content": "hello"},
+    ) is None
+
+
+def test_permission_state_orphans_pending_requests_once():
+    permissions = PermissionState()
+    request = permissions.request_permission(
+        tool_name="run_shell",
+        arguments={"command": "sleep 10"},
+        risk_level="high",
+    )
+
+    orphaned = permissions.handle_orphaned_permissions()
+
+    assert orphaned == [request]
+    assert permissions.pending_requests == {}
+    assert permissions.orphaned_requests[0].status is PermissionStatus.ORPHANED
+    assert permissions.has_handled_orphaned_permission is True
 
 
 def test_loop_state_tracks_iterations_observations_and_reflection():
@@ -365,6 +428,39 @@ def test_agent_loop_records_permission_wait_and_denial_state():
     assert LoopTransition.PERMISSION_REQUESTED.value in reasons
     assert LoopTransition.PERMISSION_DENIED.value in reasons
     assert loop.last_loop_state.observations[0].content == "User denied tool execution."
+    assert loop.last_turn_state is not None
+    assert loop.last_turn_state.permission_requests[0]["tool_name"] == "dangerous"
+    assert loop.last_turn_state.permission_denials[0]["status"] == "denied"
+    assert loop.permission_state.denials[0].tool_call_id == "call_1"
+
+
+def test_agent_loop_records_permission_approval_decision():
+    registry = ToolRegistry()
+
+    @registry.tool(description="danger", risk_level="high")
+    def dangerous() -> str:
+        return "approved result"
+
+    loop = AgentLoop(
+        client=MagicMock(),
+        model="test-model",
+        system_prompt="sys",
+        registry=registry,
+        store=FakeStore(),
+        confirm_tool=lambda name, arguments, risk: True,
+    )
+    loop.client.chat.completions.create.side_effect = [
+        make_response(tool_calls=[make_tool_call("dangerous", {})]),
+        make_response(content="done"),
+    ]
+
+    result = loop.run("call dangerous", stream=False)
+
+    assert result == "done"
+    assert loop.permission_state.decisions[0].status is PermissionStatus.APPROVED_ONCE
+    assert loop.permission_state.denials == []
+    assert loop.last_turn_state is not None
+    assert loop.last_turn_state.permission_requests[0]["tool_name"] == "dangerous"
 
 
 def test_agent_loop_keeps_reflection_prompt_out_of_persisted_messages():

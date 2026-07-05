@@ -15,7 +15,7 @@
 
 ## 执行进度总览
 
-> **当前下一任务：6.6 完整 PermissionState 及权限生命周期。**
+> **当前下一任务：6.7-6.8 文件状态缓存与 Memory 加载去重。**
 
 ### 当前能力基线
 
@@ -47,19 +47,14 @@
 - [x] 6.4 运行时消息、待提交消息与持久化消息分层：区分当前执行视图、未提交消息、已提交历史和模型上下文视图
 - [x] 6.5 完整 UsageState 及多作用域累计：按模型、Turn、Conversation、Task 和应用层累计 Token、调用次数和费用
 - [x] 6.5.1 Prompt 输出约束与结构化回复协议：统一 system prompt 中的工具调用边界、最终回复版式和不同任务类型的回答协议
-- [ ] 6.6 完整 PermissionState 及权限生命周期：记录权限请求、授权、拒绝、过期、孤立请求和不同作用域的权限决定
-- [ ] 6.7 FileStateCache 文件状态缓存：缓存已读文件内容、Hash、行号范围、摘要和读取时间，避免重复读取和上下文浪费
-- [ ] 6.8 MemoryLoadState 与嵌套记忆去重：记录本轮已加载的记忆和嵌套路径，防止重复注入相同 Memory 内容
+- [x] 6.6 完整 PermissionState 及权限生命周期：记录权限请求、授权、拒绝、过期、孤立请求和不同作用域的权限决定
+- [ ] 6.7-6.8 文件状态缓存与 Memory 加载去重：合并开发 FileStateCache 和 MemoryLoadState，统一处理路径规范化、版本、重复注入、失效和上下文来源追踪
 - [ ] 6.9 CancellationController 基础层级模型：为会话、Turn、模型请求和工具调用建立可传播的取消控制基础
 - [ ] 6.10 Hook 系统、Stop Hook 与阻塞重试保护：支持执行前后扩展点，并防止 Stop Hook 无限阻塞最终回复
 - [ ] 6.11 EventBus、ArtifactStore 与 CheckpointStore：统一记录事件、保存大结果/产物，并为恢复与回放提供检查点
-- [ ] 6.12 ToolResult 展示分层：将模型结果、用户界面内容、完整 Artifact 和结构化元数据分开保存
-- [ ] 6.13 ToolProgressEvent：支持工具执行期间连续上报进度、标准输出、错误输出和百分比
-- [ ] 6.14 ToolRenderer / RendererRegistry：允许每种工具注册调用、进度、结果和错误的专属渲染器
-- [ ] 6.15 DisplayMode 与折叠策略：定义行内、折叠、流式、仅摘要和隐藏等展示模式
+- [ ] 6.12-6.15 工具结果、进度事件与展示协议：合并开发 ToolResult、ToolProgressEvent、ToolRenderer / RendererRegistry 和 DisplayMode，统一打通模型内容、展示内容、Artifact、进度和折叠策略
 - [ ] 6.16 状态序列化、版本迁移与恢复协议：让 Conversation、Turn、Task 等状态可持久化、可升级并能在重启后安全恢复
-- [ ] 6.17 QueryEngine 会话编排器：作为跨 Turn 的运行时入口，统一调度消息、状态、工具、权限、记忆和 AgentLoop
-- [ ] 6.18 CLI 迁移到 QueryEngine：让命令行入口通过 QueryEngine 运行，避免 CLI 直接拼装底层 AgentLoop 细节
+- [ ] 6.17-6.18 QueryEngine 与 CLI 迁移：合并开发跨 Turn 会话编排器和 CLI 接入，让 REPL 通过 QueryEngine 统一调度消息、状态、工具、权限、记忆和 AgentLoop
 - [ ] P1 阶段验收：确认完整状态体系可观察、可恢复，并保持现有同步 ReAct 调用兼容
 
 ### P2：本地执行安全与上下文治理
@@ -604,7 +599,24 @@ PermissionState
 
 每个权限决定记录工具、参数摘要、风险、作用域、原因、时间和关联 Tool Call。历史拒绝用于避免重复申请，但不得自动变成永久拒绝。
 
-### 6.7 FileStateCache 文件状态缓存
+已完成：
+
+- [x] 新增 `PermissionStatus` 和 `PermissionScope`，覆盖 pending、approved once、approved for session、approved for task、denied、expired、orphaned 和 cancelled；
+- [x] 新增 `PermissionRequest`、`PermissionDecision` 和 `PermissionState`，记录请求、决定、拒绝、session/task grant、孤立请求和孤立处理标记；
+- [x] 权限记录包含工具名、参数摘要、风险、作用域、原因、时间、Turn、Task 和 Tool Call 关联信息；
+- [x] 支持 `request_permission()`、`approve_request()`、`deny_request()`、`expire_request()`、`cancel_request()`、`orphan_request()`、`handle_orphaned_permissions()` 和 `find_active_grant()`；
+- [x] 支持 `to_record()` / `from_record()` 序列化恢复；
+- [x] `TurnState` 和 `ConversationState` 接入正式 `PermissionState`，并保留旧 `permission_requests` / `permission_denials` 兼容字段；
+- [x] `AgentLoop` 在工具确认路径中记录权限 request、approval 和 denial，拒绝仍回填 `User denied tool execution.`；
+- [x] 扩充 `tests/test_runtime_state.py`，覆盖授权、拒绝、grant 查找、孤立请求和序列化恢复；
+- [x] 扩充 AgentLoop 权限集成测试，覆盖拒绝与同意两条路径；
+- [x] 新增 `docs/6.6-permission-state.md`，说明功能作用、代码位置、执行链路、测试位置和验证结果。
+
+### 6.7-6.8 文件状态缓存与 Memory 加载去重
+
+这两个任务合并开发。原因是二者都在解决“运行时上下文来源已经读过什么、版本是什么、是否还能复用”的问题：FileStateCache 面向文件内容，MemoryLoadState 面向项目 Memory、嵌套 Memory、Skill Reference 和长期记忆注入。合并后可以统一处理路径规范化、版本标识、重复加载防护、失效检测和上下文来源追踪。
+
+#### 6.7 FileStateCache 文件状态缓存
 
 每个文件状态至少记录：
 
@@ -619,7 +631,7 @@ PermissionState
 
 支持重复读取复用、部分范围读取、外部修改检测、缓存失效、Agent 写入后的缓存更新，并与 ChangeSet 和 Artifact 联动。
 
-### 6.8 MemoryLoadState 与嵌套记忆去重
+#### 6.8 MemoryLoadState 与嵌套记忆去重
 
 记录：
 
@@ -665,7 +677,11 @@ Hook 决策包括 Continue、Block、Retry、Modify 和 Stop。Stop Hook 可以�
 
 事件和状态持久化必须区分事实记录与 UI 展示，观察者异常不得改变 Agent 行为。
 
-### 6.12 ToolResult 展示分层
+### 6.12-6.15 工具结果、进度事件与展示协议
+
+这四个任务合并开发。原因是 ToolResult 决定工具结果的数据结构，ToolProgressEvent 决定执行中事件流，DisplayMode 决定长结果如何折叠，ToolRenderer / RendererRegistry 决定这些结构最终如何展示。分开开发会反复修改同一条工具结果与 UI 事件链路；合并开发可以一次确定模型内容、展示内容、Artifact、进度、Renderer 和折叠策略之间的边界。
+
+#### 6.12 ToolResult 展示分层
 
 工具执行结果不得继续只用一个字符串同时服务模型和终端。正式结构至少包括：
 
@@ -679,7 +695,7 @@ ToolResult
 
 模型内容、用户展示和完整原始结果可以采用不同预算与格式，但必须通过同一个 Tool Call ID 关联。
 
-### 6.13 ToolProgressEvent
+#### 6.13 ToolProgressEvent
 
 在现有 Tool Start / End / Error 事件之间加入进度事件：
 
@@ -700,7 +716,7 @@ ToolProgressEvent
 - UI 观察者异常不得中断工具；
 - 完整日志进入 Artifact，终端只保留受预算控制的实时窗口。
 
-### 6.14 ToolRenderer / RendererRegistry
+#### 6.14 ToolRenderer / RendererRegistry
 
 定义完整工具渲染协议：
 
@@ -722,7 +738,7 @@ ToolRenderer
 
 Renderer 只能消费事件和结构化结果，不得直接执行工具或修改核心状态。
 
-### 6.15 DisplayMode 与折叠策略
+#### 6.15 DisplayMode 与折叠策略
 
 正式定义展示模式：
 
@@ -754,7 +770,11 @@ HIDDEN
 - 不可恢复状态转换为 Blocked 或 Failed 并给出原因；
 - 恢复时校验工作区、文件版本、权限和 Artifact。
 
-### 6.17 QueryEngine 会话编排器
+### 6.17-6.18 QueryEngine 与 CLI 迁移
+
+这两个任务合并开发。原因是 QueryEngine 的目标就是成为跨 Turn 会话入口，而 CLI 迁移是验证它是否真的能承接现有 REPL、Session、Slash Command 和 AgentLoop 拼装逻辑的最直接验收。合并后仍需要保留兼容入口，避免一次迁移打断现有命令和测试。
+
+#### 6.17 QueryEngine 会话编排器
 
 正式引入 QueryEngine：
 
@@ -781,7 +801,7 @@ QueryEngine
 
 AgentLoop 只负责一个 Turn 内部的 ReAct，不再承担跨 Turn 会话编排。
 
-### 6.18 CLI 迁移到 QueryEngine
+#### 6.18 CLI 迁移到 QueryEngine
 
 - REPL 通过 `QueryEngine.submit_message()` 运行；
 - Session 切换、取消、模型切换和 Slash Commands 通过 QueryEngine 更新状态；
