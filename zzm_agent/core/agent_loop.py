@@ -21,6 +21,9 @@ from zzm_agent.core.progress_monitor import (
 )
 from zzm_agent.core.runtime_messages import ConversationMessageStore
 from zzm_agent.core.runtime_state import (
+    CancellationController,
+    CancellationError,
+    CancellationToken,
     LoopState,
     LoopTransition,
     PermissionScope,
@@ -100,6 +103,7 @@ class AgentLoop:
         on_tool_end: ToolEventCallback | None = None,
         on_tool_error: ToolEventCallback | None = None,
         prompt_manager: "PromptManager | None" = None,
+        cancellation_controller: CancellationController | None = None,
     ):
         """
         Initialize the AgentLoop.
@@ -123,6 +127,7 @@ class AgentLoop:
             on_tool_end: Callback for successful or denied tool completion events.
             on_tool_error: Callback for failed tool completion events.
             prompt_manager: Optional dynamic prompt composer for per-turn system prompts.
+            cancellation_controller: Optional controller for external cancellation.
         """
         self.client = client
         self.model = model
@@ -158,6 +163,8 @@ class AgentLoop:
         self.last_message_store: ConversationMessageStore | None = None
         self.permission_state = PermissionState()
         self.token_counter = TokenCounter(model=model)
+        self.cancellation_controller = cancellation_controller
+        self.last_cancellation_token: CancellationToken | None = None
 
     def _build_tool_call_record(
         self,
@@ -703,13 +710,21 @@ class AgentLoop:
             return min(self.retry_max_delay, max(0.0, error.retry_after_seconds))
         return min(self.retry_max_delay, self.retry_base_delay * (2 ** retry_index))
 
-    def _execute_tool_with_retries(self, name: str, args: dict[str, Any]) -> _ToolExecutionOutcome:
+    def _execute_tool_with_retries(
+        self,
+        name: str,
+        args: dict[str, Any],
+        *,
+        cancellation_token: CancellationToken | None = None,
+    ) -> _ToolExecutionOutcome:
         """Execute a tool with bounded retries for structured retryable errors."""
         attempts = 0
         last_error: ToolError | None = None
         max_attempts = self.max_tool_retries + 1
 
         while attempts < max_attempts:
+            if cancellation_token is not None:
+                cancellation_token.raise_if_cancelled()
             attempts += 1
             try:
                 return _ToolExecutionOutcome(
@@ -728,7 +743,11 @@ class AgentLoop:
                     )
                 delay = self._retry_delay_for_error(last_error, attempts - 1)
                 if delay > 0:
+                    if cancellation_token is not None:
+                        cancellation_token.raise_if_cancelled()
                     self.retry_sleep(delay)
+                    if cancellation_token is not None:
+                        cancellation_token.raise_if_cancelled()
 
         # This is defensive; the loop always returns on success or final error.
         if last_error is None:
@@ -881,6 +900,30 @@ class AgentLoop:
         self.last_turn_state = turn_state
         self.last_loop_state = loop_state
         session_id = getattr(self.store, "session_id", None)
+        if self.cancellation_controller is None:
+            self.cancellation_controller = CancellationController(
+                session_id=str(session_id or "default")
+            )
+        turn_token = self.cancellation_controller.start_turn(turn_state.turn_id)
+        task_token = self.cancellation_controller.start_task(
+            f"{turn_state.turn_id}:agent-loop",
+            turn_token=turn_token,
+        )
+        turn_state.cancellation_token = turn_token
+        self.last_cancellation_token = turn_token
+
+        def cancel_current_turn(reason: str, partial_response: str = "") -> str:
+            if not turn_token.is_cancelled:
+                turn_token.cancel(reason)
+            turn_state.cancel(reason)
+            message_store.rollback_pending()
+            self._commit_turn_usage(turn_usage)
+            self.cancellation_controller.finish_turn()
+            return partial_response
+
+        if task_token.is_cancelled:
+            return cancel_current_turn(task_token.reason or "cancelled")
+
         load_usage_state = getattr(self.store, "load_usage_state", None)
         if callable(load_usage_state):
             self.usage_state = load_usage_state()
@@ -910,6 +953,8 @@ class AgentLoop:
         self.last_progress_signal = None
         self.last_reflection_count = 0
         while True:
+            if task_token.is_cancelled:
+                return cancel_current_turn(task_token.reason or "cancelled")
             if tool_iterations >= self.max_tool_iterations:
                 final_reply = self._iteration_stop_message()
                 turn_state.block(final_reply, reason=LoopTransition.ITERATION_LIMIT)
@@ -917,9 +962,12 @@ class AgentLoop:
                 message_store.append_pending(assistant_msg)
                 message_store.commit(self.store.append)
                 self._commit_turn_usage(turn_usage)
+                self.cancellation_controller.finish_turn()
                 return final_reply
 
             model_context_messages = message_store.prepare_model_context()
+            if task_token.is_cancelled:
+                return cancel_current_turn(task_token.reason or "cancelled")
             self._save_context_snapshot(
                 user_input=user_input,
                 messages=model_context_messages,
@@ -962,6 +1010,8 @@ class AgentLoop:
                 turn_state.cancel("interrupted")
                 message_store.rollback_pending()
                 self._commit_turn_usage(turn_usage)
+                turn_token.cancel("interrupted")
+                self.cancellation_controller.finish_turn()
                 return assistant_content
 
             # If it's a simple text reply, we are done
@@ -974,6 +1024,7 @@ class AgentLoop:
                 message_store.commit(self.store.append)
                 turn_state.complete(final_reply, usage=turn_usage)
                 self._commit_turn_usage(turn_usage)
+                self.cancellation_controller.finish_turn()
                 return final_reply
 
             # If the model wants to call tools
@@ -1017,6 +1068,7 @@ class AgentLoop:
                 message_store.append_pending(assistant_msg)
                 message_store.commit(self.store.append)
                 self._commit_turn_usage(turn_usage)
+                self.cancellation_controller.finish_turn()
                 return final_reply
 
             tool_iterations += 1
@@ -1033,6 +1085,8 @@ class AgentLoop:
             # consume them on the next loop iteration.
             round_observations: list[ToolObservation] = []
             for tc in tool_calls_raw:
+                if task_token.is_cancelled:
+                    return cancel_current_turn(task_token.reason or "cancelled")
                 name = ""
                 args: dict[str, Any] = {}
                 risk_level = "unknown"
@@ -1101,7 +1155,16 @@ class AgentLoop:
                                 risk_level=risk_level,
                             ),
                         )
-                        outcome = self._execute_tool_with_retries(name, args)
+                        tool_token = self.cancellation_controller.create_child(
+                            tc["id"],
+                            parent=task_token,
+                            scope="tool",
+                        )
+                        outcome = self._execute_tool_with_retries(
+                            name,
+                            args,
+                            cancellation_token=tool_token,
+                        )
                         result_str = outcome.content
                         duration_ms = (perf_counter() - started_at) * 1000
                         if outcome.success:
@@ -1141,6 +1204,8 @@ class AgentLoop:
                                     result=result_str,
                                 ),
                             )
+                except CancellationError as exc:
+                    return cancel_current_turn(exc.token.reason or "cancelled")
                 except Exception as e:
                     # Capture tool execution errors and feed them back to the model
                     error = tool_error_from_exception(e)
@@ -1192,6 +1257,7 @@ class AgentLoop:
                 message_store.append_pending(assistant_msg)
                 message_store.commit(self.store.append)
                 self._commit_turn_usage(turn_usage)
+                self.cancellation_controller.finish_turn()
                 return final_reply
             
             # Continue the loop to let the model process tool results

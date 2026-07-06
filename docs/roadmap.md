@@ -7,15 +7,15 @@
 - [x] 已完成：实现、测试、文档和对应验收均已完成；
 - [ ] 未完成：尚未开始、正在进行或尚未通过完整验收；
 - 任务开始后仍保持 `- [ ]`，只有满足完成定义后才改为 `- [x]`；
-- 每个任务点完成后必须新增或更新对应功能说明文档，文档开头必须先用通俗语言整体说明“这项工作在做什么、为什么要做、解决什么问题”，再展开技术细节；
-- 功能说明文档必须用中文写清楚：功能作用、对应代码文件、关键类/函数、执行链路、测试位置和验证结果；
-- 功能说明不能只写概念描述，也不能一上来就堆类名和函数名，必须先让后续执行者理解整体背景，再能直接定位到代码实现位置；
+- 每个任务点完成后必须新增或更新对应功能说明文档，文档开头必须先用通俗语言整体说明“这项工作是用来干什么的、为什么要做、解决什么真实问题、用户或运行时什么时候会用到它”，再展开技术细节；
+- 功能说明文档必须用中文写清楚：功能作用、至少 1 个具体使用场景或例子、对应代码文件、关键类/函数、执行链路、测试位置和验证结果；
+- 功能说明不能只写概念描述，也不能一上来就堆类名和函数名，必须先让后续执行者理解整体背景、典型场景和行为结果，再能直接定位到代码实现位置；
 - 本清单是路线图进度的唯一状态来源，后文章节用于说明设计与验收要求；
 - 默认从上到下执行；如果因依赖关系调整顺序，应在任务旁补充简短说明。
 
 ## 执行进度总览
 
-> **当前下一任务：6.9 CancellationController 基础层级模型。**
+> **当前下一任务：6.10 Hook 系统、Stop Hook 与阻塞重试保护。**
 
 ### 当前能力基线
 
@@ -49,7 +49,7 @@
 - [x] 6.5.1 Prompt 输出约束与结构化回复协议：统一 system prompt 中的工具调用边界、最终回复版式和不同任务类型的回答协议
 - [x] 6.6 完整 PermissionState 及权限生命周期：记录权限请求、授权、拒绝、过期、孤立请求和不同作用域的权限决定
 - [x] 6.7-6.8 文件状态缓存与 Memory 加载去重：合并开发 FileStateCache 和 MemoryLoadState，统一处理路径规范化、版本、重复注入、失效和上下文来源追踪
-- [ ] 6.9 CancellationController 基础层级模型：为会话、Turn、模型请求和工具调用建立可传播的取消控制基础
+- [x] 6.9 CancellationController 基础层级模型：为会话、Turn、模型请求和工具调用建立可传播的取消控制基础
 - [ ] 6.10 Hook 系统、Stop Hook 与阻塞重试保护：支持执行前后扩展点，并防止 Stop Hook 无限阻塞最终回复
 - [ ] 6.11 EventBus、ArtifactStore 与 CheckpointStore：统一记录事件、保存大结果/产物，并为恢复与回放提供检查点
 - [ ] 6.12-6.15 工具结果、进度事件与展示协议：合并开发 ToolResult、ToolProgressEvent、ToolRenderer / RendererRegistry 和 DisplayMode，统一打通模型内容、展示内容、Artifact、进度和折叠策略
@@ -126,6 +126,17 @@
 - [ ] 12.6 SubAgentRenderer：展示子 Agent 的任务、阶段、当前动作、Token、耗时和最终摘要
 - [ ] 12.7 SwarmRenderer：展示 Agent 拓扑、任务分配、依赖关系、冲突和整体收敛状态
 - [ ] P7 阶段验收：确认子 Agent 和 Swarm 可控、可取消、可核验，并不会污染主工作区或无限扩张资源
+
+### P8：桌面客户端与可视化操作层
+
+- [ ] 13.1 Desktop Client 边界定义：明确桌面客户端只作为 QueryEngine 的前端入口，不重新实现 AgentLoop、工具执行、权限、取消和记忆逻辑
+- [ ] 13.2 Client API / 本地桥接层：为桌面端提供提交消息、取消 Turn/Task、权限确认、会话切换、后台任务查询和 Artifact 打开的稳定接口
+- [ ] 13.3 会话与任务主界面：展示会话列表、当前 Turn、运行状态、Token/Usage、Artifacts 和可恢复任务
+- [ ] 13.4 取消按钮与任务控制：把桌面端取消按钮接入 `CancellationController` / QueryEngine，支持取消当前 Turn、长任务、后台进程和子 Agent
+- [ ] 13.5 权限确认界面：展示工具名、风险等级、参数摘要、作用域选择和拒绝原因，并复用 `PermissionState`
+- [ ] 13.6 工具与进度可视化：消费 EventBus、ToolProgressEvent 和 Renderer 输出，展示文件读取、编辑 Diff、搜索、Shell、后台任务和多 Agent 状态
+- [ ] 13.7 Artifact / Diff / 日志查看器：打开完整工具结果、生成文件、测试日志、Patch 和回放记录，避免把长内容塞进对话流
+- [ ] 13.8 桌面端验收：确认核心能力仍由 QueryEngine 驱动，CLI 与桌面端行为一致，取消、权限、恢复和后台任务在 UI 中可观察、可操作、可回归测试
 
 ---
 
@@ -667,6 +678,16 @@ Session Token
 ```
 
 Token 支持取消原因、取消时间、子 Token、回调注册和 `raise_if_cancelled()`。本阶段先完成同步执行链路接入；异步模型请求、并发工具、后台进程和子 Agent 的完整传播在 P6、P7 扩展。
+
+已完成：
+
+- [x] 新增 `CancellationToken`、`CancellationController` 和 `CancellationError`，支持 Session、Turn、Task 和 Child Token 的层级取消树；
+- [x] Token 记录取消原因、取消时间、父子关系，支持回调注册、取消传播、`raise_if_cancelled()` 和序列化恢复；
+- [x] `ConversationState.cancellation` 从占位 dict 升级为正式 controller，`start_turn()` 会为当前 Turn 绑定取消 token；
+- [x] `AgentLoop` 支持外部传入 controller，并在同步模型调用前、工具执行前、工具 retry 前后接入取消检查点；
+- [x] pre-cancelled session 不会继续调用模型；工具执行前取消会回滚 pending message，并将 `TurnState` / `LoopState` 标记为 cancelled；
+- [x] 扩充 `tests/test_runtime_state.py`，覆盖取消传播、回调、序列化、ConversationState 绑定和 AgentLoop 同步取消链路；
+- [x] 新增 `docs/6.9-cancellation-controller.md`，说明功能作用、具体使用场景、代码位置、执行链路、测试位置和验证结果。
 
 ### 6.10 Hook 系统、Stop Hook 与阻塞重试保护
 
@@ -1446,7 +1467,111 @@ Conversation
 
 ---
 
-## 13. 统一工程验收模板
+## 13. P8：桌面客户端与可视化操作层
+
+桌面客户端值得做，但不应该早于核心运行时协议。它的价值不是替代 CLI，也不是把 AgentLoop 搬进 GUI，而是给长任务、权限确认、取消、工具进度、Artifact、Diff 和多 Agent 状态提供更清晰的可视化操作层。
+
+本阶段必须建立在 QueryEngine、EventBus、ToolProgressEvent、RendererRegistry、ArtifactStore、CheckpointStore、PermissionState 和 CancellationController 已经成型的基础上。桌面端只消费这些统一接口；核心执行、权限判断、取消传播、工具调用和状态持久化仍由后端运行时负责。
+
+### 13.1 Desktop Client 边界定义
+
+明确桌面客户端的职责边界：
+
+- 负责展示、输入、确认、取消和导航；
+- 通过 QueryEngine 提交用户消息；
+- 通过 EventBus / Renderer 输出展示运行状态；
+- 通过 ArtifactStore 打开完整结果和生成文件；
+- 不直接调用工具函数；
+- 不直接修改 AgentLoop、MemoryStore、PermissionState 或 CancellationToken 内部状态；
+- 不在前端复制一套会话、权限、取消或后台任务状态机。
+
+这样可以保证 CLI、桌面端和未来 Web UI 共享同一套行为，不会出现“CLI 能恢复，桌面端不能恢复”或“桌面端取消了但后端还在跑”的分叉。
+
+### 13.2 Client API / 本地桥接层
+
+提供桌面端调用核心运行时的稳定接口：
+
+- `submit_message(session_id, text)`：提交用户消息；
+- `cancel_turn(session_id, turn_id)`：取消当前 Turn；
+- `cancel_task(session_id, task_id)`：取消长任务或子任务；
+- `approve_permission(request_id, scope)` / `deny_permission(request_id, reason)`；
+- `list_sessions()` / `switch_session(session_id)` / `create_session()`；
+- `list_background_tasks()` / `stop_background_task(task_id)`；
+- `open_artifact(artifact_id)`；
+- 订阅运行事件、工具进度、Usage、权限请求和取消结果。
+
+本地桥接层可以是进程内 Python API、localhost 服务或后续桌面框架适配层，但协议必须先在核心层稳定。
+
+### 13.3 会话与任务主界面
+
+桌面端第一屏应该是可操作的工作台，而不是介绍页。主界面至少展示：
+
+- 会话列表和当前会话；
+- 当前 Turn 的运行阶段；
+- 模型调用、工具调用和权限等待状态；
+- Token / Usage 概览；
+- 当前任务计划、阻塞原因和恢复入口；
+- 最近 Artifacts、Diff、日志和测试结果；
+- 清晰的错误、取消和完成状态。
+
+### 13.4 取消按钮与任务控制
+
+桌面端的取消按钮复用 P1/P6 的取消模型：
+
+- 取消当前 Turn 时调用 QueryEngine 的取消接口；
+- QueryEngine 再调用 `CancellationController`；
+- 取消原因写入 Token、TurnState、LoopState 和事件流；
+- UI 根据取消事件更新按钮、状态和日志；
+- 对不可立即停止的同步工具，显示“正在等待安全检查点”或“不可强制终止”的状态。
+
+桌面端不得通过杀进程或改内部字段来伪造取消。后台进程停止必须走 P6 后台任务管理接口。
+
+### 13.5 权限确认界面
+
+权限确认界面复用 `PermissionState` 和工具风险等级：
+
+- 展示工具名、来源、风险等级和参数摘要；
+- 对文件写入、Shell、网络、MCP 等高风险工具给出明确提示；
+- 支持本次、当前 Session、当前 Task 等授权作用域；
+- 拒绝时记录原因，并把标准 observation 回写给模型；
+- UI 关闭、刷新或恢复后不得重复执行过期权限请求。
+
+### 13.6 工具与进度可视化
+
+桌面端消费 Renderer 和进度事件，不直接解析原始工具输出：
+
+- FileReadRenderer：路径、行号、内容预览和完整 Artifact；
+- FileEditRenderer：语法高亮 Diff、增删行和冲突；
+- SearchRenderer：按文件分组和匹配高亮；
+- ShellRenderer：命令、stdout/stderr、退出码和后台状态；
+- PlannerRenderer / TaskProgressRenderer：步骤、阻塞、恢复和完成比例；
+- SubAgentRenderer / SwarmRenderer：子 Agent 状态、成本、取消和结果。
+
+### 13.7 Artifact / Diff / 日志查看器
+
+桌面端应该把长内容放在专门视图里，而不是塞进对话流：
+
+- 完整工具输出；
+- 生成文件；
+- Patch 和 Diff；
+- 测试日志；
+- 回放记录；
+- 后台进程日志；
+- 多 Agent 汇总报告。
+
+### 13.8 桌面端验收
+
+- CLI 与桌面端通过同一 QueryEngine 路径执行；
+- 桌面端可以提交消息、取消当前 Turn、处理权限请求并展示工具进度；
+- 取消按钮能传播到同步 Turn、长任务、后台进程和子 Agent；
+- 权限确认、取消、恢复和错误状态可以重启后恢复或明确报告不可恢复；
+- Renderer 输出在 CLI 和桌面端语义一致；
+- 桌面端异常不得改变 Agent 核心执行结果；
+- 有覆盖核心桥接层的自动化测试和至少一组端到端冒烟验证。
+
+---
+
+## 14. 统一工程验收模板
 
 每项路线任务在进入开发前都应补齐：
 
@@ -1486,7 +1611,7 @@ Conversation
 
 ---
 
-## 14. 阶段完成定义
+## 15. 阶段完成定义
 
 一个阶段只有同时满足以下条件才算完成：
 

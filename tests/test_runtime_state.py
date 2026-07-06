@@ -9,6 +9,8 @@ from zzm_agent.core.observability import TokenUsage, UsageScope, UsageState
 from zzm_agent.core.progress_monitor import ProgressSignal, ToolObservation
 from zzm_agent.core.runtime_state import (
     ApplicationState,
+    CancellationController,
+    CancellationError,
     ConversationState,
     FileStateCache,
     LoopPhase,
@@ -108,6 +110,45 @@ def test_conversation_state_starts_and_finishes_turn():
     assert conversation.usage.total_tokens == 15
     assert conversation.usage_state.conversation.total_tokens == 15
     assert len(conversation.messages) == 2
+
+
+def test_cancellation_controller_propagates_callbacks_and_restores():
+    controller = CancellationController(session_id="session-a")
+    turn_token = controller.start_turn("turn-1")
+    task_token = controller.start_task("task-1")
+    child_token = controller.create_child("tool-1")
+    callbacks: list[tuple[str, str | None]] = []
+
+    child_token.register_callback(
+        lambda token: callbacks.append((token.token_id, token.reason))
+    )
+    turn_token.cancel("user_interrupt")
+    restored = CancellationController.from_record(controller.to_record())
+
+    assert task_token.is_cancelled is True
+    assert child_token.is_cancelled is True
+    assert child_token.reason == "user_interrupt"
+    assert child_token.cancelled_at == turn_token.cancelled_at
+    assert callbacks == [(child_token.token_id, "user_interrupt")]
+    with pytest.raises(CancellationError, match="user_interrupt"):
+        child_token.raise_if_cancelled()
+    restored_child = (
+        restored.session_token.children[turn_token.token_id]
+        .children[task_token.token_id]
+        .children[child_token.token_id]
+    )
+    assert restored_child.reason == "user_interrupt"
+
+
+def test_conversation_state_creates_turn_cancellation_token():
+    conversation = ConversationState(session_id="session-a")
+
+    turn = conversation.start_turn("hello", turn_id="turn-1")
+
+    assert conversation.cancellation is not None
+    assert turn.cancellation_token is conversation.cancellation.active_turn_token
+    assert turn.cancellation_token is not None
+    assert turn.cancellation_token.scope == "turn"
 
 
 def test_usage_state_accumulates_model_turn_conversation_task_and_application():
@@ -542,6 +583,62 @@ def test_agent_loop_records_permission_approval_decision():
     assert loop.permission_state.denials == []
     assert loop.last_turn_state is not None
     assert loop.last_turn_state.permission_requests[0]["tool_name"] == "dangerous"
+
+
+def test_agent_loop_honors_pre_cancelled_session_before_model_call():
+    controller = CancellationController(session_id="session-a")
+    controller.cancel_session("user_interrupt")
+    client = MagicMock()
+    loop = AgentLoop(
+        client=client,
+        model="test-model",
+        system_prompt="sys",
+        registry=ToolRegistry(),
+        store=FakeStore(),
+        cancellation_controller=controller,
+    )
+
+    result = loop.run("hi", stream=False)
+
+    assert result == ""
+    assert client.chat.completions.create.call_count == 0
+    assert loop.last_turn_state is not None
+    assert loop.last_turn_state.status is TurnStatus.CANCELLED
+    assert loop.last_turn_state.error == "user_interrupt"
+
+
+def test_agent_loop_cancels_before_sync_tool_execution():
+    registry = ToolRegistry()
+    controller = CancellationController(session_id="session-a")
+
+    @registry.tool(description="never called")
+    def dangerous() -> str:
+        raise AssertionError("tool should not execute after cancellation")
+
+    def cancel_on_tool_start(_event):
+        controller.cancel_session("tool_cancelled")
+
+    loop = AgentLoop(
+        client=MagicMock(),
+        model="test-model",
+        system_prompt="sys",
+        registry=registry,
+        store=FakeStore(),
+        cancellation_controller=controller,
+        on_tool_start=cancel_on_tool_start,
+    )
+    loop.client.chat.completions.create.return_value = make_response(
+        tool_calls=[make_tool_call("dangerous", {})],
+    )
+
+    result = loop.run("call dangerous", stream=False)
+
+    assert result == ""
+    assert loop.last_turn_state is not None
+    assert loop.last_turn_state.status is TurnStatus.CANCELLED
+    assert loop.last_turn_state.error == "tool_cancelled"
+    assert loop.last_loop_state is not None
+    assert loop.last_loop_state.phase is LoopPhase.CANCELLED
 
 
 def test_agent_loop_keeps_reflection_prompt_out_of_persisted_messages():
