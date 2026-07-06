@@ -1072,6 +1072,7 @@ _ALLOWED_LOOP_TRANSITIONS: dict[LoopPhase, set[LoopPhase]] = {
     LoopPhase.CALLING_MODEL: {
         LoopPhase.STREAMING_RESPONSE,
         LoopPhase.VALIDATING_TOOL_CALLS,
+        LoopPhase.RUNNING_STOP_HOOKS,
         LoopPhase.COMPLETED,
         LoopPhase.BLOCKED,
         LoopPhase.CANCELLED,
@@ -1079,6 +1080,7 @@ _ALLOWED_LOOP_TRANSITIONS: dict[LoopPhase, set[LoopPhase]] = {
     },
     LoopPhase.STREAMING_RESPONSE: {
         LoopPhase.VALIDATING_TOOL_CALLS,
+        LoopPhase.RUNNING_STOP_HOOKS,
         LoopPhase.COMPLETED,
         LoopPhase.BLOCKED,
         LoopPhase.CANCELLED,

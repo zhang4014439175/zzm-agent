@@ -5,6 +5,13 @@ from unittest.mock import MagicMock
 import pytest
 
 from zzm_agent.core.agent_loop import AgentLoop
+from zzm_agent.core.hooks import (
+    HookContext,
+    HookDecision,
+    HookRegistry,
+    HookResult,
+    HookType,
+)
 from zzm_agent.core.observability import TokenUsage, UsageScope, UsageState
 from zzm_agent.core.progress_monitor import ProgressSignal, ToolObservation
 from zzm_agent.core.runtime_state import (
@@ -418,6 +425,16 @@ def test_loop_state_stop_hook_flags_are_separate_from_reflection():
     assert loop.transition is LoopTransition.STOP_HOOK_RETRY
 
 
+def test_loop_state_allows_stop_hook_after_model_response():
+    loop = LoopState()
+
+    loop.record_model_call()
+    loop.activate_stop_hook()
+
+    assert loop.phase is LoopPhase.RUNNING_STOP_HOOKS
+    assert loop.stop_hook_attempts == 1
+
+
 def test_loop_state_rejects_illegal_transition_from_idle_to_tools():
     loop = LoopState()
 
@@ -583,6 +600,144 @@ def test_agent_loop_records_permission_approval_decision():
     assert loop.permission_state.denials == []
     assert loop.last_turn_state is not None
     assert loop.last_turn_state.permission_requests[0]["tool_name"] == "dangerous"
+
+
+def test_hook_registry_returns_first_non_continue_decision_and_records_errors():
+    registry = HookRegistry()
+
+    def broken(_context):
+        raise RuntimeError("hook exploded")
+
+    registry.register(HookType.BEFORE_MODEL, broken, name="broken")
+    registry.register(
+        HookType.BEFORE_MODEL,
+        lambda _context: HookResult.block("blocked", reason="policy"),
+        name="blocker",
+    )
+
+    result = registry.run_until_decision(HookContext(HookType.BEFORE_MODEL))
+
+    assert result.normalized_decision() is HookDecision.BLOCK
+    assert result.message == "blocked"
+    assert registry.invocations[0]["decision"] == HookDecision.CONTINUE.value
+    assert registry.invocations[0]["reason"] == "hook_error"
+    assert registry.invocations[1]["hook_name"] == "blocker"
+
+
+def test_agent_loop_stop_hook_retries_once_with_runtime_prompt():
+    registry = HookRegistry()
+
+    def stop_hook(context):
+        if context.metadata["stop_hook_attempts"] == 0:
+            return HookResult.retry("Continue; the answer is not complete yet.")
+        return HookResult.continue_()
+
+    registry.register(HookType.STOP, stop_hook)
+    loop = AgentLoop(
+        client=MagicMock(),
+        model="test-model",
+        system_prompt="sys",
+        registry=ToolRegistry(),
+        store=FakeStore(),
+        hook_registry=registry,
+        max_stop_hook_attempts=1,
+    )
+    loop.client.chat.completions.create.side_effect = [
+        make_response(content="too soon"),
+        make_response(content="final answer"),
+    ]
+
+    result = loop.run("hi", stream=False)
+
+    assert result == "final answer"
+    assert loop.client.chat.completions.create.call_count == 2
+    assert loop.last_loop_state is not None
+    assert loop.last_loop_state.stop_hook_attempts == 1
+    assert any(
+        item["to"] == LoopPhase.RUNNING_STOP_HOOKS.value
+        for item in loop.last_loop_state.transition_history
+    )
+    assert loop.last_message_store is not None
+    assert loop.last_message_store.committed_messages == [
+        {"role": "user", "content": "hi"},
+        {"role": "assistant", "content": "final answer"},
+    ]
+
+
+def test_agent_loop_stop_hook_retry_limit_blocks_instead_of_looping():
+    registry = HookRegistry()
+    registry.register(
+        HookType.STOP,
+        lambda _context: HookResult.retry("not enough"),
+    )
+    loop = AgentLoop(
+        client=MagicMock(),
+        model="test-model",
+        system_prompt="sys",
+        registry=ToolRegistry(),
+        store=FakeStore(),
+        hook_registry=registry,
+        max_stop_hook_attempts=1,
+    )
+    loop.client.chat.completions.create.side_effect = [
+        make_response(content="first"),
+        make_response(content="second"),
+    ]
+
+    result = loop.run("hi", stream=False)
+
+    assert result == "Blocked because Stop Hook retry limit was reached."
+    assert loop.client.chat.completions.create.call_count == 2
+    assert loop.last_turn_state is not None
+    assert loop.last_turn_state.status is TurnStatus.BLOCKED
+    assert loop.last_loop_state is not None
+    assert loop.last_loop_state.phase is LoopPhase.BLOCKED
+
+
+def test_agent_loop_tool_hooks_can_modify_arguments_and_result():
+    registry = ToolRegistry()
+    hooks = HookRegistry()
+
+    @registry.tool(description="echo")
+    def echo(text: str) -> str:
+        return f"ECHO:{text}"
+
+    hooks.register(
+        HookType.BEFORE_TOOL,
+        lambda _context: HookResult(
+            decision=HookDecision.MODIFY,
+            modified_arguments={"text": "patched"},
+        ),
+    )
+    hooks.register(
+        HookType.AFTER_TOOL,
+        lambda _context: HookResult.modify_response("HOOKED"),
+    )
+    loop = AgentLoop(
+        client=MagicMock(),
+        model="test-model",
+        system_prompt="sys",
+        registry=registry,
+        store=FakeStore(),
+        hook_registry=hooks,
+    )
+    loop.client.chat.completions.create.side_effect = [
+        make_response(tool_calls=[make_tool_call("echo", {"text": "original"})]),
+        make_response(content="done"),
+    ]
+
+    result = loop.run("call echo", stream=False)
+
+    assert result == "done"
+    assert loop.last_loop_state is not None
+    assert loop.last_loop_state.observations[0].content == "HOOKED"
+    assert loop.last_message_store is not None
+    tool_messages = [
+        message
+        for message in loop.last_message_store.committed_messages
+        if message["role"] == "tool"
+    ]
+    assert tool_messages[0]["content"] == "HOOKED"
 
 
 def test_agent_loop_honors_pre_cancelled_session_before_model_call():

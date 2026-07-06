@@ -15,7 +15,7 @@
 
 ## 执行进度总览
 
-> **当前下一任务：6.10 Hook 系统、Stop Hook 与阻塞重试保护。**
+> **当前下一任务：6.11 EventBus、ArtifactStore 与 CheckpointStore。**
 
 ### 当前能力基线
 
@@ -50,7 +50,7 @@
 - [x] 6.6 完整 PermissionState 及权限生命周期：记录权限请求、授权、拒绝、过期、孤立请求和不同作用域的权限决定
 - [x] 6.7-6.8 文件状态缓存与 Memory 加载去重：合并开发 FileStateCache 和 MemoryLoadState，统一处理路径规范化、版本、重复注入、失效和上下文来源追踪
 - [x] 6.9 CancellationController 基础层级模型：为会话、Turn、模型请求和工具调用建立可传播的取消控制基础
-- [ ] 6.10 Hook 系统、Stop Hook 与阻塞重试保护：支持执行前后扩展点，并防止 Stop Hook 无限阻塞最终回复
+- [x] 6.10 Hook 系统、Stop Hook 与阻塞重试保护：支持执行前后扩展点，并防止 Stop Hook 无限阻塞最终回复
 - [ ] 6.11 EventBus、ArtifactStore 与 CheckpointStore：统一记录事件、保存大结果/产物，并为恢复与回放提供检查点
 - [ ] 6.12-6.15 工具结果、进度事件与展示协议：合并开发 ToolResult、ToolProgressEvent、ToolRenderer / RendererRegistry 和 DisplayMode，统一打通模型内容、展示内容、Artifact、进度和折叠策略
 - [ ] 6.16 状态序列化、版本迁移与恢复协议：让 Conversation、Turn、Task 等状态可持久化、可升级并能在重启后安全恢复
@@ -701,6 +701,18 @@ Token 支持取消原因、取消时间、子 Token、回调注册和 `raise_if_
 - Stop。
 
 Hook 决策包括 Continue、Block、Retry、Modify 和 Stop。Stop Hook 可以阻止模型过早结束并要求继续，但必须通过 `stop_hook_active`、`stop_hook_attempts` 和最大次数防止无限阻塞。
+
+已完成：
+
+- [x] 新增 `HookType`、`HookDecision`、`HookContext`、`HookResult` 和 `HookRegistry`，建立同步进程内 Hook 基础协议；
+- [x] 支持 Session Start / End、Turn Start / End、Before / After Model、Before / After Tool、Tool Error 和 Stop Hook；
+- [x] Hook 决策支持 Continue、Block、Retry、Modify 和 Stop，其中 Block 可阻塞当前 Turn，Modify 可修改模型消息、工具参数、工具结果或最终回答；
+- [x] Hook callback 异常会被记录为 `hook_error` 并按 Continue 处理，避免观察者破坏主流程；
+- [x] `AgentLoop` 接入同步 Hook 链路，覆盖模型调用、工具执行、工具错误、最终回答和 Turn/Session 结束；
+- [x] Stop Hook 支持 runtime-only retry prompt，要求模型继续补一轮回答，提示不会写入持久历史；
+- [x] Stop Hook 通过 `stop_hook_active`、`stop_hook_attempts` 和 `max_stop_hook_attempts` 防止无限重试，超过上限时进入 blocked；
+- [x] 扩充 `tests/test_runtime_state.py`，覆盖 HookRegistry 决策、异常隔离、Stop Hook 重试、重试上限阻塞、工具参数修改和工具结果修改；
+- [x] 新增 `docs/6.10-hook-system-stop-hook.md`，说明功能作用、具体使用场景、代码位置、执行链路、测试位置和验证结果。
 
 ### 6.11 EventBus、ArtifactStore 与 CheckpointStore
 

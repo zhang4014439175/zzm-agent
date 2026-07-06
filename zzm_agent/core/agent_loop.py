@@ -5,6 +5,13 @@ from time import perf_counter, sleep
 from typing import TYPE_CHECKING, Any, Callable
 
 from zzm_agent.core.errors import ToolError, tool_error_from_exception
+from zzm_agent.core.hooks import (
+    HookContext,
+    HookDecision,
+    HookRegistry,
+    HookResult,
+    HookType,
+)
 from zzm_agent.core.observability import (
     TokenUsage,
     ToolEvent,
@@ -104,6 +111,8 @@ class AgentLoop:
         on_tool_error: ToolEventCallback | None = None,
         prompt_manager: "PromptManager | None" = None,
         cancellation_controller: CancellationController | None = None,
+        hook_registry: HookRegistry | None = None,
+        max_stop_hook_attempts: int = 1,
     ):
         """
         Initialize the AgentLoop.
@@ -128,6 +137,8 @@ class AgentLoop:
             on_tool_error: Callback for failed tool completion events.
             prompt_manager: Optional dynamic prompt composer for per-turn system prompts.
             cancellation_controller: Optional controller for external cancellation.
+            hook_registry: Optional synchronous hook registry for lifecycle decisions.
+            max_stop_hook_attempts: Maximum Stop Hook retries before blocking.
         """
         self.client = client
         self.model = model
@@ -165,6 +176,8 @@ class AgentLoop:
         self.token_counter = TokenCounter(model=model)
         self.cancellation_controller = cancellation_controller
         self.last_cancellation_token: CancellationToken | None = None
+        self.hook_registry = hook_registry or HookRegistry()
+        self.max_stop_hook_attempts = max(0, max_stop_hook_attempts)
 
     def _build_tool_call_record(
         self,
@@ -784,6 +797,20 @@ class AgentLoop:
             # Observability must never change agent behavior.
             return
 
+    def _run_hook_until_decision(self, context: HookContext) -> HookResult:
+        """Run hooks and return the first non-continue decision."""
+        return self.hook_registry.run_until_decision(context)
+
+    def _hook_block_message(self, result: HookResult) -> str:
+        return result.message or result.reason or "Execution blocked by hook."
+
+    def _stop_hook_retry_message(self, result: HookResult) -> str:
+        return result.retry_prompt or result.message or (
+            "[STOP_HOOK_RETRY]\n"
+            "The previous response appears incomplete or premature. Continue the "
+            "same task, use available context, and provide the missing result."
+        )
+
     def _commit_turn_usage(self, usage: TokenUsage) -> None:
         """Persist the latest turn and cumulative model usage counters."""
         self.last_turn_usage = usage.copy()
@@ -912,12 +939,54 @@ class AgentLoop:
         turn_state.cancellation_token = turn_token
         self.last_cancellation_token = turn_token
 
+        def run_end_hooks(
+            *,
+            status: str,
+            final_response: str = "",
+            error: str | None = None,
+        ) -> None:
+            context = HookContext(
+                hook_type=HookType.TURN_END,
+                session_id=str(session_id or "default"),
+                turn_id=turn_state.turn_id,
+                model=self.model,
+                user_input=user_input,
+                final_response=final_response,
+                error=error,
+                metadata={"status": status},
+            )
+            self.hook_registry.run(context)
+            self.hook_registry.run(
+                HookContext(
+                    hook_type=HookType.SESSION_END,
+                    session_id=str(session_id or "default"),
+                    turn_id=turn_state.turn_id,
+                    model=self.model,
+                    user_input=user_input,
+                    final_response=final_response,
+                    error=error,
+                    metadata={"status": status},
+                )
+            )
+
+        def block_current_turn(message: str, reason: str = "hook_blocked") -> str:
+            turn_state.block(message, reason=reason)
+            message_store.rollback_pending()
+            message_store.pending_messages.append(dict(user_message))
+            message_store.append_pending({"role": "assistant", "content": message})
+            message_store.commit(self.store.append)
+            self._commit_turn_usage(turn_usage)
+            run_end_hooks(status="blocked", final_response=message, error=reason)
+            self.cancellation_controller.finish_turn()
+            return message
+
         def cancel_current_turn(reason: str, partial_response: str = "") -> str:
             if not turn_token.is_cancelled:
                 turn_token.cancel(reason)
             turn_state.cancel(reason)
             message_store.rollback_pending()
             self._commit_turn_usage(turn_usage)
+            run_end_hooks(status="cancelled", final_response=partial_response, error=reason)
             self.cancellation_controller.finish_turn()
             return partial_response
 
@@ -930,6 +999,22 @@ class AgentLoop:
         self.usage_state.start_turn(turn_state.turn_id)
         self.usage_state.set_conversation(session_id)
         turn_state.usage_state = self.usage_state
+
+        for hook_type in (HookType.SESSION_START, HookType.TURN_START):
+            hook_result = self._run_hook_until_decision(
+                HookContext(
+                    hook_type=hook_type,
+                    session_id=str(session_id or "default"),
+                    turn_id=turn_state.turn_id,
+                    model=self.model,
+                    user_input=user_input,
+                )
+            )
+            if hook_result.normalized_decision() is HookDecision.BLOCK:
+                return block_current_turn(
+                    self._hook_block_message(hook_result),
+                    reason=hook_result.reason or "hook_blocked",
+                )
         
         # Get available tool schemas
         tools = self.registry.get_schemas()
@@ -957,17 +1042,37 @@ class AgentLoop:
                 return cancel_current_turn(task_token.reason or "cancelled")
             if tool_iterations >= self.max_tool_iterations:
                 final_reply = self._iteration_stop_message()
-                turn_state.block(final_reply, reason=LoopTransition.ITERATION_LIMIT)
-                assistant_msg = {"role": "assistant", "content": final_reply}
-                message_store.append_pending(assistant_msg)
-                message_store.commit(self.store.append)
-                self._commit_turn_usage(turn_usage)
-                self.cancellation_controller.finish_turn()
-                return final_reply
+                return block_current_turn(
+                    final_reply,
+                    reason=LoopTransition.ITERATION_LIMIT.value,
+                )
 
             model_context_messages = message_store.prepare_model_context()
             if task_token.is_cancelled:
                 return cancel_current_turn(task_token.reason or "cancelled")
+            before_model = self._run_hook_until_decision(
+                HookContext(
+                    hook_type=HookType.BEFORE_MODEL,
+                    session_id=str(session_id or "default"),
+                    turn_id=turn_state.turn_id,
+                    model=self.model,
+                    user_input=user_input,
+                    messages=model_context_messages,
+                    tools=tools,
+                    metadata={"tool_iteration": tool_iterations, "stream": stream},
+                )
+            )
+            before_model_decision = before_model.normalized_decision()
+            if before_model_decision is HookDecision.BLOCK:
+                return block_current_turn(
+                    self._hook_block_message(before_model),
+                    reason=before_model.reason or "hook_blocked",
+                )
+            if (
+                before_model_decision is HookDecision.MODIFY
+                and before_model.modified_messages is not None
+            ):
+                model_context_messages = before_model.modified_messages
             self._save_context_snapshot(
                 user_input=user_input,
                 messages=model_context_messages,
@@ -1004,6 +1109,35 @@ class AgentLoop:
             )
             turn_usage.add(accounted_call_usage)
 
+            after_model = self._run_hook_until_decision(
+                HookContext(
+                    hook_type=HookType.AFTER_MODEL,
+                    session_id=str(session_id or "default"),
+                    turn_id=turn_state.turn_id,
+                    model=self.model,
+                    user_input=user_input,
+                    messages=model_context_messages,
+                    tools=tools,
+                    final_response=assistant_content,
+                    metadata={
+                        "tool_iteration": tool_iterations,
+                        "interrupted": interrupted,
+                        "tool_call_count": len(tool_calls_raw),
+                    },
+                )
+            )
+            after_model_decision = after_model.normalized_decision()
+            if after_model_decision is HookDecision.BLOCK:
+                return block_current_turn(
+                    self._hook_block_message(after_model),
+                    reason=after_model.reason or "hook_blocked",
+                )
+            if (
+                after_model_decision is HookDecision.MODIFY
+                and after_model.modified_response is not None
+            ):
+                assistant_content = after_model.modified_response
+
             if interrupted:
                 # Interrupted turns intentionally do not write partial assistant
                 # or tool state, preserving a resumable conversation history.
@@ -1011,12 +1145,62 @@ class AgentLoop:
                 message_store.rollback_pending()
                 self._commit_turn_usage(turn_usage)
                 turn_token.cancel("interrupted")
+                run_end_hooks(
+                    status="cancelled",
+                    final_response=assistant_content,
+                    error="interrupted",
+                )
                 self.cancellation_controller.finish_turn()
                 return assistant_content
 
             # If it's a simple text reply, we are done
             if not tool_calls_raw:
                 final_reply = assistant_content
+                stop_result = self._run_hook_until_decision(
+                    HookContext(
+                        hook_type=HookType.STOP,
+                        session_id=str(session_id or "default"),
+                        turn_id=turn_state.turn_id,
+                        model=self.model,
+                        user_input=user_input,
+                        messages=message_store.prepare_model_context(),
+                        tools=tools,
+                        final_response=final_reply,
+                        metadata={
+                            "tool_iteration": tool_iterations,
+                            "stop_hook_attempts": loop_state.stop_hook_attempts,
+                        },
+                    )
+                )
+                stop_decision = stop_result.normalized_decision()
+                if stop_decision is HookDecision.RETRY:
+                    if loop_state.stop_hook_attempts >= self.max_stop_hook_attempts:
+                        block_message = (
+                            "Blocked because Stop Hook retry limit was reached."
+                        )
+                        return block_current_turn(
+                            block_message,
+                            reason=stop_result.reason or "stop_hook_retry_limit",
+                        )
+                    loop_state.activate_stop_hook()
+                    message_store.append_runtime_only(
+                        {
+                            "role": "system",
+                            "content": self._stop_hook_retry_message(stop_result),
+                        }
+                    )
+                    continue
+                if stop_decision is HookDecision.BLOCK:
+                    return block_current_turn(
+                        self._hook_block_message(stop_result),
+                        reason=stop_result.reason or "hook_blocked",
+                    )
+                if (
+                    stop_decision is HookDecision.MODIFY
+                    and stop_result.modified_response is not None
+                ):
+                    final_reply = stop_result.modified_response
+                loop_state.clear_stop_hook()
                 assistant_msg = {"role": "assistant", "content": final_reply}
                 message_store.append_pending(assistant_msg)
 
@@ -1024,6 +1208,7 @@ class AgentLoop:
                 message_store.commit(self.store.append)
                 turn_state.complete(final_reply, usage=turn_usage)
                 self._commit_turn_usage(turn_usage)
+                run_end_hooks(status="completed", final_response=final_reply)
                 self.cancellation_controller.finish_turn()
                 return final_reply
 
@@ -1060,16 +1245,10 @@ class AgentLoop:
                     repetition_signal,
                     after_reflection=True,
                 )
-                turn_state.block(
+                return block_current_turn(
                     final_reply,
-                    reason=LoopTransition.DUPLICATE_CALL_LIMIT,
+                    reason=LoopTransition.DUPLICATE_CALL_LIMIT.value,
                 )
-                assistant_msg = {"role": "assistant", "content": final_reply}
-                message_store.append_pending(assistant_msg)
-                message_store.commit(self.store.append)
-                self._commit_turn_usage(turn_usage)
-                self.cancellation_controller.finish_turn()
-                return final_reply
 
             tool_iterations += 1
 
@@ -1098,6 +1277,30 @@ class AgentLoop:
                     name = tc["function"]["name"]
                     args = json.loads(tc["function"]["arguments"])
                     risk_level = self.registry.get_tool_meta(name).get("risk_level", "low")
+                    before_tool = self._run_hook_until_decision(
+                        HookContext(
+                            hook_type=HookType.BEFORE_TOOL,
+                            session_id=str(session_id or "default"),
+                            turn_id=turn_state.turn_id,
+                            model=self.model,
+                            user_input=user_input,
+                            tool_name=name,
+                            tool_call_id=tc["id"],
+                            tool_arguments=args,
+                            risk_level=risk_level,
+                        )
+                    )
+                    before_tool_decision = before_tool.normalized_decision()
+                    if before_tool_decision is HookDecision.BLOCK:
+                        return block_current_turn(
+                            self._hook_block_message(before_tool),
+                            reason=before_tool.reason or "hook_blocked",
+                        )
+                    if (
+                        before_tool_decision is HookDecision.MODIFY
+                        and before_tool.modified_arguments is not None
+                    ):
+                        args = before_tool.modified_arguments
                     request_id: str | None = None
                     granted_decision = self.permission_state.find_active_grant(
                         tool_name=name,
@@ -1126,6 +1329,31 @@ class AgentLoop:
                             )
                         result_str = "User denied tool execution."
                         duration_ms = (perf_counter() - started_at) * 1000
+                        after_tool = self._run_hook_until_decision(
+                            HookContext(
+                                hook_type=HookType.AFTER_TOOL,
+                                session_id=str(session_id or "default"),
+                                turn_id=turn_state.turn_id,
+                                model=self.model,
+                                user_input=user_input,
+                                tool_name=name,
+                                tool_call_id=tc["id"],
+                                tool_arguments=args,
+                                tool_result=result_str,
+                                risk_level=risk_level,
+                                metadata={"status": "denied"},
+                            )
+                        )
+                        if after_tool.normalized_decision() is HookDecision.BLOCK:
+                            return block_current_turn(
+                                self._hook_block_message(after_tool),
+                                reason=after_tool.reason or "hook_blocked",
+                            )
+                        if (
+                            after_tool.normalized_decision() is HookDecision.MODIFY
+                            and after_tool.modified_response is not None
+                        ):
+                            result_str = after_tool.modified_response
                         self._emit_tool_event(
                             self.on_tool_end,
                             tool_end_event(
@@ -1167,6 +1395,31 @@ class AgentLoop:
                         )
                         result_str = outcome.content
                         duration_ms = (perf_counter() - started_at) * 1000
+                        after_tool = self._run_hook_until_decision(
+                            HookContext(
+                                hook_type=HookType.AFTER_TOOL,
+                                session_id=str(session_id or "default"),
+                                turn_id=turn_state.turn_id,
+                                model=self.model,
+                                user_input=user_input,
+                                tool_name=name,
+                                tool_call_id=tc["id"],
+                                tool_arguments=args,
+                                tool_result=result_str,
+                                risk_level=risk_level,
+                                metadata={"status": "success" if outcome.success else "error"},
+                            )
+                        )
+                        if after_tool.normalized_decision() is HookDecision.BLOCK:
+                            return block_current_turn(
+                                self._hook_block_message(after_tool),
+                                reason=after_tool.reason or "hook_blocked",
+                            )
+                        if (
+                            after_tool.normalized_decision() is HookDecision.MODIFY
+                            and after_tool.modified_response is not None
+                        ):
+                            result_str = after_tool.modified_response
                         if outcome.success:
                             observation_success = True
                             self._emit_tool_event(
@@ -1212,6 +1465,31 @@ class AgentLoop:
                     observation_retryable = error.retryable
                     result_str = error.to_json()
                     duration_ms = (perf_counter() - started_at) * 1000
+                    tool_error_hook = self._run_hook_until_decision(
+                        HookContext(
+                            hook_type=HookType.TOOL_ERROR,
+                            session_id=str(session_id or "default"),
+                            turn_id=turn_state.turn_id,
+                            model=self.model,
+                            user_input=user_input,
+                            tool_name=name or "<unknown>",
+                            tool_call_id=tc.get("id", ""),
+                            tool_arguments=args,
+                            tool_result=result_str,
+                            risk_level=risk_level,
+                            error=error.message,
+                        )
+                    )
+                    if tool_error_hook.normalized_decision() is HookDecision.BLOCK:
+                        return block_current_turn(
+                            self._hook_block_message(tool_error_hook),
+                            reason=tool_error_hook.reason or "hook_blocked",
+                        )
+                    if (
+                        tool_error_hook.normalized_decision() is HookDecision.MODIFY
+                        and tool_error_hook.modified_response is not None
+                    ):
+                        result_str = tool_error_hook.modified_response
                     self._emit_tool_event(
                         self.on_tool_error,
                         tool_error_event(
@@ -1252,12 +1530,6 @@ class AgentLoop:
                     progress_signal,
                     after_reflection=True,
                 )
-                turn_state.block(final_reply, reason=progress_signal.reason)
-                assistant_msg = {"role": "assistant", "content": final_reply}
-                message_store.append_pending(assistant_msg)
-                message_store.commit(self.store.append)
-                self._commit_turn_usage(turn_usage)
-                self.cancellation_controller.finish_turn()
-                return final_reply
+                return block_current_turn(final_reply, reason=progress_signal.reason)
             
             # Continue the loop to let the model process tool results
