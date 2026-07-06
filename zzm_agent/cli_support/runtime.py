@@ -160,6 +160,46 @@ def _format_repl_exception(exc: Exception) -> str:
     return exc.__class__.__name__
 
 
+def _format_repl_exception_with_runtime(
+    exc: Exception,
+    runtime: dict[str, Any] | None = None,
+) -> str:
+    """Add endpoint-aware hints for common OpenAI-compatible provider failures."""
+    text = str(exc).strip()
+    lower_text = text.lower()
+    base_message = _format_repl_exception(exc)
+
+    cfg = (runtime or {}).get("config") or {}
+    model_cfg = cfg.get("model") or {}
+    details = []
+    base_url = str(model_cfg.get("base_url") or "").strip()
+    model_name = str(model_cfg.get("model_name") or "").strip()
+    if base_url:
+        details.append(f"base_url={base_url}")
+    if model_name:
+        details.append(f"model={model_name}")
+    endpoint_summary = f"；当前配置：{'，'.join(details)}" if details else ""
+
+    if "404 page not found" in lower_text or "404 page not foun" in lower_text:
+        return (
+            "模型接口请求失败：404 page not found。通常是 `model.base_url` 配置错误，"
+            "或者当前服务并不支持 `/chat/completions` 接口。"
+            f"{endpoint_summary}"
+        )
+
+    if "response did not include choices" in lower_text:
+        return (
+            "模型接口请求失败：服务端返回了非标准的 OpenAI-compatible 响应，"
+            "响应里没有 `choices` 字段。请优先检查 `model.base_url`、`model_name`，"
+            "以及当前服务是否真的兼容 `/chat/completions`。"
+            f"{endpoint_summary}"
+        )
+
+    if endpoint_summary and base_message != text:
+        return f"{base_message}{endpoint_summary}"
+    return base_message
+
+
 def _extract_sdk_error_payload(text: str) -> dict[str, Any] | None:
     """Extract dict-like error payloads from OpenAI-compatible SDK exceptions."""
     match = _SDK_ERROR_PAYLOAD_PATTERN.search(text)
@@ -685,7 +725,7 @@ def run_repl(runtime: dict[str, Any]) -> int:
             if runtime.get("debug"):
                 console.print_exception()
             else:
-                console.print(f"[red]Error: {_format_repl_exception(exc)}[/red]")
+                console.print(f"[red]Error: {_format_repl_exception_with_runtime(exc, runtime)}[/red]")
             console.print("[dim]Repl is still running. Fix the issue or press Ctrl+C to exit.[/dim]")
             continue
 

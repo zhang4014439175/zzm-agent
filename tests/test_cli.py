@@ -12,6 +12,7 @@ from zzm_agent.cli_support.runtime import (
     _ask_tool_approval_choice,
     _config_bool,
     _format_repl_exception,
+    _format_repl_exception_with_runtime,
     _resolve_plugin_dirs,
     _start_working_status,
     _stop_working_status,
@@ -429,6 +430,45 @@ def test_run_repl_prints_traceback_in_debug_mode(monkeypatch):
 
     assert result == 0
     assert fake_console.exception_called is True
+
+
+def test_format_repl_exception_with_runtime_explains_404_chat_endpoint_errors():
+    exc = RuntimeError("Error code: 404 - 404 page not found")
+    runtime = {
+        "config": {
+            "model": {
+                "base_url": "https://example.com/v1",
+                "model_name": "demo-model",
+            }
+        }
+    }
+
+    message = _format_repl_exception_with_runtime(exc, runtime)
+
+    assert "404 page not found" in message
+    assert "model.base_url" in message
+    assert "/chat/completions" in message
+    assert "https://example.com/v1" in message
+    assert "demo-model" in message
+
+
+def test_format_repl_exception_with_runtime_explains_missing_choices_errors():
+    exc = RuntimeError("Chat completion failed: response did not include choices.")
+    runtime = {
+        "config": {
+            "model": {
+                "base_url": "https://example.com/v1",
+                "model_name": "demo-model",
+            }
+        }
+    }
+
+    message = _format_repl_exception_with_runtime(exc, runtime)
+
+    assert "choices" in message
+    assert "OpenAI-compatible" in message
+    assert "https://example.com/v1" in message
+    assert "demo-model" in message
 
 
 def test_config_bool_accepts_common_values():
