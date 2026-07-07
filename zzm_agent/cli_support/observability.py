@@ -103,8 +103,18 @@ class CliObserver:
         if not turn_usage.has_tokens() and not cumulative_usage.has_tokens():
             return
 
+        if self.console.__class__.__name__ != "Console":
+            self.console.print(
+                "Usage: "
+                f"turn={turn_usage.total_tokens} tokens, "
+                f"session={cumulative_usage.total_tokens} tokens"
+            )
+            return
+
         try:
             from rich.table import Table
+            from rich.panel import Panel
+            from rich import box
         except ImportError:
             self.console.print(
                 "Usage: "
@@ -113,13 +123,13 @@ class CliObserver:
             )
             return
 
-        table = Table(show_header=True, header_style="bold #61AFEF", box=None, padding=(0, 1))
-        table.add_column("Scope", style="bold #56B6C2")
-        table.add_column("Prompt", justify="right")
-        table.add_column("Completion", justify="right")
-        table.add_column("Total", justify="right")
-        table.add_column("Cost", justify="right")
-        table.add_column("Source", style="dim #ABB2BF")
+        table = Table(show_header=True, header_style="bold #61AFEF", box=box.SIMPLE_HEAD, border_style="#3B4252", padding=(0, 2))
+        table.add_column("Scope (范围)", style="bold #56B6C2")
+        table.add_column("Prompt (提示)", justify="right")
+        table.add_column("Completion (生成)", justify="right")
+        table.add_column("Total (总计)", justify="right")
+        table.add_column("Cost (估算费用)", justify="right", style="bold #98C379")
+        table.add_column("Source (来源)", style="dim #ABB2BF")
 
         table.add_row(
             "Turn",
@@ -137,7 +147,17 @@ class CliObserver:
             self._format_cost(cumulative_usage),
             cumulative_usage.source,
         )
-        self.console.print(table)
+        
+        self.console.print(
+            Panel(
+                table,
+                title="[bold #61AFEF]📊 账单与 Token 消耗明细[/]",
+                title_align="left",
+                border_style="#3B4252",
+                box=box.ROUNDED,
+                expand=False
+            )
+        )
 
     def _start_live(self) -> None:
         if self._live is not None:
