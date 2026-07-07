@@ -1,0 +1,492 @@
+from __future__ import annotations
+
+import hashlib
+import json
+from dataclasses import asdict, dataclass, field, is_dataclass
+from datetime import datetime, timezone
+from pathlib import Path
+from typing import Any, Callable
+from uuid import uuid4
+
+
+def _utc_now_iso() -> str:
+    return datetime.now(timezone.utc).isoformat()
+
+
+def _json_ready(value: Any) -> Any:
+    if hasattr(value, "to_record") and callable(value.to_record):
+        return value.to_record()
+    if is_dataclass(value):
+        return asdict(value)
+    try:
+        json.dumps(value, ensure_ascii=False, sort_keys=True)
+        return value
+    except TypeError:
+        return str(value)
+
+
+def _stable_json(value: Any) -> str:
+    return json.dumps(_json_ready(value), ensure_ascii=False, sort_keys=True, default=str)
+
+
+@dataclass
+class RuntimeEvent:
+    """One factual runtime event emitted by the agent runtime."""
+
+    event_type: str
+    payload: dict[str, Any] = field(default_factory=dict)
+    event_id: str = field(default_factory=lambda: f"event-{uuid4().hex[:12]}")
+    timestamp: str = field(default_factory=_utc_now_iso)
+    sequence: int = 0
+    source: str = "runtime"
+    session_id: str | None = None
+    turn_id: str | None = None
+    task_id: str | None = None
+
+    def to_record(self) -> dict[str, Any]:
+        return {
+            "event_id": self.event_id,
+            "event_type": self.event_type,
+            "timestamp": self.timestamp,
+            "sequence": self.sequence,
+            "source": self.source,
+            "session_id": self.session_id,
+            "turn_id": self.turn_id,
+            "task_id": self.task_id,
+            "payload": _json_ready(self.payload),
+        }
+
+    @classmethod
+    def from_record(cls, record: dict[str, Any]) -> "RuntimeEvent":
+        return cls(
+            event_id=str(record["event_id"]),
+            event_type=str(record["event_type"]),
+            timestamp=str(record.get("timestamp") or _utc_now_iso()),
+            sequence=int(record.get("sequence") or 0),
+            source=str(record.get("source") or "runtime"),
+            session_id=record.get("session_id"),
+            turn_id=record.get("turn_id"),
+            task_id=record.get("task_id"),
+            payload=dict(record.get("payload") or {}),
+        )
+
+
+EventSubscriber = Callable[[RuntimeEvent], None]
+
+
+class EventBus:
+    """In-process event bus whose subscribers cannot affect agent behavior."""
+
+    def __init__(self) -> None:
+        self.events: list[RuntimeEvent] = []
+        self.observer_errors: list[dict[str, str]] = []
+        self._subscribers: dict[str | None, list[EventSubscriber]] = {}
+        self._sequence = 0
+
+    def subscribe(
+        self,
+        subscriber: EventSubscriber,
+        *,
+        event_type: str | None = None,
+    ) -> Callable[[], None]:
+        self._subscribers.setdefault(event_type, []).append(subscriber)
+
+        def unsubscribe() -> None:
+            subscribers = self._subscribers.get(event_type, [])
+            if subscriber in subscribers:
+                subscribers.remove(subscriber)
+
+        return unsubscribe
+
+    def publish(
+        self,
+        event_type: str,
+        payload: dict[str, Any] | None = None,
+        *,
+        source: str = "runtime",
+        session_id: str | None = None,
+        turn_id: str | None = None,
+        task_id: str | None = None,
+    ) -> RuntimeEvent:
+        self._sequence += 1
+        event = RuntimeEvent(
+            event_type=event_type,
+            payload=dict(payload or {}),
+            sequence=self._sequence,
+            source=source,
+            session_id=session_id,
+            turn_id=turn_id,
+            task_id=task_id,
+        )
+        self.events.append(event)
+        for subscriber in self._subscribers.get(None, []) + self._subscribers.get(event_type, []):
+            try:
+                subscriber(event)
+            except Exception as exc:
+                self.observer_errors.append(
+                    {
+                        "event_id": event.event_id,
+                        "event_type": event.event_type,
+                        "error": str(exc),
+                    }
+                )
+        return event
+
+    def to_records(self) -> list[dict[str, Any]]:
+        return [event.to_record() for event in self.events]
+
+    @classmethod
+    def from_records(cls, records: list[dict[str, Any]] | None) -> "EventBus":
+        bus = cls()
+        for record in records or []:
+            event = RuntimeEvent.from_record(record)
+            bus.events.append(event)
+            bus._sequence = max(bus._sequence, event.sequence)
+        return bus
+
+
+class EventJsonlStore:
+    """Append and read runtime events as JSONL facts."""
+
+    def __init__(self, path: str | Path) -> None:
+        self.path = Path(path)
+
+    def append(self, event: RuntimeEvent) -> None:
+        self.path.parent.mkdir(parents=True, exist_ok=True)
+        with self.path.open("a", encoding="utf-8") as handle:
+            handle.write(json.dumps(event.to_record(), ensure_ascii=False, sort_keys=True))
+            handle.write("\n")
+
+    def read(self) -> list[RuntimeEvent]:
+        if not self.path.exists():
+            return []
+        events: list[RuntimeEvent] = []
+        with self.path.open(encoding="utf-8") as handle:
+            for line in handle:
+                stripped = line.strip()
+                if stripped:
+                    events.append(RuntimeEvent.from_record(json.loads(stripped)))
+        return events
+
+
+@dataclass
+class ArtifactRecord:
+    """Metadata for a stored large result, report, diff, log, or file."""
+
+    artifact_id: str
+    kind: str
+    path: str
+    mime_type: str = "text/plain"
+    summary: str = ""
+    size_bytes: int = 0
+    checksum: str = ""
+    session_id: str | None = None
+    turn_id: str | None = None
+    task_id: str | None = None
+    created_at: str = field(default_factory=_utc_now_iso)
+    metadata: dict[str, Any] = field(default_factory=dict)
+
+    def to_record(self) -> dict[str, Any]:
+        return asdict(self)
+
+    @classmethod
+    def from_record(cls, record: dict[str, Any]) -> "ArtifactRecord":
+        return cls(
+            artifact_id=str(record["artifact_id"]),
+            kind=str(record.get("kind") or "artifact"),
+            path=str(record["path"]),
+            mime_type=str(record.get("mime_type") or "text/plain"),
+            summary=str(record.get("summary") or ""),
+            size_bytes=int(record.get("size_bytes") or 0),
+            checksum=str(record.get("checksum") or ""),
+            session_id=record.get("session_id"),
+            turn_id=record.get("turn_id"),
+            task_id=record.get("task_id"),
+            created_at=str(record.get("created_at") or _utc_now_iso()),
+            metadata=dict(record.get("metadata") or {}),
+        )
+
+
+class ArtifactStore:
+    """Store full artifact content while exposing compact metadata to runtime state."""
+
+    def __init__(self, root: str | Path | None = None) -> None:
+        self.root = Path(root) if root is not None else None
+        self.records: dict[str, ArtifactRecord] = {}
+        self._memory_content: dict[str, bytes] = {}
+
+    def save_text(
+        self,
+        content: str,
+        *,
+        kind: str,
+        summary: str = "",
+        mime_type: str = "text/plain",
+        session_id: str | None = None,
+        turn_id: str | None = None,
+        task_id: str | None = None,
+        metadata: dict[str, Any] | None = None,
+    ) -> ArtifactRecord:
+        return self.save_bytes(
+            content.encode("utf-8"),
+            kind=kind,
+            summary=summary,
+            mime_type=mime_type,
+            extension=".txt",
+            session_id=session_id,
+            turn_id=turn_id,
+            task_id=task_id,
+            metadata=metadata,
+        )
+
+    def save_json(
+        self,
+        content: Any,
+        *,
+        kind: str,
+        summary: str = "",
+        session_id: str | None = None,
+        turn_id: str | None = None,
+        task_id: str | None = None,
+        metadata: dict[str, Any] | None = None,
+    ) -> ArtifactRecord:
+        payload = json.dumps(_json_ready(content), ensure_ascii=False, indent=2, sort_keys=True)
+        return self.save_bytes(
+            payload.encode("utf-8"),
+            kind=kind,
+            summary=summary,
+            mime_type="application/json",
+            extension=".json",
+            session_id=session_id,
+            turn_id=turn_id,
+            task_id=task_id,
+            metadata=metadata,
+        )
+
+    def save_bytes(
+        self,
+        content: bytes,
+        *,
+        kind: str,
+        summary: str = "",
+        mime_type: str = "application/octet-stream",
+        extension: str = ".bin",
+        session_id: str | None = None,
+        turn_id: str | None = None,
+        task_id: str | None = None,
+        metadata: dict[str, Any] | None = None,
+    ) -> ArtifactRecord:
+        artifact_id = f"artifact-{uuid4().hex[:12]}"
+        checksum = hashlib.sha256(content).hexdigest()
+        path = self._write_content(artifact_id, content, extension=extension)
+        record = ArtifactRecord(
+            artifact_id=artifact_id,
+            kind=kind,
+            path=path,
+            mime_type=mime_type,
+            summary=summary,
+            size_bytes=len(content),
+            checksum=f"sha256:{checksum}",
+            session_id=session_id,
+            turn_id=turn_id,
+            task_id=task_id,
+            metadata=dict(metadata or {}),
+        )
+        self.records[artifact_id] = record
+        return record
+
+    def get(self, artifact_id: str) -> ArtifactRecord | None:
+        return self.records.get(artifact_id)
+
+    def list(
+        self,
+        *,
+        session_id: str | None = None,
+        turn_id: str | None = None,
+        task_id: str | None = None,
+    ) -> list[ArtifactRecord]:
+        records = list(self.records.values())
+        if session_id is not None:
+            records = [record for record in records if record.session_id == session_id]
+        if turn_id is not None:
+            records = [record for record in records if record.turn_id == turn_id]
+        if task_id is not None:
+            records = [record for record in records if record.task_id == task_id]
+        return records
+
+    def read_bytes(self, artifact_id: str) -> bytes:
+        record = self.records[artifact_id]
+        if self.root is None:
+            return self._memory_content[artifact_id]
+        return Path(record.path).read_bytes()
+
+    def read_text(self, artifact_id: str, *, encoding: str = "utf-8") -> str:
+        return self.read_bytes(artifact_id).decode(encoding)
+
+    def to_records(self) -> list[dict[str, Any]]:
+        return [record.to_record() for record in self.records.values()]
+
+    @classmethod
+    def from_records(
+        cls,
+        records: list[dict[str, Any]] | None,
+        *,
+        root: str | Path | None = None,
+    ) -> "ArtifactStore":
+        store = cls(root=root)
+        for record in records or []:
+            restored = ArtifactRecord.from_record(record)
+            store.records[restored.artifact_id] = restored
+        return store
+
+    def _write_content(self, artifact_id: str, content: bytes, *, extension: str) -> str:
+        if self.root is None:
+            self._memory_content[artifact_id] = content
+            return f"memory://{artifact_id}"
+        self.root.mkdir(parents=True, exist_ok=True)
+        path = self.root / f"{artifact_id}{extension}"
+        path.write_bytes(content)
+        return str(path)
+
+
+@dataclass
+class CheckpointRecord:
+    """One recoverable snapshot of conversation, turn, task, or working memory state."""
+
+    checkpoint_id: str
+    scope: str
+    state: dict[str, Any]
+    session_id: str | None = None
+    turn_id: str | None = None
+    task_id: str | None = None
+    label: str = ""
+    created_at: str = field(default_factory=_utc_now_iso)
+    checksum: str = ""
+    metadata: dict[str, Any] = field(default_factory=dict)
+
+    def to_record(self) -> dict[str, Any]:
+        return asdict(self)
+
+    @classmethod
+    def from_record(cls, record: dict[str, Any]) -> "CheckpointRecord":
+        return cls(
+            checkpoint_id=str(record["checkpoint_id"]),
+            scope=str(record["scope"]),
+            state=dict(record.get("state") or {}),
+            session_id=record.get("session_id"),
+            turn_id=record.get("turn_id"),
+            task_id=record.get("task_id"),
+            label=str(record.get("label") or ""),
+            created_at=str(record.get("created_at") or _utc_now_iso()),
+            checksum=str(record.get("checksum") or ""),
+            metadata=dict(record.get("metadata") or {}),
+        )
+
+
+class CheckpointStore:
+    """Checkpoint ledger for recovery and replay."""
+
+    def __init__(self, root: str | Path | None = None) -> None:
+        self.root = Path(root) if root is not None else None
+        self.records: dict[str, CheckpointRecord] = {}
+
+    def save(
+        self,
+        *,
+        scope: str,
+        state: Any,
+        session_id: str | None = None,
+        turn_id: str | None = None,
+        task_id: str | None = None,
+        label: str = "",
+        metadata: dict[str, Any] | None = None,
+    ) -> CheckpointRecord:
+        snapshot = _json_ready(state)
+        if not isinstance(snapshot, dict):
+            snapshot = {"value": snapshot}
+        checksum = hashlib.sha256(_stable_json(snapshot).encode("utf-8")).hexdigest()
+        record = CheckpointRecord(
+            checkpoint_id=f"checkpoint-{uuid4().hex[:12]}",
+            scope=scope,
+            state=snapshot,
+            session_id=session_id,
+            turn_id=turn_id,
+            task_id=task_id,
+            label=label,
+            checksum=f"sha256:{checksum}",
+            metadata=dict(metadata or {}),
+        )
+        self.records[record.checkpoint_id] = record
+        self._persist(record)
+        return record
+
+    def get(self, checkpoint_id: str) -> CheckpointRecord | None:
+        return self.records.get(checkpoint_id)
+
+    def list(
+        self,
+        *,
+        scope: str | None = None,
+        session_id: str | None = None,
+        turn_id: str | None = None,
+        task_id: str | None = None,
+    ) -> list[CheckpointRecord]:
+        records = list(self.records.values())
+        if scope is not None:
+            records = [record for record in records if record.scope == scope]
+        if session_id is not None:
+            records = [record for record in records if record.session_id == session_id]
+        if turn_id is not None:
+            records = [record for record in records if record.turn_id == turn_id]
+        if task_id is not None:
+            records = [record for record in records if record.task_id == task_id]
+        return sorted(records, key=lambda record: record.created_at)
+
+    def latest(
+        self,
+        *,
+        scope: str | None = None,
+        session_id: str | None = None,
+        turn_id: str | None = None,
+        task_id: str | None = None,
+    ) -> CheckpointRecord | None:
+        records = self.list(
+            scope=scope,
+            session_id=session_id,
+            turn_id=turn_id,
+            task_id=task_id,
+        )
+        return records[-1] if records else None
+
+    def load_from_disk(self) -> None:
+        if self.root is None or not self.root.exists():
+            return
+        for path in sorted(self.root.glob("checkpoint-*.json")):
+            record = CheckpointRecord.from_record(json.loads(path.read_text(encoding="utf-8")))
+            self.records[record.checkpoint_id] = record
+
+    def to_records(self) -> list[dict[str, Any]]:
+        return [record.to_record() for record in self.records.values()]
+
+    @classmethod
+    def from_records(
+        cls,
+        records: list[dict[str, Any]] | None,
+        *,
+        root: str | Path | None = None,
+    ) -> "CheckpointStore":
+        store = cls(root=root)
+        for record in records or []:
+            restored = CheckpointRecord.from_record(record)
+            store.records[restored.checkpoint_id] = restored
+        return store
+
+    def _persist(self, record: CheckpointRecord) -> None:
+        if self.root is None:
+            return
+        self.root.mkdir(parents=True, exist_ok=True)
+        path = self.root / f"{record.checkpoint_id}.json"
+        path.write_text(
+            json.dumps(record.to_record(), ensure_ascii=False, indent=2, sort_keys=True),
+            encoding="utf-8",
+        )

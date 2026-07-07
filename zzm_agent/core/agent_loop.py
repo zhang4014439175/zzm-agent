@@ -37,6 +37,7 @@ from zzm_agent.core.runtime_state import (
     PermissionState,
     TurnState,
 )
+from zzm_agent.core.tool_results import ToolResult
 from zzm_agent.memory.token_counter import TokenCounter
 
 if TYPE_CHECKING:
@@ -178,6 +179,7 @@ class AgentLoop:
         self.last_cancellation_token: CancellationToken | None = None
         self.hook_registry = hook_registry or HookRegistry()
         self.max_stop_hook_attempts = max(0, max_stop_hook_attempts)
+        self.last_tool_results: list[ToolResult] = []
 
     def _build_tool_call_record(
         self,
@@ -926,6 +928,7 @@ class AgentLoop:
         loop_state = turn_state.start_loop()
         self.last_turn_state = turn_state
         self.last_loop_state = loop_state
+        self.last_tool_results = []
         session_id = getattr(self.store, "session_id", None)
         if self.cancellation_controller is None:
             self.cancellation_controller = CancellationController(
@@ -1271,6 +1274,7 @@ class AgentLoop:
                 risk_level = "unknown"
                 observation_success = False
                 observation_retryable = False
+                tool_status = "error"
                 started_at = perf_counter()
                 try:
                     # Parse arguments and call the tool through the registry
@@ -1321,6 +1325,7 @@ class AgentLoop:
                         risk_level,
                     ):
                         loop_state.record_permission_denial()
+                        tool_status = "denied"
                         if request_id is not None:
                             self._record_permission_denial(
                                 request_id,
@@ -1421,6 +1426,7 @@ class AgentLoop:
                         ):
                             result_str = after_tool.modified_response
                         if outcome.success:
+                            tool_status = "success"
                             observation_success = True
                             self._emit_tool_event(
                                 self.on_tool_end,
@@ -1436,6 +1442,7 @@ class AgentLoop:
                                 ),
                             )
                         else:
+                            tool_status = "error"
                             error = outcome.error or ToolError(
                                 error_type="ToolExecutionError",
                                 message=result_str,
@@ -1462,6 +1469,7 @@ class AgentLoop:
                 except Exception as e:
                     # Capture tool execution errors and feed them back to the model
                     error = tool_error_from_exception(e)
+                    tool_status = "error"
                     observation_retryable = error.retryable
                     result_str = error.to_json()
                     duration_ms = (perf_counter() - started_at) * 1000
@@ -1505,11 +1513,20 @@ class AgentLoop:
                         ),
                     )
 
-                tool_result_msg = {
-                    "role": "tool",
-                    "tool_call_id": tc["id"],
-                    "content": result_str,
-                }
+                structured_result = ToolResult.from_text(
+                    tool_call_id=tc["id"],
+                    tool_name=name or "<unknown>",
+                    status=tool_status,
+                    content=result_str,
+                    metadata={
+                        "risk_level": risk_level,
+                        "retryable": observation_retryable,
+                    },
+                )
+                self.last_tool_results.append(structured_result)
+                turn_state.tool_results.append(structured_result.to_record())
+                turn_state.artifacts.extend(structured_result.artifacts)
+                tool_result_msg = structured_result.to_model_message()
                 message_store.append_pending(tool_result_msg)
                 round_observations.append(
                     ToolObservation(

@@ -15,7 +15,7 @@
 
 ## 执行进度总览
 
-> **当前下一任务：6.11 EventBus、ArtifactStore 与 CheckpointStore。**
+> **当前下一任务：6.16 状态序列化、版本迁移与恢复协议。**
 
 ### 当前能力基线
 
@@ -51,8 +51,8 @@
 - [x] 6.7-6.8 文件状态缓存与 Memory 加载去重：合并开发 FileStateCache 和 MemoryLoadState，统一处理路径规范化、版本、重复注入、失效和上下文来源追踪
 - [x] 6.9 CancellationController 基础层级模型：为会话、Turn、模型请求和工具调用建立可传播的取消控制基础
 - [x] 6.10 Hook 系统、Stop Hook 与阻塞重试保护：支持执行前后扩展点，并防止 Stop Hook 无限阻塞最终回复
-- [ ] 6.11 EventBus、ArtifactStore 与 CheckpointStore：统一记录事件、保存大结果/产物，并为恢复与回放提供检查点
-- [ ] 6.12-6.15 工具结果、进度事件与展示协议：合并开发 ToolResult、ToolProgressEvent、ToolRenderer / RendererRegistry 和 DisplayMode，统一打通模型内容、展示内容、Artifact、进度和折叠策略
+- [x] 6.11 EventBus、ArtifactStore 与 CheckpointStore：统一记录事件、保存大结果/产物，并为恢复与回放提供检查点
+- [x] 6.12-6.15 工具结果、进度事件与展示协议：合并开发 ToolResult、ToolProgressEvent、ToolRenderer / RendererRegistry 和 DisplayMode，统一打通模型内容、展示内容、Artifact、进度和折叠策略
 - [ ] 6.16 状态序列化、版本迁移与恢复协议：让 Conversation、Turn、Task 等状态可持久化、可升级并能在重启后安全恢复
 - [ ] 6.17-6.18 QueryEngine 与 CLI 迁移：合并开发跨 Turn 会话编排器和 CLI 接入，让 REPL 通过 QueryEngine 统一调度消息、状态、工具、权限、记忆和 AgentLoop
 - [ ] P1 阶段验收：确认完整状态体系可观察、可恢复，并保持现有同步 ReAct 调用兼容
@@ -805,6 +805,16 @@ HIDDEN
 - 用户是否可以切换展开状态。
 
 终端暂不支持交互展开时，应显示摘要、被隐藏的数量和 Artifact 路径，不能静默丢弃内容。
+
+完成情况：
+
+- [x] 新增 `zzm_agent/core/tool_results.py`，定义 `ToolResult`、`ToolProgressEvent`、`ToolProgressEmitter`、`DisplayMode`、`DisplayPolicy`、`ToolRenderer`、`RendererRegistry` 和默认纯文本 Renderer；
+- [x] `AgentLoop` 在工具回填前创建结构化 `ToolResult`，并通过 `to_model_message()` 保持原有模型 tool result 协议兼容；
+- [x] `TurnState.tool_results` 和 `AgentLoop.last_tool_results` 可观察每次工具调用的模型内容、展示内容、状态和 metadata；
+- [x] `ToolProgressEmitter` 保证同一 Tool Call 内进度 `sequence` 单调递增，并通过 `EventBus` 发布 `tool.progress` 事件，同时限制本地缓冲长度；
+- [x] `RendererRegistry` 支持按工具名、类别、来源选择 Renderer，并提供纯文本降级 Renderer；
+- [x] 新增 `tests/test_tool_results.py` 并扩充 `tests/test_runtime_state.py`，验证结构化结果、进度事件、Renderer 选择和 AgentLoop 兼容性；
+- [x] 新增 `docs/6.12-6.15-tool-result-display-protocol.md`，说明使用场景、代码位置、执行链路、测试位置和已知边界。
 
 ### 6.16 状态序列化、版本迁移与恢复协议
 
