@@ -1371,6 +1371,7 @@ class TurnState:
     permissions: PermissionState = field(default_factory=PermissionState)
     cancellation_token: CancellationToken | None = None
     artifacts: list[dict[str, Any]] = field(default_factory=list)
+    tool_results: list[dict[str, Any]] = field(default_factory=list)
     loop: LoopState | None = None
     final_response: str | None = None
     error: str | None = None

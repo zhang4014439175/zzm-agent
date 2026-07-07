@@ -529,6 +529,9 @@ def test_agent_loop_populates_loop_state_for_tool_round():
     assert loop.last_loop_state.needs_follow_up is False
     assert len(loop.last_loop_state.observations) == 1
     assert loop.last_loop_state.observations[0].content == "ECHO:world"
+    assert loop.last_turn_state.tool_results[0]["tool_name"] == "echo"
+    assert loop.last_turn_state.tool_results[0]["model_content"] == "ECHO:world"
+    assert loop.last_tool_results[0].display_content["text"] == "ECHO:world"
     assert loop.last_loop_state.transition_history[-1]["to"] == "completed"
     assert loop.last_message_store is not None
     assert [message["role"] for message in loop.last_message_store.committed_messages] == [
