@@ -10,6 +10,7 @@ from uuid import uuid4
 
 from zzm_agent.core.observability import TokenUsage, UsageState
 from zzm_agent.core.progress_monitor import ProgressSignal, ToolObservation
+from zzm_agent.core.runtime_records import ArtifactStore, CheckpointStore, EventBus
 from zzm_agent.core.state_lifecycle import (
     StateLifecyclePolicy,
     StateScope,
@@ -1436,6 +1437,9 @@ class ConversationState:
     file_reads: FileStateCache = field(default_factory=FileStateCache)
     skills: set[str] = field(default_factory=set)
     memories: MemoryLoadState = field(default_factory=MemoryLoadState)
+    events: EventBus = field(default_factory=EventBus)
+    artifacts: ArtifactStore = field(default_factory=ArtifactStore)
+    checkpoints: CheckpointStore = field(default_factory=CheckpointStore)
     cancellation: CancellationController | None = None
     active_turn: TurnState | None = None
     active_task: Any | None = None
@@ -1515,6 +1519,9 @@ class ApplicationState:
     active_session_id: str | None = None
     conversations: dict[str, ConversationState] = field(default_factory=dict)
     usage_state: UsageState = field(default_factory=UsageState)
+    events: EventBus = field(default_factory=EventBus)
+    artifacts: ArtifactStore = field(default_factory=ArtifactStore)
+    checkpoints: CheckpointStore = field(default_factory=CheckpointStore)
 
     scope: ClassVar[StateScope] = StateScope.APPLICATION
 

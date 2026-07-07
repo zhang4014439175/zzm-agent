@@ -15,7 +15,7 @@
 
 ## 执行进度总览
 
-> **当前下一任务：6.11 EventBus、ArtifactStore 与 CheckpointStore。**
+> **当前下一任务：6.12-6.15 工具结果、进度事件与展示协议。**
 
 ### 当前能力基线
 
@@ -51,7 +51,7 @@
 - [x] 6.7-6.8 文件状态缓存与 Memory 加载去重：合并开发 FileStateCache 和 MemoryLoadState，统一处理路径规范化、版本、重复注入、失效和上下文来源追踪
 - [x] 6.9 CancellationController 基础层级模型：为会话、Turn、模型请求和工具调用建立可传播的取消控制基础
 - [x] 6.10 Hook 系统、Stop Hook 与阻塞重试保护：支持执行前后扩展点，并防止 Stop Hook 无限阻塞最终回复
-- [ ] 6.11 EventBus、ArtifactStore 与 CheckpointStore：统一记录事件、保存大结果/产物，并为恢复与回放提供检查点
+- [x] 6.11 EventBus、ArtifactStore 与 CheckpointStore：统一记录事件、保存大结果/产物，并为恢复与回放提供检查点
 - [ ] 6.12-6.15 工具结果、进度事件与展示协议：合并开发 ToolResult、ToolProgressEvent、ToolRenderer / RendererRegistry 和 DisplayMode，统一打通模型内容、展示内容、Artifact、进度和折叠策略
 - [ ] 6.16 状态序列化、版本迁移与恢复协议：让 Conversation、Turn、Task 等状态可持久化、可升级并能在重启后安全恢复
 - [ ] 6.17-6.18 QueryEngine 与 CLI 迁移：合并开发跨 Turn 会话编排器和 CLI 接入，让 REPL 通过 QueryEngine 统一调度消息、状态、工具、权限、记忆和 AgentLoop
