@@ -1171,6 +1171,52 @@ def _coerce_loop_transition(
         return text
 
 
+def _enum_value(value: Any) -> Any:
+    if isinstance(value, Enum):
+        return value.value
+    return value
+
+
+def _tool_observation_to_record(observation: ToolObservation) -> dict[str, Any]:
+    return {
+        "tool_name": observation.tool_name,
+        "arguments": observation.arguments,
+        "content": observation.content,
+        "success": observation.success,
+        "retryable": observation.retryable,
+    }
+
+
+def _tool_observation_from_record(record: dict[str, Any]) -> ToolObservation:
+    return ToolObservation(
+        tool_name=str(record.get("tool_name", "")),
+        arguments=str(record.get("arguments", "")),
+        content=str(record.get("content", "")),
+        success=bool(record.get("success", False)),
+        retryable=bool(record.get("retryable", False)),
+    )
+
+
+def _progress_signal_to_record(signal: ProgressSignal | None) -> dict[str, Any] | None:
+    if signal is None:
+        return None
+    return {
+        "reason": signal.reason,
+        "round_count": signal.round_count,
+        "detail": signal.detail,
+    }
+
+
+def _progress_signal_from_record(record: dict[str, Any] | None) -> ProgressSignal | None:
+    if not record:
+        return None
+    return ProgressSignal(
+        reason=str(record.get("reason", "")),
+        round_count=int(record.get("round_count", 0)),
+        detail=str(record.get("detail", "")),
+    )
+
+
 @dataclass
 class LoopState:
     """Runtime state owned by AgentLoop for one ReAct loop."""
@@ -1354,6 +1400,57 @@ class LoopState:
             return LoopTransition.TOOL_FOLLOW_UP
         return LoopTransition.NEXT_TURN
 
+    def to_record(self) -> dict[str, Any]:
+        return {
+            "phase": _enum_value(self.phase),
+            "transition": _enum_value(self.transition),
+            "transition_history": list(self.transition_history),
+            "model_iterations": self.model_iterations,
+            "tool_iterations": self.tool_iterations,
+            "reflection_count": self.reflection_count,
+            "current_tool_calls": list(self.current_tool_calls),
+            "observations": [
+                _tool_observation_to_record(observation)
+                for observation in self.observations
+            ],
+            "progress_signal": _progress_signal_to_record(self.progress_signal),
+            "needs_follow_up": self.needs_follow_up,
+            "stop_hook_active": self.stop_hook_active,
+            "stop_hook_attempts": self.stop_hook_attempts,
+        }
+
+    @classmethod
+    def from_record(cls, record: dict[str, Any] | None) -> "LoopState":
+        if not record:
+            return cls()
+        state = cls(
+            phase=_coerce_loop_phase(record.get("phase", LoopPhase.IDLE.value)),
+            transition=_coerce_loop_transition(record.get("transition")),
+            transition_history=[
+                dict(item)
+                for item in record.get("transition_history", [])
+                if isinstance(item, dict)
+            ],
+            model_iterations=int(record.get("model_iterations", 0)),
+            tool_iterations=int(record.get("tool_iterations", 0)),
+            reflection_count=int(record.get("reflection_count", 0)),
+            current_tool_calls=[
+                dict(item)
+                for item in record.get("current_tool_calls", [])
+                if isinstance(item, dict)
+            ],
+            observations=[
+                _tool_observation_from_record(item)
+                for item in record.get("observations", [])
+                if isinstance(item, dict)
+            ],
+            progress_signal=_progress_signal_from_record(record.get("progress_signal")),
+            needs_follow_up=bool(record.get("needs_follow_up", False)),
+            stop_hook_active=bool(record.get("stop_hook_active", False)),
+            stop_hook_attempts=int(record.get("stop_hook_attempts", 0)),
+        )
+        return state
+
 
 @dataclass
 class TurnState:
@@ -1424,6 +1521,78 @@ class TurnState:
         self.status = TurnStatus.CANCELLED
         if self.loop is not None:
             self.loop.mark_cancelled(reason)
+
+    def to_record(self) -> dict[str, Any]:
+        return {
+            "turn_id": self.turn_id,
+            "user_input": self.user_input,
+            "status": _enum_value(self.status),
+            "usage": self.usage.to_record(),
+            "usage_state": self.usage_state.to_record(),
+            "discovered_skills": sorted(self.discovered_skills),
+            "loaded_memory_paths": sorted(self.loaded_memory_paths),
+            "permission_requests": list(self.permission_requests),
+            "permission_denials": list(self.permission_denials),
+            "permissions": self.permissions.to_record(),
+            "cancellation_token": (
+                self.cancellation_token.to_record()
+                if self.cancellation_token is not None
+                else None
+            ),
+            "artifacts": list(self.artifacts),
+            "tool_results": list(self.tool_results),
+            "loop": self.loop.to_record() if self.loop is not None else None,
+            "final_response": self.final_response,
+            "error": self.error,
+        }
+
+    @classmethod
+    def from_record(cls, record: dict[str, Any] | None) -> "TurnState":
+        if not record:
+            return cls(user_input="")
+        state = cls(
+            turn_id=str(record.get("turn_id") or f"turn-{uuid4().hex[:8]}"),
+            user_input=str(record.get("user_input", "")),
+            status=TurnStatus(record.get("status", TurnStatus.PENDING.value)),
+            usage=TokenUsage.from_record(record.get("usage")),
+            usage_state=UsageState.from_record(record.get("usage_state")),
+            discovered_skills=set(record.get("discovered_skills", [])),
+            loaded_memory_paths=set(record.get("loaded_memory_paths", [])),
+            permission_requests=[
+                dict(item)
+                for item in record.get("permission_requests", [])
+                if isinstance(item, dict)
+            ],
+            permission_denials=[
+                dict(item)
+                for item in record.get("permission_denials", [])
+                if isinstance(item, dict)
+            ],
+            permissions=PermissionState.from_record(record.get("permissions")),
+            cancellation_token=(
+                CancellationToken.from_record(record["cancellation_token"])
+                if isinstance(record.get("cancellation_token"), dict)
+                else None
+            ),
+            artifacts=[
+                dict(item)
+                for item in record.get("artifacts", [])
+                if isinstance(item, dict)
+            ],
+            tool_results=[
+                dict(item)
+                for item in record.get("tool_results", [])
+                if isinstance(item, dict)
+            ],
+            loop=(
+                LoopState.from_record(record["loop"])
+                if isinstance(record.get("loop"), dict)
+                else None
+            ),
+            final_response=record.get("final_response"),
+            error=record.get("error"),
+        )
+        return state
 
 
 @dataclass
@@ -1507,6 +1676,66 @@ class ConversationState:
             self.cancellation.finish_turn()
         return failed
 
+    def to_record(self) -> dict[str, Any]:
+        return {
+            "session_id": self.session_id,
+            "messages": list(self.messages),
+            "usage": self.usage.to_record(),
+            "usage_state": self.usage_state.to_record(),
+            "permissions": self.permissions.to_record(),
+            "file_reads": self.file_reads.to_record(),
+            "skills": sorted(self.skills),
+            "memories": self.memories.to_record(),
+            "events": self.events.to_records(),
+            "artifacts": self.artifacts.to_records(),
+            "checkpoints": self.checkpoints.to_records(),
+            "cancellation": (
+                self.cancellation.to_record()
+                if self.cancellation is not None
+                else None
+            ),
+            "active_turn": (
+                self.active_turn.to_record()
+                if self.active_turn is not None
+                else None
+            ),
+            "active_task": self.active_task if isinstance(self.active_task, dict) else None,
+        }
+
+    @classmethod
+    def from_record(cls, record: dict[str, Any] | None) -> "ConversationState":
+        if not record:
+            return cls(session_id="")
+        state = cls(
+            session_id=str(record.get("session_id", "")),
+            messages=[
+                dict(item)
+                for item in record.get("messages", [])
+                if isinstance(item, dict)
+            ],
+            usage=TokenUsage.from_record(record.get("usage")),
+            usage_state=UsageState.from_record(record.get("usage_state")),
+            permissions=PermissionState.from_record(record.get("permissions")),
+            file_reads=FileStateCache.from_record(record.get("file_reads")),
+            skills=set(record.get("skills", [])),
+            memories=MemoryLoadState.from_record(record.get("memories")),
+            events=EventBus.from_records(record.get("events")),
+            artifacts=ArtifactStore.from_records(record.get("artifacts")),
+            checkpoints=CheckpointStore.from_records(record.get("checkpoints")),
+            cancellation=CancellationController.from_record(record.get("cancellation")),
+            active_turn=(
+                TurnState.from_record(record["active_turn"])
+                if isinstance(record.get("active_turn"), dict)
+                else None
+            ),
+            active_task=(
+                dict(record["active_task"])
+                if isinstance(record.get("active_task"), dict)
+                else None
+            ),
+        )
+        return state
+
 
 @dataclass
 class ApplicationState:
@@ -1543,3 +1772,41 @@ class ApplicationState:
         if self.active_session_id is None:
             return None
         return self.conversations.get(self.active_session_id)
+
+    def to_record(self) -> dict[str, Any]:
+        return {
+            "configuration": dict(self.configuration),
+            "model_registry": dict(self.model_registry),
+            "skill_registry": dict(self.skill_registry),
+            "mcp_connections": dict(self.mcp_connections),
+            "active_session_id": self.active_session_id,
+            "conversations": {
+                session_id: conversation.to_record()
+                for session_id, conversation in self.conversations.items()
+            },
+            "usage_state": self.usage_state.to_record(),
+            "events": self.events.to_records(),
+            "artifacts": self.artifacts.to_records(),
+            "checkpoints": self.checkpoints.to_records(),
+        }
+
+    @classmethod
+    def from_record(cls, record: dict[str, Any] | None) -> "ApplicationState":
+        if not record:
+            return cls()
+        return cls(
+            configuration=dict(record.get("configuration", {})),
+            model_registry=dict(record.get("model_registry", {})),
+            skill_registry=dict(record.get("skill_registry", {})),
+            mcp_connections=dict(record.get("mcp_connections", {})),
+            active_session_id=record.get("active_session_id"),
+            conversations={
+                str(session_id): ConversationState.from_record(conversation)
+                for session_id, conversation in record.get("conversations", {}).items()
+                if isinstance(conversation, dict)
+            },
+            usage_state=UsageState.from_record(record.get("usage_state")),
+            events=EventBus.from_records(record.get("events")),
+            artifacts=ArtifactStore.from_records(record.get("artifacts")),
+            checkpoints=CheckpointStore.from_records(record.get("checkpoints")),
+        )
