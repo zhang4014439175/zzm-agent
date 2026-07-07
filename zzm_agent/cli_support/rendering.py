@@ -1,4 +1,4 @@
-﻿from __future__ import annotations
+from __future__ import annotations
 
 import os
 import re
@@ -18,30 +18,50 @@ _EMOJI_PATTERN = re.compile(
 PROMPT_COMPLETION_MENU_RESERVED_LINES = 1
 
 try:
-    from rich.markdown import CodeBlock
+    from rich.markdown import CodeBlock, Heading
 except ImportError:
     CodeBlock = None
+    Heading = None
 
 
 def _install_markdown_code_style_patch() -> None:
-    if CodeBlock is None or getattr(CodeBlock, "_zzm_agent_no_background", False):
-        return
+    if CodeBlock is not None and not getattr(CodeBlock, "_zzm_agent_no_background", False):
+        def render_code_block(self: Any, console: Any, options: Any) -> Any:
+            from rich.syntax import Syntax
 
-    def render_code_block(self: Any, console: Any, options: Any) -> Any:
-        from rich.syntax import Syntax
+            code = str(self.text).rstrip()
+            yield Syntax(
+                code,
+                self.lexer_name,
+                theme="ansi_light",
+                word_wrap=True,
+                padding=0,
+                background_color="default",
+            )
 
-        code = str(self.text).rstrip()
-        yield Syntax(
-            code,
-            self.lexer_name,
-            theme="ansi_light",
-            word_wrap=True,
-            padding=0,
-            background_color="default",
-        )
+        CodeBlock.__rich_console__ = render_code_block
+        CodeBlock._zzm_agent_no_background = True
 
-    CodeBlock.__rich_console__ = render_code_block
-    CodeBlock._zzm_agent_no_background = True
+    if Heading is not None and not getattr(Heading, "_zzm_agent_left_align", False):
+        def render_heading(self: Any, console: Any, options: Any) -> Any:
+            text = self.text
+            text.justify = "left"
+            if self.tag == "h1":
+                from rich.panel import Panel
+                from rich import box
+                yield Panel(
+                    text,
+                    box=box.HEAVY,
+                    style="markdown.h1.border",
+                )
+            else:
+                from rich.text import Text
+                if self.tag == "h2":
+                    yield Text("")
+                yield text
+
+        Heading.__rich_console__ = render_heading
+        Heading._zzm_agent_left_align = True
 
 try:
     from prompt_toolkit.completion import Completer
@@ -92,23 +112,6 @@ def _install_completion_menu_highlight_patch() -> None:
     menus._get_menu_item_fragments = get_menu_item_fragments
     menus.CompletionsMenuControl._get_menu_item_meta_fragments = get_menu_item_meta_fragments
 
-    original_float_init = Float.__init__
-
-    def float_init(self: Any, *args: Any, **kwargs: Any) -> None:
-        content = kwargs.get("content")
-        if content is None and args:
-            content = args[0]
-
-        if isinstance(
-            content,
-            (menus.CompletionsMenu, menus.MultiColumnCompletionsMenu),
-        ):
-            kwargs["xcursor"] = None
-            kwargs["left"] = 5
-
-        original_float_init(self, *args, **kwargs)
-
-    Float.__init__ = float_init
     menus._zzm_agent_completion_patch = True
 
 
@@ -267,28 +270,156 @@ def build_console():
         highlight=False,
         theme=Theme(
             {
-                "markdown.h1": "bold",
-                "markdown.h2": "bold",
-                "markdown.h3": "bold",
-                "markdown.h4": "bold",
-                "markdown.strong": "bold",
+                "markdown.h1": "bold #61AFEF",
+                "markdown.h2": "bold #56B6C2",
+                "markdown.h3": "bold #E5C07B",
+                "markdown.h4": "bold #C678DD",
+                "markdown.strong": "bold #98C379",
                 "markdown.em": "italic",
-                "markdown.code": "#007777",
-                "markdown.code_block": "#666666",
-                "markdown.block_quote": "dim",
-                "markdown.list": "none",
-                "markdown.item.bullet": "none",
-                "markdown.item.number": "none",
-                "markdown.hr": "dim",
-                "markdown.link": "none",
+                "markdown.code": "bold #56B6C2",
+                "markdown.code_block": "dim",
+                "markdown.block_quote": "dim italic",
+                "markdown.hr": "dim #3B4252",
+                "markdown.link": "underline #61AFEF",
                 "markdown.link_url": "dim underline",
             }
         ),
     )
 
 
+try:
+    from prompt_toolkit.lexers import Lexer
+    from prompt_toolkit.document import Document
+except ImportError:
+    Lexer = object
+    Document = None
+
+
+class SlashCommandLexer(Lexer):
+    """Lexer that highlights slash commands in real-time as the user types them."""
+    def lex_document(self, document: Any) -> Any:
+        def get_line_tokens(line_number: int) -> list[tuple[str, str]]:
+            line = document.lines[line_number]
+            if line.startswith("/"):
+                parts = line.split(" ", 1)
+                tokens = [("class:prompt-command", parts[0])]
+                if len(parts) > 1:
+                    tokens.append(("", " " + parts[1]))
+                return tokens
+            return [("", line)]
+        return get_line_tokens
+
+
+def render_notification(console: Any, message: str, level: str = "system") -> None:
+    """Render a unified styled notification box instead of raw print messages."""
+    try:
+        from rich.text import Text
+        from rich.panel import Panel
+    except ImportError:
+        console.print(f"[{level.upper()}] {message}")
+        return
+
+    icon_mapping = {
+        "success": ("✔ SUCCESS", "#98C379"),
+        "warning": ("⚠ WARNING", "#E5C07B"),
+        "error": ("✘ ERROR", "#CF222E"),
+        "system": ("⚡ SYSTEM", "#56B6C2"),
+    }
+    
+    icon_text, color = icon_mapping.get(level, ("⚡ SYSTEM", "#56B6C2"))
+    
+    styled_message = Text()
+    styled_message.append(f"{icon_text} ", style=f"bold {color}")
+    styled_message.append("│ ", style="dim #3B4252")
+    styled_message.append(message, style="default")
+    
+    panel = Panel(
+        styled_message,
+        border_style="#3B4252",
+        padding=(0, 1),
+        expand=False,
+    )
+    console.print(panel)
+
+
+def render_error_card(console: Any, exc: Exception, runtime: dict[str, Any] | None = None) -> None:
+    """Render a beautiful, actionable error guide card instead of a raw traceback."""
+    try:
+        from rich.panel import Panel
+        from rich.text import Text
+        from rich import box
+    except ImportError:
+        console.print(f"[red]Error: {exc}[/red]")
+        return
+
+    # Extract clean error message
+    from zzm_agent.cli_support.runtime import _format_repl_exception_with_runtime
+    clean_msg = _format_repl_exception_with_runtime(exc, runtime)
+    lower_msg = clean_msg.lower()
+
+    # Determine diagnosis and solutions
+    title = "[bold #CF222E]✘ 执行遭遇错误 (Execution Error)[/]"
+    diagnosis = "系统在执行当前指令或请求大语言模型时发生异常。"
+    steps = []
+
+    if "404" in lower_msg or "not found" in lower_msg:
+        diagnosis = "API 接口地址 (Base URL) 或模型名称可能配置错误 (HTTP 404)。"
+        steps = [
+            "1. 检查 `config.yaml` 中的 [bold #61AFEF]model.base_url[/] 是否正确。",
+            "2. 检查使用的模型名是否在服务提供商支持的列表里（可使用 `/models` 确认）。",
+            "3. 如果使用的是本地模型，请确保如 Ollama 或 LocalAI 服务已经正常启动。"
+        ]
+    elif "401" in lower_msg or "unauthorized" in lower_msg or "api key" in lower_msg or "api_key" in lower_msg:
+        diagnosis = "鉴权失败，大语言模型 API Key 无效或未配置 (HTTP 401)。"
+        steps = [
+            "1. 确认已在根目录的 [bold #61AFEF].env[/] 文件中配置了正确的 API Key。",
+            "2. 检查环境变量或配置中的密钥是否过期或被撤销。"
+        ]
+    elif "connection" in lower_msg or "connect" in lower_msg or "timeout" in lower_msg or "dns" in lower_msg:
+        diagnosis = "网络连接故障：无法连接到大语言模型服务提供商 (Timeout/Connection Refused)。"
+        steps = [
+            "1. 请检查您的网络连接，以及代理/VPN 规则是否允许访问该 API 域名。",
+            "2. 尝试在终端中执行 ping 或 curl 测试以验证网络通畅度。"
+        ]
+    elif "quota" in lower_msg or "billing" in lower_msg or "insufficient" in lower_msg:
+        diagnosis = "余额不足或超出了 API 服务商的使用额度限制 (HTTP 429)。"
+        steps = [
+            "1. 请检查您在服务提供商处的账户余额或账单状态。",
+            "2. 稍等片刻（通常为 1 分钟左右）再次重试，避免触发频繁请求限制。"
+        ]
+    else:
+        steps = [
+            "1. 详细阅读下方给出的具体错误详细信息。",
+            "2. 若属于本地代码运行异常，可以使用 [bold #61AFEF]--debug[/] 参数启动以打印完整堆栈。",
+            "3. 如有必要，请尝试使用 `/new` 开启一个干净的会话或者使用 `/reload` 重载插件。"
+        ]
+
+    content = Text()
+    content.append("🔍 故障分析: ", style="bold #E5C07B")
+    content.append(f"{diagnosis}\n\n", style="default")
+    content.append("📄 原始错误说明: ", style="bold #CF222E")
+    content.append(f"{clean_msg}\n\n", style="dim")
+    
+    content.append("🛠️ 推荐排查与修复步骤:\n", style="bold #98C379")
+    for step in steps:
+        content.append(f"  {step}\n")
+    content.rstrip()
+
+    console.print(
+        Panel(
+            content,
+            title=title,
+            title_align="left",
+            border_style="#CF222E",
+            box=box.ROUNDED,
+            padding=(1, 2),
+            expand=False
+        )
+    )
+
+
 def build_bottom_toolbar(runtime: dict[str, Any] | None = None):
-    """Build the shared prompt-toolkit bottom toolbar."""
+    """Build the shared prompt-toolkit bottom toolbar using a Powerline-like layout."""
     if not runtime:
         return ""
 
@@ -313,15 +444,16 @@ def build_bottom_toolbar(runtime: dict[str, Any] | None = None):
     last_usage = getattr(loop, "last_turn_usage", None)
     context_used = getattr(last_usage, "prompt_tokens", 0) or 0
 
+    # Format using Powerline-style badge blocks
     return HTML(
-        f' <b>{workspace_path}</b> '
-        f'| <b>Model:</b> {model} '
-        f'| <b>Context:</b> {context_used}/{context_limit} '
+        f'<span class="workspace"> 📂 {workspace_path} </span>'
+        f'<span class="model"> 🤖 Model: {model} </span>'
+        f'<span class="context"> 🧠 Context: {context_used}/{context_limit} </span>'
     )
 
 
 def build_prompt_session(workspace: str | Path, runtime: dict[str, Any] | None = None):
-    """Create an optional prompt_toolkit input session with history."""
+    """Create an optional prompt_toolkit input session with history and style custom overrides."""
     try:
         from prompt_toolkit import PromptSession
         from prompt_toolkit.history import FileHistory
@@ -335,8 +467,13 @@ def build_prompt_session(workspace: str | Path, runtime: dict[str, Any] | None =
     _install_completion_menu_highlight_patch()
     style = Style.from_dict({
         "prompt": "ansicyan bold",
-        "bottom-toolbar": "noreverse bg:default fg:ansibrightblack",
-        "bottom-toolbar.text": "noreverse bg:default fg:ansibrightblack",
+        "bottom-toolbar": "noreverse bg:default fg:default",
+        "bottom-toolbar.workspace": "noreverse ansigreen bold",
+        "bottom-toolbar.model": "noreverse ansiblue bold",
+        "bottom-toolbar.context": "noreverse ansimagenta bold",
+        "bottom-toolbar.session": "noreverse ansiyellow bold",
+        "bottom-toolbar.text": "noreverse",
+        "prompt-command": "ansicyan bold",
         "completion-menu": "bg:default fg:default",
         "completion-menu.completion": "noreverse bg:default #666666",
         "completion-menu.completion.current": "noreverse bg:default fg:ansicyan bold",
@@ -349,6 +486,7 @@ def build_prompt_session(workspace: str | Path, runtime: dict[str, Any] | None =
     
     completer = None
     bottom_toolbar = None
+    kb = None
     
     if runtime:
         commands_meta = {
@@ -380,28 +518,54 @@ def build_prompt_session(workspace: str | Path, runtime: dict[str, Any] | None =
             
         bottom_toolbar = get_bottom_toolbar
 
+        try:
+            from prompt_toolkit.key_binding import KeyBindings
+            kb = KeyBindings()
+            
+            @kb.add("/")
+            def _(event: Any) -> None:
+                event.current_buffer.insert_text("/")
+                event.current_buffer.start_completion(select_first=False)
+        except ImportError:
+            kb = None
+ 
     prompt_session = PromptSession(
         history=FileHistory(str(history_path)),
         style=style,
         completer=completer,
+        lexer=SlashCommandLexer() if completer else None,
         bottom_toolbar=bottom_toolbar,
+        key_bindings=kb,
         complete_while_typing=True,
-        reserve_space_for_menu=PROMPT_COMPLETION_MENU_RESERVED_LINES,
+        reserve_space_for_menu=6,
     )
-    _pin_completion_menu_position(prompt_session)
     return prompt_session
 
 
 def read_repl_input(console: Any, prompt_session: Any | None) -> str:
-    """Read one user input line, using prompt_toolkit when available."""
+    """Read one user input line, using prompt_toolkit when available, with success/failure status colors."""
+    if console.__class__.__name__ != "Console":
+        if prompt_session is None:
+            return console.input("[bold #61AFEF]>[/bold #61AFEF] ").strip()
+        try:
+            from prompt_toolkit.formatted_text import HTML
+            prompt_text = HTML('<style fg="ansicyan">></style> ')
+        except ImportError:
+            prompt_text = [("class:prompt", "> ")]
+        return prompt_session.prompt(prompt_text).strip()
+
+    last_success = getattr(console, "_zzm_last_turn_success", True)
+    prompt_color = "ansigreen" if last_success else "ansired"
+    
     if prompt_session is None:
-        return console.input("[bold #61AFEF]>[/bold #61AFEF] ").strip()
+        color_markup = "bold green" if last_success else "bold red"
+        return console.input(f"[{color_markup}]zzm-agent ❯[/{color_markup}] ").strip()
         
     try:
         from prompt_toolkit.formatted_text import HTML
-        prompt_text = HTML('<style fg="ansicyan">></style> ')
+        prompt_text = HTML(f'<style fg="{prompt_color}">zzm-agent ❯</style> ')
     except ImportError:
-        prompt_text = [("class:prompt", "> ")]
+        prompt_text = [("class:prompt", "zzm-agent ❯ ")]
         
     return prompt_session.prompt(prompt_text).strip()
 
@@ -415,21 +579,13 @@ def render_reply(console: Any, reply: str) -> None:
         reply: Final assistant reply text to render.
     """
     try:
-        from rich.text import Text
-    except ImportError:
-        console.print(_plain_terminal_reply(reply), markup=False, highlight=False)
-        return
-
-    text = _plain_terminal_reply(reply)
-    styled = Text()
-    for line in text.splitlines():
-        style = "default"
-        if _is_code_like_line(line):
-            style = "#7f8790"
-        styled.append(line, style=style)
-        styled.append("\n")
-    styled.rstrip()
-    console.print(styled, markup=False, highlight=False)
+        from rich.markdown import Markdown
+        # Render markdown directly using Rich
+        md = Markdown(reply)
+        console.print(md)
+    except Exception:
+        # Fallback to plain print
+        console.print(reply)
 
 
 def _strip_reply_emoji(reply: str) -> str:
@@ -547,12 +703,39 @@ def stream_reply_chunk(console: Any, chunk: str) -> None:
 
 def render_help(console: Any) -> None:
     """
-    Render a structured help message with available commands.
+    Render a structured help message with categorized commands.
     """
+    if console.__class__.__name__ != "Console":
+        help_text = """
+Available Commands:
+/help         - Show this help message
+/tools        - List all registered tools
+/reload       - Reload plugin tools from disk
+/models       - List models from the configured base URL
+/model <id>   - Show or switch the active model
+/stream       - Show or change streaming output mode
+/memory       - Show recent conversation history and compression state
+/sessions     - List all known conversation sessions
+/session <id> - Switch to a specific session
+/new          - Start a clean conversation session
+/remember <f> - Add a long-term semantic memory fact
+/forget <k>   - Remove long-term memories matching a keyword
+/search <k>   - Search across semantic and episodic memories
+/semantic     - List all long-term semantic memories
+/evolve run   - Generate a prompt candidate
+/evolve diff  - Show pending prompt candidate diff
+/evolve apply - Apply the pending prompt candidate
+/evolve rollback - Restore the previous prompt
+/exit, /quit  - Terminate the session
+        """
+        console.print(help_text)
+        return
+
     try:
         from rich import box
         from rich.table import Table
         from rich.panel import Panel
+        from rich.console import Group
     except ImportError:
         help_text = """
 Available Commands:
@@ -579,39 +762,72 @@ Available Commands:
         console.print(help_text)
         return
 
-    table = Table(show_header=True, header_style="bold #61AFEF", box=None, padding=(0, 1))
-    table.add_column("Command", style="bold #56B6C2", no_wrap=True)
-    table.add_column("Description", style="white")
+    # Categorize commands into logical tables
+    # 1. Session Management
+    t_session = Table(show_header=False, box=None, padding=(0, 1))
+    t_session.add_column("Command", style="bold #56B6C2", width=18)
+    t_session.add_column("Desc", style="white")
+    t_session.add_row("/new", "开启一轮全新的对话会话")
+    t_session.add_row("/sessions", "列出所有已知的历史会话")
+    t_session.add_row("/session <id>", "切换到指定的历史会话")
+    t_session.add_row("/exit, /quit", "结束并退出当前会话")
 
-    commands = [
-        ("/help", "Show this help message"),
-        ("/tools", "List all registered tools"),
-        ("/reload", "Reload plugin tools from disk"),
-        ("/models", "List models from the configured base URL"),
-        ("/model <id>", "Show or switch the active model"),
-        ("/stream [on|off|toggle|status]", "Show or change streaming output mode"),
-        ("/memory", "Show recent history and compression state"),
-        ("/sessions", "List all known conversation sessions"),
-        ("/session <id>", "Switch to a specific session"),
-        ("/new", "Start a clean conversation session"),
-        ("/remember <f>", "Add a long-term semantic memory fact"),
-        ("/forget <k>", "Remove memories matching a keyword"),
-        ("/search <k>", "Search semantic and episodic memories"),
-        ("/semantic", "List all long-term semantic memories"),
-        ("/evolve run", "Generate a prompt candidate"),
-        ("/evolve diff", "Show pending prompt candidate diff"),
-        ("/evolve apply", "Apply the pending prompt candidate"),
-        ("/evolve rollback", "Restore the previous prompt"),
-        ("/exit, /quit", "Terminate the session"),
-    ]
+    # 2. Model & Output
+    t_model = Table(show_header=False, box=None, padding=(0, 1))
+    t_model.add_column("Command", style="bold #56B6C2", width=18)
+    t_model.add_column("Desc", style="white")
+    t_model.add_row("/models", "列出当前 base URL 可用模型")
+    t_model.add_row("/model [id]", "查看或切换当前模型")
+    t_model.add_row("/stream [on|off]", "查看或切换流式输出模式")
 
-    for cmd, desc in commands:
-        table.add_row(cmd, desc)
+    # 3. Memory & Facts
+    t_memory = Table(show_header=False, box=None, padding=(0, 1))
+    t_memory.add_column("Command", style="bold #56B6C2", width=18)
+    t_memory.add_column("Desc", style="white")
+    t_memory.add_row("/memory", "显示最近消息历史与压缩状态")
+    t_memory.add_row("/remember <fact>", "添加一条长期语义记忆")
+    t_memory.add_row("/forget <key>", "删除匹配关键字的长期记忆")
+    t_memory.add_row("/search <key>", "全局搜索历史对话和记忆")
+    t_memory.add_row("/semantic", "列出所有长期语义记忆")
+
+    # 4. Prompt Evolution
+    t_evolve = Table(show_header=False, box=None, padding=(0, 1))
+    t_evolve.add_column("Command", style="bold #56B6C2", width=18)
+    t_evolve.add_column("Desc", style="white")
+    t_evolve.add_row("/evolve run", "基于当前会话优化并生成提示词")
+    t_evolve.add_row("/evolve diff", "查看新提示词与旧版本的差异")
+    t_evolve.add_row("/evolve apply", "应用刚刚生成的新提示词")
+    t_evolve.add_row("/evolve rollback", "回滚到上一个提示词版本")
+
+    # 5. Tools & System
+    t_system = Table(show_header=False, box=None, padding=(0, 1))
+    t_system.add_column("Command", style="bold #56B6C2", width=18)
+    t_system.add_column("Desc", style="white")
+    t_system.add_row("/tools", "列出所有注册的工具及其描述")
+    t_system.add_row("/reload", "重新加载本地工具插件")
+    t_system.add_row("/help", "显示本帮助信息")
+
+    help_group = Group(
+        "[bold #61AFEF]📂 会话管理 (Session Management)[/]",
+        t_session,
+        "",
+        "[bold #56B6C2]🤖 模型与控制 (Model & Output Control)[/]",
+        t_model,
+        "",
+        "[bold #E5C07B]🧠 记忆与事实 (Memory & Facts Knowledge)[/]",
+        t_memory,
+        "",
+        "[bold #C678DD]📈 提示词优化 (Prompt Evolution)[/]",
+        t_evolve,
+        "",
+        "[bold #98C379]⚙️ 工具与系统 (Tools & System Debug)[/]",
+        t_system,
+    )
 
     console.print(
         Panel(
-            table,
-            title="[bold #61AFEF]zzm-agent Help[/bold #61AFEF]",
+            help_group,
+            title="[bold #61AFEF]zzm-agent 控制台命令面板[/bold #61AFEF]",
             title_align="left",
             border_style="#3B4252",
             box=box.ROUNDED,
@@ -625,6 +841,10 @@ def render_welcome(console: Any, session_id: str, model: str, workspace: str, to
     """
     Render a professional welcome panel with a logo and runtime information.
     """
+    if console.__class__.__name__ != "Console":
+        console.print(f"[bold green]zzm-agent[/bold green] started (Session: {session_id})")
+        return
+
     try:
         from rich import box
         from rich.panel import Panel
@@ -636,20 +856,25 @@ def render_welcome(console: Any, session_id: str, model: str, workspace: str, to
         console.print(f"[bold green]zzm-agent[/bold green] started (Session: {session_id})")
         return
 
-    logo = Text("zzm-agent", style="bold #56B6C2")
-    subtitle = Text("agentic coding console", style="dim #ABB2BF")
+    # Modern compact ASCII Logo
+    logo_text = (
+        "██▀▀▀█▄ ▀██▀▀▀█▄ █▀▄▀█   █▀▀█ █▀▀█ █▀▀▀ █▀▀█ ▀█▀\n"
+        "  ▄▄▄█▀   ▄▄▄█▀  █ █ █   █▄▄█ █ ▄█ █▀▀  █  █  █ \n"
+        "███████ ███████  █   █   █  █ █▄▄█ █▄▄▄ █  █  █ "
+    )
+    logo = Text(logo_text, style="bold #56B6C2")
+    subtitle = Text("agentic coding console", style="italic dim #ABB2BF")
     
-    # Info Table
+    # Info Table with emojis and custom colors
     info_table = Table.grid(padding=(0, 2))
     info_table.add_column(style="dim #ABB2BF", justify="right")
     info_table.add_column(style="#DCDCAA")
     
-    info_table.add_row("session", f"[#98C379]{session_id}[/]")
-    info_table.add_row("model", f"[#56B6C2]{model}[/]")
-    info_table.add_row("root", f"[#E5C07B]{workspace}[/]")
-    info_table.add_row("tools", f"[#C678DD]{tool_count} registered[/]")
+    info_table.add_row("session", f"[#98C379]{session_id}[/]  ")
+    info_table.add_row("model", f"[#56B6C2]{model}[/]  ")
+    info_table.add_row("workspace", f"[#E5C07B]{workspace}[/]  ")
+    info_table.add_row("tools", f"[#C678DD]{tool_count} registered[/]  ")
 
-    # Group elements together for the panel
     welcome_group = Group(
         Align.center(logo),
         Align.center(subtitle),
@@ -663,8 +888,9 @@ def render_welcome(console: Any, session_id: str, model: str, workspace: str, to
             border_style="#3B4252",
             box=box.ROUNDED,
             padding=(1, 2),
-            subtitle="[dim]Type /help for commands[/dim]",
+            subtitle="[dim]输入 /help 可以查看支持的命令[/dim]",
             subtitle_align="center",
             expand=False,
+            # width=70,
         )
     )

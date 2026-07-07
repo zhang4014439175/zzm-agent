@@ -18,6 +18,7 @@ from zzm_agent.cli_support.rendering import (
     build_console,
     read_repl_input,
     render_reply,
+    render_error_card,
 )
 from zzm_agent.core.agent_loop import AgentLoop
 from zzm_agent.core.model_metadata import resolve_model_context_limit
@@ -36,11 +37,11 @@ _SDK_ERROR_PAYLOAD_PATTERN = re.compile(r"-\s*(\{.*\})\s*$", re.DOTALL)
 class _WorkingStatus:
     """Small animated status line rendered by Rich Live."""
 
-    _shades = ("#555555", "#777777", "#999999", "#bbbbbb", "#dddddd", "#ffffff")
-
     def __init__(self, runtime: dict[str, Any] | None = None) -> None:
+        from rich.spinner import Spinner
         self.started_at = time.monotonic()
         self.runtime = runtime
+        self.spinner = Spinner("dots", style="bold #56B6C2")
 
     def update_runtime(self, runtime: dict[str, Any] | None) -> None:
         if runtime is not None:
@@ -49,18 +50,9 @@ class _WorkingStatus:
     def __rich_console__(self, console: Any, options: Any) -> Any:
         from rich.text import Text
 
-        word = "working"
-        offset = int(time.monotonic() * 8) % (len(word) + len(self._shades))
         elapsed = time.monotonic() - self.started_at
-        text = Text("\u2022 ", style="#777777")
-        for index, char in enumerate(word):
-            shade_index = max(0, len(self._shades) - 1 - abs(index - offset))
-            text.append(char, style=self._shades[shade_index])
-        text.append(f" {elapsed:.1f}s", style="#777777")
-        yield text
-        footer = _build_working_footer(self.runtime)
-        if footer:
-            yield footer
+        self.spinner.text = Text(f" Thinking... ({elapsed:.1f}s)", style="bold #56B6C2")
+        yield self.spinner
 
 
 def _build_working_footer(runtime: dict[str, Any] | None) -> Any | None:
@@ -86,12 +78,12 @@ def _build_working_footer(runtime: dict[str, Any] | None) -> Any | None:
     last_usage = getattr(loop, "last_turn_usage", None)
     context_used = getattr(last_usage, "prompt_tokens", 0) or 0
 
-    footer = Text(" ")
-    footer.append(str(workspace_path), style="bold #777777")
-    footer.append(" | Model: ", style="#777777")
-    footer.append(str(getattr(loop, "model", "")), style="bold #777777")
-    footer.append(" | Context: ", style="#777777")
-    footer.append(f"{context_used}/{context_limit} ", style="bold #777777")
+    footer = Text(" 💻 ", style="#777777")
+    footer.append(str(workspace_path), style="dim #ABB2BF")
+    footer.append(" │ 🤖 Model: ", style="#777777")
+    footer.append(str(getattr(loop, "model", "")), style="bold #56B6C2")
+    footer.append(" │ 🧠 Context: ", style="#777777")
+    footer.append(f"{context_used}/{context_limit}", style="bold #98C379")
     return footer
 
 
@@ -676,6 +668,9 @@ def run_repl(runtime: dict[str, Any]) -> int:
         if user_input.startswith("/"):
             if not handle_slash(user_input, registry, store, optimizer, console, runtime=runtime):
                 console.print(f"[red]Unknown command: {user_input}[/red]")
+                setattr(console, "_zzm_last_turn_success", False)
+            else:
+                setattr(console, "_zzm_last_turn_success", True)
             continue
 
         try:
@@ -719,18 +714,33 @@ def run_repl(runtime: dict[str, Any]) -> int:
                     loop.cumulative_usage,
                     context_window=loop.last_context_window,
                 )
+            setattr(console, "_zzm_last_turn_success", True)
         except Exception as exc:
+            setattr(console, "_zzm_last_turn_success", False)
             if observer is not None:
                 observer.stop()
             if runtime.get("debug"):
                 console.print_exception()
             else:
-                console.print(f"[red]Error: {_format_repl_exception_with_runtime(exc, runtime)}[/red]")
+                render_error_card(console, exc, runtime)
             console.print("[dim]Repl is still running. Fix the issue or press Ctrl+C to exit.[/dim]")
             continue
 
 
 def main(argv: list[str] | None = None) -> int:
+    import sys
+    # Configure stdout/stderr encoding to UTF-8
+    if hasattr(sys.stdout, "reconfigure"):
+        try:
+            sys.stdout.reconfigure(encoding="utf-8")
+        except Exception:
+            pass
+    if hasattr(sys.stderr, "reconfigure"):
+        try:
+            sys.stderr.reconfigure(encoding="utf-8")
+        except Exception:
+            pass
+
     args: argparse.Namespace | None = None
     try:
         args = parse_args(argv)
