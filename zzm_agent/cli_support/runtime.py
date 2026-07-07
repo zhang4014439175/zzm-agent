@@ -38,8 +38,10 @@ class _WorkingStatus:
     """Small animated status line rendered by Rich Live."""
 
     def __init__(self, runtime: dict[str, Any] | None = None) -> None:
+        from rich.spinner import Spinner
         self.started_at = time.monotonic()
         self.runtime = runtime
+        self.spinner = Spinner("dots", style="bold #56B6C2")
 
     def update_runtime(self, runtime: dict[str, Any] | None) -> None:
         if runtime is not None:
@@ -47,10 +49,10 @@ class _WorkingStatus:
 
     def __rich_console__(self, console: Any, options: Any) -> Any:
         from rich.text import Text
-        from rich.spinner import Spinner
 
         elapsed = time.monotonic() - self.started_at
-        yield Spinner("dots", text=Text(f" Thinking... ({elapsed:.1f}s)", style="bold #56B6C2"))
+        self.spinner.text = Text(f" Thinking... ({elapsed:.1f}s)", style="bold #56B6C2")
+        yield self.spinner
 
 
 def _build_working_footer(runtime: dict[str, Any] | None) -> Any | None:
