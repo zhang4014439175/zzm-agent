@@ -15,7 +15,7 @@
 
 ## 执行进度总览
 
-> **当前下一任务：6.17-6.20 QueryEngine、ModelAdapter、StreamEvent 与 CLI 主链路迁移。**
+> **当前下一任务：P1 阶段验收。**
 
 ### 当前能力基线
 
@@ -54,7 +54,7 @@
 - [x] 6.11 EventBus、ArtifactStore 与 CheckpointStore：统一记录事件、保存大结果/产物，并为恢复与回放提供检查点
 - [x] 6.12-6.15 工具结果、进度事件与展示协议：合并开发 ToolResult、ToolProgressEvent、ToolRenderer / RendererRegistry 和 DisplayMode，统一打通模型内容、展示内容、Artifact、进度和折叠策略
 - [x] 6.16 状态序列化、版本迁移与恢复协议：让 Conversation、Turn、Task 等状态可持久化、可升级并能在重启后安全恢复
-- [ ] 6.17-6.20 QueryEngine、ModelAdapter、StreamEvent 与 CLI 主链路迁移：合并开发跨 Turn 编排器、模型适配层、分层流事件和 CLI 主执行路径，避免先迁移 CLI 后再重改流式与模型协议
+- [x] 6.17-6.20 QueryEngine、ModelAdapter、StreamEvent 与 CLI 主链路迁移：合并开发跨 Turn 编排器、模型适配层、分层流事件和 CLI 主执行路径，避免先迁移 CLI 后再重改流式与模型协议
 - [ ] P1 阶段验收：确认完整状态体系可观察、可恢复，并保持现有同步 ReAct 调用兼容
 
 ### P2：配置、指令文件与 CLI 产品化
@@ -951,6 +951,16 @@ AgentLoop 只负责一个 Turn 内部的 ReAct，不再承担跨 Turn 会话编�
 - CLI 根据 ModelStreamEvent 分层渲染状态、reasoning、正文、工具调用和最终结果；
 - 断点恢复、会话恢复和中断回滚通过 QueryEngine 调用 StateSnapshotStore；
 - 保留兼容入口，迁移期间现有命令和测试持续可用。
+
+#### 完成记录
+
+- [x] 新增 `zzm_agent/core/model_adapter.py`，提供 `ModelCapabilities`、`ModelRequest`、`ModelResponse`、`ModelStreamChunk` 和 OpenAI-compatible adapter；
+- [x] 新增 `zzm_agent/core/model_stream.py`，定义 status、reasoning_summary、content_delta、tool_call_delta、tool_result、usage、final_message 和 error 分层事件；
+- [x] `AgentLoop.run()` 增加 `on_stream_event`，保留 `on_text_chunk` 兼容，并保证伪 XML 工具调用不会作为正文流式渲染；
+- [x] 新增 `zzm_agent/core/query_engine.py`，提供 `QueryEngine.submit_message()`、`QueryResult` 和 Turn 边界 snapshot 保存；
+- [x] CLI 主执行路径优先通过 QueryEngine 提交消息，保留旧 `loop.run()` 降级路径；
+- [x] 新增 `tests/test_query_engine_streaming.py`，覆盖 adapter 归一化、分层流事件、原生 tool call delta、伪 XML 隐藏和 QueryEngine snapshot；
+- [x] 新增 `docs/6.17-6.20-query-engine-model-stream.md`，说明使用场景、模块边界、执行链路、兼容策略和测试命令。
 
 ### 验收标准
 

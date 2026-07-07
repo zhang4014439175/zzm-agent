@@ -12,6 +12,8 @@ from zzm_agent.core.hooks import (
     HookResult,
     HookType,
 )
+from zzm_agent.core.model_adapter import OpenAIChatCompletionsAdapter
+from zzm_agent.core.model_stream import ModelStreamEvent
 from zzm_agent.core.observability import (
     TokenUsage,
     ToolEvent,
@@ -42,6 +44,7 @@ from zzm_agent.memory.token_counter import TokenCounter
 
 if TYPE_CHECKING:
     from openai import OpenAI
+    from zzm_agent.core.model_adapter import ModelStreamChunk
     from zzm_agent.core.tool_registry import ToolRegistry
     from zzm_agent.memory.store import MemoryStore
     from zzm_agent.prompt.manager import PromptManager
@@ -114,6 +117,7 @@ class AgentLoop:
         cancellation_controller: CancellationController | None = None,
         hook_registry: HookRegistry | None = None,
         max_stop_hook_attempts: int = 1,
+        model_adapter: OpenAIChatCompletionsAdapter | None = None,
     ):
         """
         Initialize the AgentLoop.
@@ -140,8 +144,10 @@ class AgentLoop:
             cancellation_controller: Optional controller for external cancellation.
             hook_registry: Optional synchronous hook registry for lifecycle decisions.
             max_stop_hook_attempts: Maximum Stop Hook retries before blocking.
+            model_adapter: Optional adapter that normalizes provider-specific responses.
         """
         self.client = client
+        self.model_adapter = model_adapter or OpenAIChatCompletionsAdapter(client)
         self.model = model
         self.system_prompt = system_prompt
         self.registry = registry
@@ -452,7 +458,7 @@ class AgentLoop:
         retry_kwargs = dict(kwargs)
         retry_kwargs.pop("tool_choice", None)
         self._tool_choice_disabled_by_provider = True
-        return self.client.chat.completions.create(**retry_kwargs)
+        return self.model_adapter.create_completion(retry_kwargs)
 
     def _raise_for_api_error_response(self, response: Any) -> None:
         """Raise a useful exception when a provider returns an error payload."""
@@ -485,12 +491,12 @@ class AgentLoop:
         kwargs = self._chat_completion_kwargs(messages, tools, stream=False)
 
         try:
-            response = self.client.chat.completions.create(**kwargs)
+            response = self.model_adapter.create_completion(kwargs)
         except Exception as exc:
             response = self._retry_without_tool_choice(exc, kwargs)
-        msg = self._first_choice_message(response)
-        content = msg.content or ""
-        tool_calls = self._extract_tool_calls(msg.tool_calls or [])
+        normalized = self.model_adapter.normalize_response(response)
+        content = normalized.content
+        tool_calls = normalized.tool_calls
         if not tool_calls:
             tool_calls = self._extract_text_tool_calls(content)
             if tool_calls:
@@ -499,7 +505,7 @@ class AgentLoop:
             content,
             tool_calls,
             False,
-            self._usage_from_sdk_object(getattr(response, "usage", None)),
+            self._usage_from_sdk_object(normalized.raw_usage),
         )
 
     def _stream_once(
@@ -507,6 +513,7 @@ class AgentLoop:
         messages: list[dict[str, Any]],
         tools: list[dict[str, Any]],
         on_text_chunk: Callable[[str], None] | None,
+        on_stream_event: Callable[[ModelStreamEvent], None] | None = None,
     ) -> tuple[str, list[dict[str, Any]], bool, TokenUsage]:
         kwargs = self._chat_completion_kwargs(messages, tools, stream=True)
 
@@ -519,7 +526,7 @@ class AgentLoop:
 
         try:
             try:
-                response = self.client.chat.completions.create(**kwargs)
+                response = self.model_adapter.create_completion(kwargs)
             except Exception as exc:
                 try:
                     response = self._retry_without_tool_choice(exc, kwargs)
@@ -527,59 +534,71 @@ class AgentLoop:
                     if self._provider_rejects_streaming(retry_exc):
                         return self._complete_once(messages=messages, tools=tools)
                     raise
-            for chunk in response:
-                chunk_usage = self._usage_from_sdk_object(getattr(chunk, "usage", None))
+            for chunk in self.model_adapter.iter_stream_chunks(response):
+                chunk_usage = self._usage_from_sdk_object(chunk.raw_usage)
                 if chunk_usage.has_tokens():
                     usage.add(chunk_usage)
+                    if on_stream_event is not None:
+                        on_stream_event(
+                            ModelStreamEvent.usage_delta(chunk_usage.to_record())
+                        )
 
-                # Ignore keep-alive/empty chunks that carry no choice payload.
-                if not getattr(chunk, "choices", None):
-                    continue
+                if chunk.reasoning_summary and on_stream_event is not None:
+                    on_stream_event(
+                        ModelStreamEvent.reasoning_summary(chunk.reasoning_summary)
+                    )
 
-                choice = chunk.choices[0]
-                delta = getattr(choice, "delta", None)
-                # Only delta chunks contain incremental streamed content.
-                if delta is None:
-                    continue
-
-                content = getattr(delta, "content", None)
+                content = chunk.content_delta
                 if content:
                     # Preserve the full assistant reply locally and optionally
                     # push each fragment to the caller for real-time rendering.
                     text_parts.append(content)
-                    if on_text_chunk is not None:
+                    if on_text_chunk is not None or on_stream_event is not None:
                         full_text = "".join(text_parts)
                         tool_call_start = self._text_tool_call_start(full_text, tools)
                         if tool_call_start >= 0:
                             if emitted_text_length < tool_call_start:
-                                on_text_chunk(full_text[emitted_text_length:tool_call_start])
+                                visible_text = full_text[emitted_text_length:tool_call_start]
+                                if on_text_chunk is not None:
+                                    on_text_chunk(visible_text)
+                                if on_stream_event is not None and visible_text:
+                                    on_stream_event(ModelStreamEvent.content_delta(visible_text))
                                 emitted_text_length = tool_call_start
                         else:
-                            on_text_chunk(full_text[emitted_text_length:])
+                            visible_text = full_text[emitted_text_length:]
+                            if on_text_chunk is not None:
+                                on_text_chunk(visible_text)
+                            if on_stream_event is not None and visible_text:
+                                on_stream_event(ModelStreamEvent.content_delta(visible_text))
                             emitted_text_length = len(full_text)
 
-                for tc_delta in getattr(delta, "tool_calls", None) or []:
-                    index = getattr(tc_delta, "index", 0)
+                for tc_delta in chunk.tool_call_deltas:
+                    index = tc_delta.index
                     # Create the accumulator the first time this tool-call slot appears.
                     record = tool_call_map.setdefault(
                         index,
                         self._build_tool_call_record("", "", ""),
                     )
 
-                    if getattr(tc_delta, "id", None):
+                    if tc_delta.tool_call_id:
                         # The id may show up after earlier fragments, so keep refreshing it.
-                        record["id"] = tc_delta.id
-
-                    function = getattr(tc_delta, "function", None)
-                    if function is None:
-                        continue
+                        record["id"] = tc_delta.tool_call_id
 
                     # Function metadata can arrive piece by piece; concatenate the
                     # fragments until we have the full callable name and JSON args.
-                    if getattr(function, "name", None):
-                        record["function"]["name"] += function.name
-                    if getattr(function, "arguments", None):
-                        record["function"]["arguments"] += function.arguments
+                    if tc_delta.name_delta:
+                        record["function"]["name"] += tc_delta.name_delta
+                    if tc_delta.arguments_delta:
+                        record["function"]["arguments"] += tc_delta.arguments_delta
+                    if on_stream_event is not None:
+                        on_stream_event(
+                            ModelStreamEvent.tool_call_delta(
+                                tool_call_id=record.get("id") or None,
+                                tool_name=tc_delta.name_delta or None,
+                                arguments_delta=tc_delta.arguments_delta,
+                                index=index,
+                            )
+                        )
         except (KeyboardInterrupt, GeneratorExit):
             # Let the caller keep any text already shown to the user, but signal
             # that this turn was interrupted so partial tool state is discarded.
@@ -598,8 +617,14 @@ class AgentLoop:
             tool_calls = self._extract_text_tool_calls(content)
             if tool_calls:
                 return "", tool_calls, False, usage
-        if on_text_chunk is not None and emitted_text_length < len(content):
-            on_text_chunk(content[emitted_text_length:])
+        if (on_text_chunk is not None or on_stream_event is not None) and emitted_text_length < len(content):
+            visible_text = content[emitted_text_length:]
+            if on_text_chunk is not None:
+                on_text_chunk(visible_text)
+            if on_stream_event is not None and visible_text:
+                on_stream_event(ModelStreamEvent.content_delta(visible_text))
+        if on_stream_event is not None:
+            on_stream_event(ModelStreamEvent.final_message(content))
         return content, tool_calls, False, usage
 
     def _requires_tool_confirmation(self, risk_level: str) -> bool:
@@ -890,6 +915,7 @@ class AgentLoop:
         user_input: str,
         stream: bool = True,
         on_text_chunk: Callable[[str], None] | None = None,
+        on_stream_event: Callable[[ModelStreamEvent], None] | None = None,
     ) -> str:
         """
         Run a single turn of the conversation.
@@ -901,6 +927,7 @@ class AgentLoop:
             user_input: The message from the user.
             stream: Whether to request a streaming response from the model.
             on_text_chunk: Optional callback invoked for every streamed text chunk.
+            on_stream_event: Optional callback invoked for normalized stream events.
             
         Returns:
             The final text response from the assistant.
@@ -1091,6 +1118,7 @@ class AgentLoop:
                     messages=model_context_messages,
                     tools=tools,
                     on_text_chunk=on_text_chunk,
+                    on_stream_event=on_stream_event,
                 )
             else:
                 loop_state.record_model_call()

@@ -9,7 +9,7 @@ import time
 from pathlib import Path
 from typing import Any
 
-from zzm_agent.constants import TOOL_EVENTS_PATH
+from zzm_agent.constants import TOOL_EVENTS_PATH, ZZM_AGENT_DIR
 from zzm_agent.cli_support.commands import handle_slash
 from zzm_agent.cli_support.observability import CliObserver
 from zzm_agent.cli_support.rendering import (
@@ -21,8 +21,10 @@ from zzm_agent.cli_support.rendering import (
     render_error_card,
 )
 from zzm_agent.core.agent_loop import AgentLoop
+from zzm_agent.core.model_stream import ModelStreamEvent, ModelStreamEventKind
 from zzm_agent.core.model_metadata import resolve_model_context_limit
 from zzm_agent.core.observability import ToolEvent, ToolEventCallback, ToolEventLogger
+from zzm_agent.core.query_engine import QueryEngine
 from zzm_agent.core.tool_registry import ToolRegistry, set_active_registry
 from zzm_agent.evolution.optimizer import EvolutionOptimizer
 from zzm_agent.memory.io import StorageCorruptionError
@@ -613,6 +615,11 @@ def build_runtime(args: argparse.Namespace, cfg: dict[str, Any]) -> dict[str, An
         on_tool_error=_fanout_tool_callbacks(observer.on_tool_error, tool_event_logger),
         prompt_manager=prompt_manager,
     )
+    snapshot_path = workspace_root / ZZM_AGENT_DIR / "state" / f"{store.session_id}.json"
+    query_engine = QueryEngine.with_snapshot_path(
+        agent_loop=loop,
+        snapshot_path=snapshot_path,
+    )
 
     return {
         "client": client,
@@ -622,6 +629,7 @@ def build_runtime(args: argparse.Namespace, cfg: dict[str, Any]) -> dict[str, An
         "store": store,
         "optimizer": optimizer,
         "loop": loop,
+        "query_engine": query_engine,
         "prompt_manager": prompt_manager,
         "observer": observer,
         "model_context_limit_source": context_limit.source,
@@ -639,6 +647,7 @@ def run_repl(runtime: dict[str, Any]) -> int:
     store = runtime["store"]
     optimizer = runtime["optimizer"]
     loop = runtime["loop"]
+    query_engine = runtime.get("query_engine")
     observer = runtime.get("observer")
     prompt_session = build_prompt_session(
         workspace=os.environ.get("ZZM_AGENT_WORKSPACE_ROOT", os.getcwd()),
@@ -685,18 +694,42 @@ def run_repl(runtime: dict[str, Any]) -> int:
                 streamed["seen"] = True
                 stream_renderer.push(chunk)
 
+            def on_stream_event(event: ModelStreamEvent) -> None:
+                if event.kind is ModelStreamEventKind.CONTENT_DELTA and event.text:
+                    on_text_chunk(event.text)
+
             if not stream_enabled:
                 started = _start_working_status(console, runtime=runtime)
                 try:
-                    reply = loop.run(user_input, stream=False)
+                    if query_engine is not None:
+                        reply = query_engine.submit_message(
+                            user_input,
+                            stream=False,
+                        ).reply
+                    else:
+                        reply = loop.run(user_input, stream=False)
                 finally:
                     if started:
                         _stop_working_status(console, clear_status=True)
             elif not _start_working_status(console, runtime=runtime):
-                reply = loop.run(user_input, stream=True, on_text_chunk=on_text_chunk)
+                if query_engine is not None:
+                    reply = query_engine.submit_message(
+                        user_input,
+                        stream=True,
+                        on_stream_event=on_stream_event,
+                    ).reply
+                else:
+                    reply = loop.run(user_input, stream=True, on_text_chunk=on_text_chunk)
             else:
                 try:
-                    reply = loop.run(user_input, stream=True, on_text_chunk=on_text_chunk)
+                    if query_engine is not None:
+                        reply = query_engine.submit_message(
+                            user_input,
+                            stream=True,
+                            on_stream_event=on_stream_event,
+                        ).reply
+                    else:
+                        reply = loop.run(user_input, stream=True, on_text_chunk=on_text_chunk)
                 finally:
                     _stop_working_status(console, clear_status=True)
 
