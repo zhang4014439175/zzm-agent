@@ -3,9 +3,12 @@ from zzm_agent.cli_support.observability import CliObserver
 from zzm_agent.cli_support.rendering import (
     PROMPT_COMPLETION_MENU_RESERVED_LINES,
     SlashCommandCompleter,
+    PlainTextRenderer,
     _plain_terminal_reply,
     build_bottom_toolbar,
+    build_terminal_renderer,
 )
+from zzm_agent.core.model_stream import ModelStreamEvent
 from zzm_agent.cli_support.runtime import (
     _build_working_footer,
     build_tool_confirmation_callback,
@@ -23,9 +26,24 @@ from zzm_agent.cli_support.runtime import (
 )
 from zzm_agent.core.model_metadata import resolve_model_context_limit
 from zzm_agent.core.observability import TokenUsage, tool_end_event, tool_start_event
+from zzm_agent.core.runtime_records import ArtifactStore
+from zzm_agent.core.runtime_state import PermissionState
 from zzm_agent.core.tool_registry import ToolRegistry
 from zzm_agent.core.agent_loop import AgentLoop
 from zzm_agent.memory.store import MemoryStore
+
+
+class DummyQueryEngine:
+    def __init__(self):
+        self.submitted = []
+        self.conversation_state = type("Conversation", (), {})()
+        self.conversation_state.permissions = PermissionState()
+        self.conversation_state.artifacts = ArtifactStore()
+        self.conversation_state.active_turn = None
+
+    def submit_message(self, message, **kwargs):
+        self.submitted.append((message, kwargs))
+        return type("Result", (), {"reply": "review result"})()
 
 
 class DummyRegistry:
@@ -941,6 +959,222 @@ def test_handle_slash_new_and_switch_session(tmp_path):
 
     assert handle_slash("/sessions", registry, store, optimizer, console) is True
     assert any(created_session in line for line in console.lines)
+
+
+def test_handle_slash_status_reports_runtime_summary(tmp_path):
+    store = MemoryStore(path=tmp_path / "memory.json", max_history=50, session_id="alpha")
+    console = DummyConsole()
+    runtime = {
+        "loop": type("Loop", (), {"model": "demo", "cumulative_usage": TokenUsage(total_tokens=12)})(),
+        "query_engine": DummyQueryEngine(),
+        "stream": True,
+        "config": {"memory": {"max_context_tokens": 32000}},
+    }
+
+    handled = handle_slash("/status", DummyRegistry(), store, DummyOptimizer(), console, runtime)
+
+    assert handled is True
+    rendered = "\n".join(console.lines)
+    assert "Status" in rendered
+    assert "session: alpha" in rendered
+    assert "model: demo" in rendered
+
+
+def test_handle_slash_resume_without_id_switches_latest_other_session(tmp_path):
+    store = MemoryStore(path=tmp_path / "memory.json", max_history=50, session_id="alpha")
+    beta = store.create_session(name="beta", make_current=False)["id"]
+    console = DummyConsole()
+
+    handled = handle_slash("/resume", DummyRegistry(), store, DummyOptimizer(), console)
+
+    assert handled is True
+    assert store.session_id == beta
+    assert any("Resumed session" in line for line in console.lines)
+
+
+def test_handle_slash_permissions_lists_permission_state(tmp_path):
+    store = MemoryStore(path=tmp_path / "memory.json", max_history=50)
+    query_engine = DummyQueryEngine()
+    request = query_engine.conversation_state.permissions.request_permission(
+        tool_name="shell",
+        arguments={"cmd": "pytest"},
+        risk_level="high",
+    )
+    query_engine.conversation_state.permissions.approve_request(request.request_id)
+    console = DummyConsole()
+
+    handled = handle_slash(
+        "/permissions",
+        DummyRegistry(),
+        store,
+        DummyOptimizer(),
+        console,
+        {"query_engine": query_engine},
+    )
+
+    assert handled is True
+    rendered = "\n".join(console.lines)
+    assert "Permissions" in rendered
+    assert "decisions: 1" in rendered
+    assert "shell" in rendered
+
+
+def test_handle_slash_artifacts_lists_and_previews_artifact(tmp_path):
+    store = MemoryStore(path=tmp_path / "memory.json", max_history=50)
+    query_engine = DummyQueryEngine()
+    artifact = query_engine.conversation_state.artifacts.save_text(
+        "\n".join(f"line {index}" for index in range(45)),
+        kind="log",
+        summary="test log",
+    )
+    console = DummyConsole()
+    runtime = {"query_engine": query_engine}
+
+    assert handle_slash("/artifacts", DummyRegistry(), store, DummyOptimizer(), console, runtime)
+    assert handle_slash(
+        f"/artifacts {artifact.artifact_id}",
+        DummyRegistry(),
+        store,
+        DummyOptimizer(),
+        console,
+        runtime,
+    )
+
+    rendered = "\n".join(console.lines)
+    assert artifact.artifact_id in rendered
+    assert "line 0" in rendered
+    assert "use /artifacts <id> --full" in rendered
+
+
+def test_handle_slash_plan_reads_local_plan_file(tmp_path, monkeypatch):
+    monkeypatch.setenv("ZZM_AGENT_WORKSPACE_ROOT", str(tmp_path))
+    (tmp_path / "task.md").write_text("Plan from file", encoding="utf-8")
+    store = MemoryStore(path=tmp_path / "memory.json", max_history=50)
+    console = DummyConsole()
+
+    handled = handle_slash("/plan", DummyRegistry(), store, DummyOptimizer(), console, {})
+
+    assert handled is True
+    assert any("Plan from file" in line for line in console.lines)
+
+
+def test_handle_slash_review_submits_read_only_diff(monkeypatch, tmp_path):
+    monkeypatch.setenv("ZZM_AGENT_WORKSPACE_ROOT", str(tmp_path))
+    query_engine = DummyQueryEngine()
+    store = MemoryStore(path=tmp_path / "memory.json", max_history=50)
+    console = DummyConsole()
+
+    class Completed:
+        returncode = 0
+        stdout = "diff --git a/a.py b/a.py\n+print('hi')\n"
+        stderr = ""
+
+    monkeypatch.setattr(
+        "zzm_agent.cli_support.commands.subprocess.run",
+        lambda *args, **kwargs: Completed(),
+    )
+
+    handled = handle_slash(
+        "/review",
+        DummyRegistry(),
+        store,
+        DummyOptimizer(),
+        console,
+        {"query_engine": query_engine},
+    )
+
+    assert handled is True
+    assert query_engine.submitted
+    prompt = query_engine.submitted[0][0]
+    assert "只读代码审查" in prompt
+    assert "不要修改文件" in prompt
+    assert "review result" in "\n".join(console.lines)
+
+
+def test_handle_slash_review_reports_empty_model_reply(monkeypatch, tmp_path):
+    monkeypatch.setenv("ZZM_AGENT_WORKSPACE_ROOT", str(tmp_path))
+    query_engine = DummyQueryEngine()
+    query_engine.submit_message = lambda message, **kwargs: type("Result", (), {"reply": ""})()
+    store = MemoryStore(path=tmp_path / "memory.json", max_history=50)
+    console = DummyConsole()
+
+    class Completed:
+        returncode = 0
+        stdout = "diff --git a/a.py b/a.py\n+print('hi')\n"
+        stderr = ""
+
+    monkeypatch.setattr(
+        "zzm_agent.cli_support.commands.subprocess.run",
+        lambda *args, **kwargs: Completed(),
+    )
+
+    handled = handle_slash(
+        "/review",
+        DummyRegistry(),
+        store,
+        DummyOptimizer(),
+        console,
+        {"query_engine": query_engine},
+    )
+
+    assert handled is True
+    assert any("returned no textual findings" in line for line in console.lines)
+
+
+def test_handle_slash_reserved_commands_report_unavailable_state(tmp_path):
+    store = MemoryStore(path=tmp_path / "memory.json", max_history=50)
+    console = DummyConsole()
+
+    assert handle_slash("/skills", DummyRegistry(), store, DummyOptimizer(), console, {})
+    assert handle_slash("/mcp", DummyRegistry(), store, DummyOptimizer(), console, {})
+    assert handle_slash("/undo", DummyRegistry(), store, DummyOptimizer(), console, {})
+
+    rendered = "\n".join(console.lines)
+    assert "Skills state is not connected yet" in rendered
+    assert "MCP state is not connected yet" in rendered
+    assert "暂无受管的文件变更可撤销" in rendered
+
+
+def test_plain_text_renderer_separates_process_from_final_answer():
+    console = DummyConsole()
+    renderer = PlainTextRenderer(console)
+
+    renderer.render_event(ModelStreamEvent.reasoning_summary("checking files"))
+    renderer.render_event(ModelStreamEvent.tool_call_delta(tool_name="rg", arguments_delta="pattern"))
+    renderer.render_event(ModelStreamEvent.content_delta("draft"))
+    renderer.render_event(ModelStreamEvent.final_message("final answer"))
+
+    assert console.lines == [
+        "Reasoning: checking files",
+        "Running rg",
+        "---",
+        "final answer",
+    ]
+
+
+def test_plain_text_renderer_buffers_chunked_reasoning_and_tool_arguments():
+    console = DummyConsole()
+    renderer = PlainTextRenderer(console)
+
+    renderer.render_event(ModelStreamEvent.reasoning_summary("The "))
+    renderer.render_event(ModelStreamEvent.reasoning_summary("user "))
+    renderer.render_event(ModelStreamEvent.reasoning_summary("asked."))
+    renderer.render_event(ModelStreamEvent.tool_call_delta(arguments_delta="{"))
+    renderer.render_event(ModelStreamEvent.tool_call_delta(tool_name="list_directory", tool_call_id="1"))
+    renderer.render_event(ModelStreamEvent.tool_call_delta(arguments_delta='"path": "."}'))
+    renderer.render_event(ModelStreamEvent.content_delta("answer"))
+
+    assert console.lines == [
+        "Reasoning: The user asked.",
+        "Running list_directory",
+        "---",
+    ]
+
+
+def test_build_terminal_renderer_uses_plain_text_for_non_rich_console():
+    renderer = build_terminal_renderer(DummyConsole())
+
+    assert isinstance(renderer, PlainTextRenderer)
 
 
 def test_handle_slash_memory_mentions_current_session(tmp_path):

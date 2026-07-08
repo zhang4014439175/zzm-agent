@@ -15,7 +15,7 @@
 
 ## 执行进度总览
 
-> **当前下一任务：7.3 Slash Command 与交互式 CLI。**
+> **当前下一任务：7.4 非交互 `exec`、stdin 管道与 JSON 输出。**
 
 ### 当前能力基线
 
@@ -61,8 +61,8 @@
 
 - [x] 7.1 ConfigManager、Profile 与配置作用域：合并开发全局、项目、本地和托管配置，统一模型、权限、MCP、Skills、UI 和功能开关来源
 - [x] 7.2 Agent 指令文件与自动记忆：支持 `AGENTS.md` / `ZZM.md` 分层加载、就近覆盖、来源审计、大小预算和跨会话自动记忆
-- [ ] 7.3 Slash Command 与交互式 CLI：合并开发 `/status`、`/resume`、`/sessions`、`/config`、`/permissions`、`/artifacts`、`/plan`、`/review` 等核心命令
-- [ ] 7.3A 终端输出分层与可降级渲染：先解决思考过程、工具执行和最终总结混排问题，建立可复用的 CLI 渲染边界
+- [x] 7.3 Slash Command 与交互式 CLI：合并开发 `/status`、`/resume`、`/sessions`、`/config`、`/permissions`、`/artifacts`、`/plan`、`/review` 等核心命令
+- [x] 7.3A 终端输出分层与可降级渲染：先解决思考过程、工具执行和最终总结混排问题，建立可复用的 CLI 渲染边界
 - [ ] 7.4 非交互 `exec`、stdin 管道与 JSON 输出：支持脚本、CI、批处理、`--json` 事件流、最终结果输出文件和 shell completion
 - [ ] 7.5 Git / Review / Commit / PR 工作流：合并开发 diff review、stage/unstage、commit message、branch、PR 描述和 CI 失败分析入口
 - [ ] P2 阶段验收：确认终端版具备可恢复、可配置、可脚本化、可审查和可日常高频使用的产品体验
@@ -1037,10 +1037,23 @@ P2 的目标是让终端版先成为可日常使用的产品，而不是只有�
 
 验收要求：
 
-- 用户能恢复最近会话、查看当前 Turn、切换权限和打开 Artifact；
-- `/review` 能对未提交改动、暂存区或指定 commit 做只读审查；
-- `/plan` 能在编辑前展示计划并允许用户确认；
-- 命令输出在无 Rich 环境下仍可读。
+- [x] 用户能恢复最近会话、查看当前 Turn、切换权限和打开 Artifact；
+- [x] `/review` 能对未提交改动、暂存区或指定 commit 做只读审查；
+- [x] `/plan` 能在编辑前展示计划并允许用户确认；
+- [x] 命令输出在无 Rich 环境下仍可读。
+
+完成记录：
+
+- [x] 新增 `/status`、`/resume`、`/permissions`、`/artifacts`、`/plan`、`/review`、`/undo`、`/skills` 和 `/mcp` 命令；
+- [x] `/status` 展示 session、model、workspace、stream、tools、context window、active turn 和 usage；
+- [x] `/resume` 支持无参数恢复最近历史会话，或指定 session id；
+- [x] `/permissions` 通过 QueryEngine / runtime 权限账本展示 pending、decisions、denials 和 grants；
+- [x] `/artifacts` 支持列表、预览和 `--full` 完整输出；
+- [x] `/plan` 只读展示 active task 或本地 `task.md` / `implementation_plan.md`；
+- [x] `/review` 读取 git diff，并通过 QueryEngine 发起只读审查请求；
+- [x] `/undo`、`/skills`、`/mcp` 对尚未接入的后续能力给出明确占位提示；
+- [x] 更新 help 和 slash completion；
+- [x] 新增 `docs/7.3-slash-command-interactive-cli.md`，说明问题、例子、命令边界、执行链路和验证结果。
 
 ### 7.3A 终端输出分层与可降级渲染
 
@@ -1050,13 +1063,23 @@ P2 的目标是让终端版先成为可日常使用的产品，而不是只有�
 
 验收要求：
 
-- 思考摘要、状态提示、工具执行记录、工具结果、正文增量和最终总结按事件类型分区渲染；
-- 最终总结前有清晰分隔线，用户能一眼区分执行过程和最终结论；
-- 工具执行使用统一样式展示 `Running`、`Ran`、`Failed`、`Cancelled`，命令正文弱化显示，关键状态更醒目；
-- 长工具输出走折叠、摘要或 Artifact 引用，不把 transcript 和模型上下文冲爆；
-- 支持 `TerminalRenderer` / `PlainTextRenderer` 分层：有 TTY 和 Rich 时使用增强样式，无 TTY、无 Rich、CI、管道或重定向环境自动降级为普通文本；
-- 降级文本仍保留事件顺序、工具状态、最终总结和错误信息，便于日志、CI 和脚本消费；
-- 本阶段不实现固定底部输入框、不在同步 AgentLoop 外包线程做完整 TUI，也不承诺 Esc 能立即终止所有同步工具；这些放到 11.6。
+- [x] 思考摘要、状态提示、工具执行记录、工具结果、正文增量和最终总结按事件类型分区渲染；
+- [x] 最终总结前有清晰分隔线，用户能一眼区分执行过程和最终结论；
+- [x] 工具执行使用统一样式展示 `Running`、`Ran`、`Failed`、`Cancelled`，命令正文弱化显示，关键状态更醒目；
+- [x] 长工具输出走折叠、摘要或 Artifact 引用，不把 transcript 和模型上下文冲爆；
+- [x] 支持 `TerminalRenderer` / `PlainTextRenderer` 分层：有 TTY 和 Rich 时使用增强样式，无 TTY、无 Rich、CI、管道或重定向环境自动降级为普通文本；
+- [x] 降级文本仍保留事件顺序、工具状态、最终总结和错误信息，便于日志、CI 和脚本消费；
+- [x] 本阶段不实现固定底部输入框、不在同步 AgentLoop 外包线程做完整 TUI，也不承诺 Esc 能立即终止所有同步工具；这些放到 11.6。
+
+完成记录：
+
+- [x] 新增 `PlainTextRenderer`、`TerminalRenderer` 和 `build_terminal_renderer()`；
+- [x] `run_repl()` 的 `on_stream_event` 改为消费完整 `ModelStreamEvent`，不再只处理 `CONTENT_DELTA`；
+- [x] 支持 `reasoning_summary`、`tool_call_delta`、`tool_result`、`content_delta`、`final_message` 和 `error` 分层渲染；
+- [x] 最终消息前输出 Rich Rule 或纯文本 `---` 分隔线；
+- [x] 非 Rich console 或非 TTY 输出自动选择 `PlainTextRenderer`；
+- [x] 保留旧 `on_text_chunk` fallback；
+- [x] 新增 `docs/7.3A-terminal-renderer.md`，说明问题、例子、事件链路、数据结构和验证结果。
 
 ### 7.4 非交互 `exec`、stdin 管道与 JSON 输出
 

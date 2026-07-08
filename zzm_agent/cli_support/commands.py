@@ -1,6 +1,9 @@
 from __future__ import annotations
 
+import os
 import re
+import subprocess
+from pathlib import Path
 from typing import Any
 
 from zzm_agent.core.model_metadata import resolve_model_context_limit
@@ -8,7 +11,7 @@ from zzm_agent.core.tool_registry import ToolRegistry
 from zzm_agent.evolution.optimizer import EvolutionOptimizer
 from zzm_agent.memory.store import MemoryStore
 from zzm_agent.memory.token_counter import TokenCounter
-from zzm_agent.cli_support.rendering import render_notification
+from zzm_agent.cli_support.rendering import build_terminal_renderer, render_notification
 
 
 def handle_slash(
@@ -34,6 +37,42 @@ def handle_slash(
         ``True`` when the command was recognized and handled, otherwise ``False``.
     """
     command = cmd.strip()
+
+    if command == "/status":
+        _handle_status(console, registry, store, runtime)
+        return True
+
+    if command.startswith("/resume"):
+        _handle_resume(command, console, store)
+        return True
+
+    if command == "/permissions":
+        _handle_permissions(console, runtime)
+        return True
+
+    if command.startswith("/artifacts"):
+        _handle_artifacts(command, console, runtime)
+        return True
+
+    if command == "/plan":
+        _handle_plan(console, runtime)
+        return True
+
+    if command.startswith("/review"):
+        _handle_review(command, console, runtime)
+        return True
+
+    if command == "/undo":
+        console.print("[yellow]暂无受管的文件变更可撤销。ChangeSet 将在 8.4 接入。[/yellow]")
+        return True
+
+    if command == "/skills":
+        _handle_placeholder_registry(console, runtime, key="skills", label="Skills")
+        return True
+
+    if command == "/mcp":
+        _handle_placeholder_registry(console, runtime, key="mcp_connections", label="MCP")
+        return True
 
     if command == "/sessions":
         sessions = store.list_sessions()
@@ -859,6 +898,246 @@ def handle_slash(
         raise SystemExit(0)
 
     return False
+
+
+def _handle_status(
+    console: Any,
+    registry: ToolRegistry,
+    store: MemoryStore,
+    runtime: dict[str, Any] | None,
+) -> None:
+    runtime = runtime or {}
+    loop = runtime.get("loop")
+    query_engine = runtime.get("query_engine")
+    conversation = getattr(query_engine, "conversation_state", None)
+    active_turn = getattr(conversation, "active_turn", None)
+    cfg = runtime.get("config", {}) if isinstance(runtime.get("config"), dict) else {}
+    model_cfg = cfg.get("model", {}) if isinstance(cfg, dict) else {}
+    memory_cfg = cfg.get("memory", {}) if isinstance(cfg, dict) else {}
+    usage = getattr(loop, "cumulative_usage", None)
+
+    rows = [
+        ("session", str(getattr(store, "session_id", ""))),
+        ("model", str(getattr(loop, "model", model_cfg.get("model_name", "")))),
+        ("workspace", os.environ.get("ZZM_AGENT_WORKSPACE_ROOT", os.getcwd())),
+        ("stream", str(runtime.get("stream", cfg.get("agent", {}).get("stream", True)))),
+        ("tools", str(len(registry.get_schemas()))),
+        ("context_window", str(getattr(store, "max_context_tokens", memory_cfg.get("max_context_tokens", "")))),
+        ("active_turn", str(getattr(active_turn, "status", "none"))),
+    ]
+    if usage is not None:
+        rows.append(("session_tokens", str(getattr(usage, "total_tokens", 0))))
+    _print_key_value_rows(console, "Status", rows)
+
+
+def _handle_resume(command: str, console: Any, store: MemoryStore) -> None:
+    parts = command.split(maxsplit=1)
+    if len(parts) == 2 and parts[1].strip():
+        target = parts[1].strip()
+    else:
+        candidates = [
+            session for session in store.list_sessions()
+            if session.get("id") != store.session_id
+        ]
+        if not candidates:
+            console.print("[yellow]No previous session to resume.[/yellow]")
+            return
+        target = candidates[0]["id"]
+
+    meta = store.switch_session(target)
+    console.print(f"[green]Resumed session:[/green] [cyan]{meta['id']}[/cyan]")
+
+
+def _handle_permissions(console: Any, runtime: dict[str, Any] | None) -> None:
+    permissions = _runtime_permissions(runtime)
+    if permissions is None:
+        console.print("[yellow]Permission state is unavailable in this runtime.[/yellow]")
+        return
+    record = permissions.to_record()
+    rows = [
+        ("pending", str(len(record.get("pending_requests", {})))),
+        ("decisions", str(len(record.get("decisions", [])))),
+        ("denials", str(len(record.get("denials", [])))),
+        ("session_grants", str(len(record.get("session_grants", {})))),
+        ("task_grants", str(len(record.get("task_grants", {})))),
+        ("orphaned", str(len(record.get("orphaned_requests", [])))),
+    ]
+    _print_key_value_rows(console, "Permissions", rows)
+    for decision in record.get("decisions", [])[-8:]:
+        console.print(
+            f"- {decision.get('status', '')} {decision.get('tool_name', '')} "
+            f"[dim]{decision.get('scope', '')}[/dim]"
+        )
+
+
+def _handle_artifacts(command: str, console: Any, runtime: dict[str, Any] | None) -> None:
+    store = _runtime_artifact_store(runtime)
+    if store is None:
+        console.print("[yellow]Artifact store is unavailable in this runtime.[/yellow]")
+        return
+    parts = command.split()
+    if len(parts) == 1:
+        records = store.list()
+        if not records:
+            console.print("[yellow]No artifacts recorded for this conversation.[/yellow]")
+            return
+        console.print(f"[cyan]Artifacts[/cyan] ({len(records)})")
+        for record in records:
+            console.print(
+                f"- {record.artifact_id} {record.kind} {record.size_bytes} bytes "
+                f"[dim]{record.summary}[/dim]"
+            )
+        return
+
+    artifact_id = parts[1]
+    record = store.get(artifact_id)
+    if record is None:
+        console.print(f"[yellow]Artifact not found:[/yellow] {artifact_id}")
+        return
+    console.print(
+        f"[cyan]{record.artifact_id}[/cyan] {record.kind} {record.size_bytes} bytes"
+    )
+    if record.summary:
+        console.print(f"[dim]{record.summary}[/dim]")
+    try:
+        text = store.read_text(artifact_id)
+    except Exception as exc:
+        console.print(f"[red]Failed to read artifact:[/red] {exc}")
+        return
+    full = "--full" in parts[2:]
+    preview = text if full else "\n".join(text.splitlines()[:40])
+    console.print(preview)
+    if not full and len(text.splitlines()) > 40:
+        console.print("[dim]... use /artifacts <id> --full to print all content[/dim]")
+
+
+def _handle_plan(console: Any, runtime: dict[str, Any] | None) -> None:
+    query_engine = (runtime or {}).get("query_engine") if runtime else None
+    conversation = getattr(query_engine, "conversation_state", None)
+    active_task = getattr(conversation, "active_task", None)
+    if active_task:
+        console.print("[cyan]Active task[/cyan]")
+        console.print(str(active_task))
+        return
+
+    workspace = Path(os.environ.get("ZZM_AGENT_WORKSPACE_ROOT", os.getcwd()))
+    for filename in ("task.md", "implementation_plan.md"):
+        path = workspace / filename
+        if path.is_file():
+            console.print(f"[cyan]Plan file:[/cyan] {path}")
+            console.print(_read_text_preview(path, limit=8000))
+            console.print("[dim]Displayed as read-only context; no task state was changed.[/dim]")
+            return
+    console.print("[yellow]No active plan or local task.md / implementation_plan.md found.[/yellow]")
+
+
+def _handle_review(command: str, console: Any, runtime: dict[str, Any] | None) -> None:
+    query_engine = (runtime or {}).get("query_engine") if runtime else None
+    if query_engine is None:
+        console.print("[yellow]Review requires QueryEngine in the current runtime.[/yellow]")
+        return
+    args = command.split()[1:]
+    diff_args = ["git", "diff"]
+    label = "working tree"
+    if args and args[0] in {"--cached", "--staged"}:
+        diff_args.append("--cached")
+        label = "staged changes"
+    elif args:
+        diff_args.extend([f"{args[0]}..HEAD"])
+        label = args[0]
+
+    try:
+        result = subprocess.run(
+            diff_args,
+            cwd=os.environ.get("ZZM_AGENT_WORKSPACE_ROOT", os.getcwd()),
+            check=False,
+            capture_output=True,
+            text=True,
+            encoding="utf-8",
+            errors="replace",
+        )
+    except Exception as exc:
+        console.print(f"[red]Failed to read git diff:[/red] {exc}")
+        return
+    if result.returncode != 0:
+        console.print(f"[red]git diff failed:[/red] {result.stderr.strip()}")
+        return
+    diff = result.stdout.strip()
+    if not diff:
+        console.print(f"[yellow]No diff found for {label}.[/yellow]")
+        return
+    if len(diff) > 24000:
+        diff = diff[:24000] + "\n... diff truncated for review ..."
+
+    prompt = (
+        "请对下面 git diff 做只读代码审查。只输出问题清单，按严重程度排序；"
+        "不要修改文件，不要执行写操作，不要生成补丁。\n\n"
+        f"Diff source: {label}\n\n```diff\n{diff}\n```"
+    )
+    console.print(f"[cyan]Running read-only review for {label}...[/cyan]")
+    renderer = build_terminal_renderer(console)
+    result = query_engine.submit_message(
+        prompt,
+        stream=True,
+        on_stream_event=renderer.render_event,
+    )
+    renderer.finish(result.reply)
+    if not str(result.reply or "").strip():
+        console.print(
+            "[yellow]Review completed, but the model returned no textual findings.[/yellow]"
+        )
+
+
+def _handle_placeholder_registry(
+    console: Any,
+    runtime: dict[str, Any] | None,
+    *,
+    key: str,
+    label: str,
+) -> None:
+    state = (runtime or {}).get(key) if runtime else None
+    if not state:
+        console.print(
+            f"[yellow]{label} state is not connected yet. "
+            "This command is reserved for the later integration phase.[/yellow]"
+        )
+        return
+    console.print(f"[cyan]{label}[/cyan]")
+    console.print(str(state))
+
+
+def _runtime_permissions(runtime: dict[str, Any] | None) -> Any | None:
+    if not runtime:
+        return None
+    query_engine = runtime.get("query_engine")
+    conversation = getattr(query_engine, "conversation_state", None)
+    if conversation is not None:
+        return getattr(conversation, "permissions", None)
+    loop = runtime.get("loop")
+    return getattr(loop, "permission_state", None)
+
+
+def _runtime_artifact_store(runtime: dict[str, Any] | None) -> Any | None:
+    if not runtime:
+        return None
+    query_engine = runtime.get("query_engine")
+    conversation = getattr(query_engine, "conversation_state", None)
+    if conversation is not None:
+        return getattr(conversation, "artifacts", None)
+    return None
+
+
+def _print_key_value_rows(console: Any, title: str, rows: list[tuple[str, str]]) -> None:
+    console.print(f"[cyan]{title}[/cyan]")
+    for key, value in rows:
+        console.print(f"{key}: {value}")
+
+
+def _read_text_preview(path: Path, *, limit: int) -> str:
+    text = path.read_text(encoding="utf-8", errors="replace")
+    if len(text) <= limit:
+        return text
+    return text[:limit] + "\n... truncated ..."
 
 
 def _list_runtime_models(runtime: dict[str, Any]) -> list[str] | None:

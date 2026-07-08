@@ -13,7 +13,7 @@ from zzm_agent.constants import TOOL_EVENTS_PATH, ZZM_AGENT_DIR
 from zzm_agent.cli_support.commands import handle_slash
 from zzm_agent.cli_support.observability import CliObserver
 from zzm_agent.cli_support.rendering import (
-    MarkdownStreamRenderer,
+    build_terminal_renderer,
     build_prompt_session,
     build_console,
     read_repl_input,
@@ -22,7 +22,7 @@ from zzm_agent.cli_support.rendering import (
 )
 from zzm_agent.core.agent_loop import AgentLoop
 from zzm_agent.core.config import ConfigManager
-from zzm_agent.core.model_stream import ModelStreamEvent, ModelStreamEventKind
+from zzm_agent.core.model_stream import ModelStreamEvent
 from zzm_agent.core.model_metadata import resolve_model_context_limit
 from zzm_agent.core.observability import ToolEvent, ToolEventCallback, ToolEventLogger
 from zzm_agent.core.query_engine import QueryEngine
@@ -658,18 +658,22 @@ def run_repl(runtime: dict[str, Any]) -> int:
         try:
             console.print()
             stream_enabled = bool(runtime.get("stream", True))
-            streamed = {"seen": False}
-            stream_renderer = MarkdownStreamRenderer(console)
+            streamed = {"seen": False, "content": False}
+            stream_renderer = build_terminal_renderer(console)
 
             def on_text_chunk(chunk: str) -> None:
+                if not streamed["content"]:
+                    _stop_working_status(console)
+                streamed["seen"] = True
+                streamed["content"] = True
+                from zzm_agent.core.model_stream import ModelStreamEvent as _StreamEvent
+                stream_renderer.render_event(_StreamEvent.content_delta(chunk))
+
+            def on_stream_event(event: ModelStreamEvent) -> None:
                 if not streamed["seen"]:
                     _stop_working_status(console)
                 streamed["seen"] = True
-                stream_renderer.push(chunk)
-
-            def on_stream_event(event: ModelStreamEvent) -> None:
-                if event.kind is ModelStreamEventKind.CONTENT_DELTA and event.text:
-                    on_text_chunk(event.text)
+                stream_renderer.render_event(event)
 
             if not stream_enabled:
                 started = _start_working_status(console, runtime=runtime)
@@ -707,7 +711,7 @@ def run_repl(runtime: dict[str, Any]) -> int:
                     _stop_working_status(console, clear_status=True)
 
             if streamed["seen"]:
-                stream_renderer.flush()
+                stream_renderer.finish(reply)
             else:
                 render_reply(console, reply)
 

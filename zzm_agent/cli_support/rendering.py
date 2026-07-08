@@ -6,6 +6,7 @@ from pathlib import Path
 from typing import Any, Iterable
 
 from zzm_agent.constants import ZZM_AGENT_DIR
+from zzm_agent.core.model_stream import ModelStreamEvent, ModelStreamEventKind
 
 _EMOJI_PATTERN = re.compile(
     "["
@@ -496,12 +497,21 @@ def build_prompt_session(workspace: str | Path, runtime: dict[str, Any] | None =
             "/models": "列出当前 base URL 可用模型",
             "/model": "查看或切换当前模型",
             "/config": "显示当前生效配置和来源",
+            "/status": "显示当前会话、模型、Token 和运行状态",
             "/stream": "查看或切换流式输出",
             "/memory": "显示最近历史和压缩状态",
             "/instructions": "显示加载的项目指令文件",
             "/sessions": "列出所有已知的会话",
             "/session": "切换到指定的历史会话",
+            "/resume": "恢复最近或指定历史会话",
             "/new": "开启一轮全新的对话",
+            "/permissions": "显示当前权限账本",
+            "/artifacts": "列出或预览 Artifact",
+            "/plan": "显示当前计划或本地计划文件",
+            "/review": "对当前 git diff 做只读审查",
+            "/undo": "查看可撤销变更状态",
+            "/skills": "显示 Skills 集成状态",
+            "/mcp": "显示 MCP 集成状态",
             "/remember": "添加一条长期的语义记忆",
             "/memory-disable": "禁用匹配关键字的长期记忆",
             "/memory-enable": "重新启用匹配关键字的长期记忆",
@@ -690,6 +700,189 @@ class MarkdownStreamRenderer:
         return text[:split_at], text[split_at:]
 
 
+class PlainTextRenderer:
+    """Render stream events as plain text for non-Rich or redirected output."""
+
+    def __init__(self, console: Any):
+        self.console = console
+        self._content = ""
+        self._reasoning = ""
+        self._final_rendered = False
+        self._separator_printed = False
+        self._seen_process = False
+        self._printed_tool_calls: set[str] = set()
+
+    def render_event(self, event: ModelStreamEvent) -> None:
+        if event.kind is ModelStreamEventKind.STATUS:
+            if event.text and event.text != "turn.started":
+                self.console.print(f"Status: {event.text}")
+            return
+        if event.kind is ModelStreamEventKind.REASONING_SUMMARY:
+            self._append_reasoning(event.text)
+            return
+        if event.kind is ModelStreamEventKind.TOOL_CALL_DELTA:
+            self._render_tool_call_delta(event)
+            return
+        if event.kind is ModelStreamEventKind.TOOL_RESULT:
+            self._flush_reasoning()
+            self._seen_process = True
+            name = event.tool_name or "tool"
+            text = f": {event.text}" if event.text else ""
+            self.console.print(f"Ran {name}{text}")
+            return
+        if event.kind is ModelStreamEventKind.ERROR:
+            self.console.print(f"Error: {event.text}")
+            return
+        if event.kind is ModelStreamEventKind.CONTENT_DELTA:
+            self._flush_reasoning()
+            if self._seen_process:
+                self._print_separator()
+            self._content += event.text or ""
+            return
+        if event.kind is ModelStreamEventKind.FINAL_MESSAGE:
+            self.render_final(event.text)
+
+    def render_final(self, text: str) -> None:
+        if self._final_rendered:
+            return
+        self._flush_reasoning()
+        self._print_separator()
+        self.console.print(text)
+        self._content = ""
+        self._final_rendered = True
+
+    def finish(self, fallback_text: str = "") -> None:
+        if self._final_rendered:
+            return
+        text = self._content or fallback_text
+        if text:
+            self.render_final(text)
+
+    def _print_separator(self) -> None:
+        if self._separator_printed:
+            return
+        self.console.print("---")
+        self._separator_printed = True
+
+    def _append_reasoning(self, text: str) -> None:
+        if not text:
+            return
+        self._seen_process = True
+        self._reasoning += text
+
+    def _flush_reasoning(self) -> None:
+        text = " ".join(self._reasoning.split())
+        if not text:
+            return
+        self.console.print(f"Reasoning: {text}")
+        self._reasoning = ""
+
+    def _render_tool_call_delta(self, event: ModelStreamEvent) -> None:
+        if not event.tool_name:
+            return
+        self._flush_reasoning()
+        key = event.tool_call_id or event.tool_name
+        if key in self._printed_tool_calls:
+            return
+        self._seen_process = True
+        self._printed_tool_calls.add(key)
+        self.console.print(f"Running {event.tool_name}")
+
+
+class TerminalRenderer(PlainTextRenderer):
+    """Render normalized model stream events for the interactive terminal."""
+
+    def __init__(self, console: Any):
+        super().__init__(console)
+        self._markdown = MarkdownStreamRenderer(console)
+        self._content_seen = False
+
+    def render_event(self, event: ModelStreamEvent) -> None:
+        if event.kind is ModelStreamEventKind.STATUS:
+            return
+        if event.kind is ModelStreamEventKind.REASONING_SUMMARY:
+            self._append_reasoning(event.text)
+            return
+        if event.kind is ModelStreamEventKind.TOOL_CALL_DELTA:
+            self._render_tool_call_delta(event)
+            return
+        if event.kind is ModelStreamEventKind.TOOL_RESULT:
+            self._flush_reasoning()
+            self._seen_process = True
+            name = event.tool_name or "tool"
+            text = f" [dim]{event.text}[/dim]" if event.text else ""
+            self.console.print(f"[bold]Ran[/bold] [cyan]{name}[/cyan]{text}")
+            return
+        if event.kind is ModelStreamEventKind.ERROR:
+            self.console.print(f"[red]Error:[/red] {event.text}")
+            return
+        if event.kind is ModelStreamEventKind.CONTENT_DELTA:
+            if event.text:
+                self._flush_reasoning()
+                if self._seen_process:
+                    self._print_separator()
+                self._content_seen = True
+                self._content += event.text
+                self._markdown.push(event.text)
+            return
+        if event.kind is ModelStreamEventKind.FINAL_MESSAGE:
+            self._markdown.flush()
+            self.render_final(event.text)
+
+    def render_final(self, text: str) -> None:
+        if self._final_rendered:
+            return
+        self._flush_reasoning()
+        if self._content_seen:
+            self._print_separator()
+        elif text:
+            self._print_separator()
+            render_reply(self.console, text)
+        self._content = ""
+        self._final_rendered = True
+
+    def finish(self, fallback_text: str = "") -> None:
+        self._markdown.flush()
+        super().finish(fallback_text)
+
+    def _print_separator(self) -> None:
+        if self._separator_printed:
+            return
+        try:
+            from rich.rule import Rule
+            self.console.print(Rule(style="dim #3B4252"))
+        except Exception:
+            self.console.print("---")
+        self._separator_printed = True
+
+    def _flush_reasoning(self) -> None:
+        text = " ".join(self._reasoning.split())
+        if not text:
+            return
+        self.console.print(f"[dim]Reasoning:[/dim] {text}")
+        self._reasoning = ""
+
+    def _render_tool_call_delta(self, event: ModelStreamEvent) -> None:
+        if not event.tool_name:
+            return
+        self._flush_reasoning()
+        key = event.tool_call_id or event.tool_name
+        if key in self._printed_tool_calls:
+            return
+        self._seen_process = True
+        self._printed_tool_calls.add(key)
+        self.console.print(f"[bold]Running[/bold] [cyan]{event.tool_name}[/cyan]")
+
+
+def build_terminal_renderer(console: Any) -> PlainTextRenderer:
+    """Select a Rich terminal renderer or plain text fallback."""
+    if console.__class__.__name__ != "Console":
+        return PlainTextRenderer(console)
+    if not getattr(console, "is_terminal", True):
+        return PlainTextRenderer(console)
+    return TerminalRenderer(console)
+
+
 def stream_reply_chunk(console: Any, chunk: str) -> None:
     """
     Render streamed chunks through a per-console Markdown buffer.
@@ -717,12 +910,21 @@ Available Commands:
 /reload       - Reload plugin tools from disk
 /models       - List models from the configured base URL
 /model <id>   - Show or switch the active model
+/status       - Show current session, model, usage, and runtime status
 /stream       - Show or change streaming output mode
 /memory       - Show recent conversation history and compression state
 /instructions - Show loaded AGENTS.md / ZZM.md project instructions
 /sessions     - List all known conversation sessions
 /session <id> - Switch to a specific session
+/resume [id]  - Resume a previous session
 /new          - Start a clean conversation session
+/permissions  - Show permission ledger summary
+/artifacts    - List or preview artifacts
+/plan         - Show active or local plan
+/review       - Run a read-only review for git diff
+/undo         - Show undo availability
+/skills       - Show Skills integration status
+/mcp          - Show MCP integration status
 /remember <f> - Add a long-term semantic memory fact
 /memory-disable <k> - Disable long-term memories matching a keyword
 /memory-enable <k>  - Re-enable long-term memories matching a keyword
@@ -751,12 +953,21 @@ Available Commands:
 /reload       - Reload plugin tools from disk
 /models       - List models from the configured base URL
 /model <id>   - Show or switch the active model
+/status       - Show current session, model, usage, and runtime status
 /stream       - Show or change streaming output mode
 /memory       - Show recent conversation history and compression state
 /instructions - Show loaded AGENTS.md / ZZM.md project instructions
 /sessions     - List all known conversation sessions
 /session <id> - Switch to a specific session
+/resume [id]  - Resume a previous session
 /new          - Start a clean conversation session
+/permissions  - Show permission ledger summary
+/artifacts    - List or preview artifacts
+/plan         - Show active or local plan
+/review       - Run a read-only review for git diff
+/undo         - Show undo availability
+/skills       - Show Skills integration status
+/mcp          - Show MCP integration status
 /remember <f> - Add a long-term semantic memory fact
 /memory-disable <k> - Disable long-term memories matching a keyword
 /memory-enable <k>  - Re-enable long-term memories matching a keyword
@@ -797,6 +1008,15 @@ Available Commands:
     t_memory.add_column("Desc", style="white")
     t_memory.add_row("/memory", "显示最近消息历史与压缩状态")
     t_memory.add_row("/instructions", "显示当前加载的 AGENTS.md / ZZM.md 指令")
+    t_memory.add_row("/status", "显示会话、模型、Token 和运行状态")
+    t_memory.add_row("/resume [id]", "恢复最近或指定历史会话")
+    t_memory.add_row("/permissions", "显示权限账本摘要")
+    t_memory.add_row("/artifacts [id]", "列出或预览 Artifact")
+    t_memory.add_row("/plan", "显示当前计划或本地计划文件")
+    t_memory.add_row("/review", "对 git diff 做只读审查")
+    t_memory.add_row("/undo", "查看可撤销变更状态")
+    t_memory.add_row("/skills", "显示 Skills 集成状态")
+    t_memory.add_row("/mcp", "显示 MCP 集成状态")
     t_memory.add_row("/remember <fact>", "添加一条长期语义记忆")
     t_memory.add_row("/memory-disable <key>", "禁用匹配关键字的长期记忆")
     t_memory.add_row("/memory-enable <key>", "重新启用匹配关键字的长期记忆")
