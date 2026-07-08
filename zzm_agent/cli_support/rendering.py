@@ -761,6 +761,8 @@ class PlainTextRenderer:
         text = self._content or fallback_text
         if text:
             self.render_final(text)
+        elif self._seen_process:
+            self.render_final("Tool execution completed, but the model returned no final summary.")
 
     def _print_separator(self) -> None:
         if self._separator_printed:
