@@ -365,6 +365,63 @@ def test_plugin_dirs_resolve_relative_to_config_file(tmp_path, monkeypatch):
     assert plugin_dirs == [(config_dir / "zzm_agent" / "plugins").resolve()]
 
 
+def test_load_config_uses_config_manager_metadata(tmp_path, monkeypatch):
+    monkeypatch.delenv("ZZM_AGENT_TEST_BASE_URL", raising=False)
+    config_path = tmp_path / "config.yaml"
+    config_path.write_text(
+        "model:\n"
+        "  base_url: ${ZZM_AGENT_TEST_BASE_URL:-https://example.com/v1}\n"
+        "  model_name: demo\n"
+        "agent:\n"
+        "  stream: true\n",
+        encoding="utf-8",
+    )
+
+    cfg = load_config(config_path)
+
+    assert cfg["model"]["base_url"] == "https://example.com/v1"
+    assert cfg["_config_path"] == str(config_path.resolve())
+    assert cfg["_config_sources"][0]["scope"] == "project"
+    assert cfg["_config_origin"]["model.model_name"]["scope"] == "project"
+
+
+def test_config_command_shows_effective_config(tmp_path):
+    store = MemoryStore(path=tmp_path / "memory.json", max_history=50)
+    console = DummyConsole()
+    runtime = {
+        "config": {
+            "model": {
+                "base_url": "https://example.com/v1",
+                "model_name": "demo-model",
+            },
+            "agent": {"stream": True},
+            "memory": {
+                "path": ".zzm_agent/memory.json",
+                "max_context_tokens": 32000,
+            },
+            "_config_profile": "default",
+            "_config_sources": [
+                {"scope": "project", "path": str(tmp_path / "config.yaml")},
+            ],
+            "_config_origin": {
+                "model.model_name": {
+                    "scope": "project",
+                    "path": str(tmp_path / "config.yaml"),
+                    "locked": False,
+                }
+            },
+            "_config_locked": [],
+        }
+    }
+
+    assert handle_slash("/config", DummyRegistry(), store, DummyOptimizer(), console, runtime) is True
+
+    rendered = "\n".join(console.lines)
+    assert "Effective config" in rendered
+    assert "model.model_name: demo-model" in rendered
+    assert "Sources" in rendered
+
+
 def test_run_repl_prints_traceback_in_debug_mode(monkeypatch):
     class FakeConsole:
         def __init__(self):

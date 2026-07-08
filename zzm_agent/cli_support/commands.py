@@ -163,6 +163,57 @@ def handle_slash(
                 )
         return True
 
+    if command == "/config":
+        if runtime is None or not isinstance(runtime.get("config"), dict):
+            console.print("[yellow]Config is unavailable in this context.[/yellow]")
+            return True
+
+        cfg = runtime["config"]
+        sources = cfg.get("_config_sources", [])
+        locked = cfg.get("_config_locked", [])
+        origins = cfg.get("_config_origin", {})
+        profile = cfg.get("_config_profile", "default")
+        model = cfg.get("model", {})
+        memory = cfg.get("memory", {})
+        agent = cfg.get("agent", {})
+
+        rows = [
+            ("profile", str(profile), _origin_scope(origins, "_config_profile")),
+            ("model.base_url", _mask_secret(model.get("base_url")), _origin_scope(origins, "model.base_url")),
+            ("model.model_name", str(model.get("model_name", "")), _origin_scope(origins, "model.model_name")),
+            ("agent.stream", str(agent.get("stream", "")), _origin_scope(origins, "agent.stream")),
+            ("memory.path", str(memory.get("path", "")), _origin_scope(origins, "memory.path")),
+            (
+                "memory.max_context_tokens",
+                str(memory.get("max_context_tokens", "")),
+                _origin_scope(origins, "memory.max_context_tokens"),
+            ),
+        ]
+
+        if console.__class__.__name__ == "Console":
+            try:
+                from rich.table import Table
+                from rich import box
+
+                table = Table(
+                    show_header=True,
+                    header_style="bold #61AFEF",
+                    box=box.ROUNDED,
+                    border_style="#3B4252",
+                    padding=(0, 2),
+                )
+                table.add_column("配置项", style="bold #56B6C2")
+                table.add_column("当前值", style="white")
+                table.add_column("来源", style="dim #ABB2BF")
+                for key, value, source in rows:
+                    table.add_row(key, value, source)
+                console.print(table)
+            except Exception:
+                _print_plain_config(console, rows, sources, locked)
+        else:
+            _print_plain_config(console, rows, sources, locked)
+        return True
+
     if command.startswith("/models"):
         if runtime is None:
             if console.__class__.__name__ == "Console":
@@ -762,6 +813,47 @@ def _list_runtime_models(runtime: dict[str, Any]) -> list[str] | None:
             key=lambda item: (item[1] is not None, item[1] or 0, item[0]),
         )
     ]
+
+
+def _origin_scope(origins: dict[str, Any], key: str) -> str:
+    origin = origins.get(key)
+    if isinstance(origin, dict):
+        scope = origin.get("scope", "")
+        path = origin.get("path", "")
+        locked = " locked" if origin.get("locked") else ""
+        if scope and path:
+            return f"{scope}{locked} · {path}"
+        return str(scope or path or "")
+    return ""
+
+
+def _mask_secret(value: Any) -> str:
+    text = str(value or "")
+    if not text:
+        return ""
+    if len(text) <= 12:
+        return text
+    return text[:6] + "..." + text[-4:]
+
+
+def _print_plain_config(
+    console: Any,
+    rows: list[tuple[str, str, str]],
+    sources: list[dict[str, Any]],
+    locked: list[str],
+) -> None:
+    console.print("[cyan]Effective config[/cyan]")
+    for key, value, source in rows:
+        suffix = f" ({source})" if source else ""
+        console.print(f"{key}: {value}{suffix}")
+    if sources:
+        console.print("[cyan]Sources[/cyan]")
+        for source in sources:
+            console.print(
+                f"- {source.get('scope', '')}: {source.get('path', '')}"
+            )
+    if locked:
+        console.print("[cyan]Locked keys[/cyan] " + ", ".join(locked))
 
 
 def _parse_created_timestamp(value: Any) -> int | None:

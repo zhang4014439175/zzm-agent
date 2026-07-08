@@ -15,7 +15,7 @@
 
 ## 执行进度总览
 
-> **当前下一任务：7.1 ConfigManager、Profile 与配置作用域。**
+> **当前下一任务：7.2 Agent 指令文件与自动记忆。**
 
 ### 当前能力基线
 
@@ -59,7 +59,7 @@
 
 ### P2：配置、指令文件与 CLI 产品化
 
-- [ ] 7.1 ConfigManager、Profile 与配置作用域：合并开发全局、项目、本地和托管配置，统一模型、权限、MCP、Skills、UI 和功能开关来源
+- [x] 7.1 ConfigManager、Profile 与配置作用域：合并开发全局、项目、本地和托管配置，统一模型、权限、MCP、Skills、UI 和功能开关来源
 - [ ] 7.2 Agent 指令文件与自动记忆：支持 `AGENTS.md` / `ZZM.md` 分层加载、就近覆盖、来源审计、大小预算和跨会话自动记忆
 - [ ] 7.3 Slash Command 与交互式 CLI：合并开发 `/status`、`/resume`、`/sessions`、`/config`、`/permissions`、`/artifacts`、`/plan`、`/review` 等核心命令
 - [ ] 7.4 非交互 `exec`、stdin 管道与 JSON 输出：支持脚本、CI、批处理、`--json` 事件流、最终结果输出文件和 shell completion
@@ -992,10 +992,20 @@ P2 的目标是让终端版先成为可日常使用的产品，而不是只有�
 
 验收要求：
 
-- 配置加载有明确优先级和来源审计；
-- CLI 能显示当前生效配置；
-- 项目配置可以提交到仓库，本地配置默认不提交；
-- 托管配置可以声明不可被用户覆盖的安全要求。
+- [x] 配置加载有明确优先级和来源审计；
+- [x] CLI 能显示当前生效配置；
+- [x] 项目配置可以提交到仓库，本地配置默认不提交；
+- [x] 托管配置可以声明不可被用户覆盖的安全要求。
+
+完成记录：
+
+- [x] 新增 `zzm_agent/core/config.py`，提供 `ConfigManager`、`ConfigScope`、`ConfigSource`、`ConfigOrigin` 和 `ConfigLoadResult`；
+- [x] `load_config()` 迁移到 ConfigManager，同时保留旧函数入口和 `--config` / `ZZM_AGENT_CONFIG` 兼容行为；
+- [x] 支持 global、project、local、managed 作用域合并，记录 `_config_sources`、`_config_origin` 和 `_config_locked`；
+- [x] 支持 `${ENV:-default}` 展开和 `ZZM_AGENT_PROFILE` profile 覆盖；
+- [x] 新增 `/config` 命令显示当前关键配置、来源和锁定信息；
+- [x] 新增 `tests/test_config_manager.py`，扩充 `tests/test_cli.py`；
+- [x] 新增 `docs/7.1-config-manager-profile.md`，说明问题、例子、链路、关键数据结构和验证结果。
 
 ### 7.2 Agent 指令文件与自动记忆
 

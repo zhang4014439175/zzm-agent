@@ -21,6 +21,7 @@ from zzm_agent.cli_support.rendering import (
     render_error_card,
 )
 from zzm_agent.core.agent_loop import AgentLoop
+from zzm_agent.core.config import ConfigManager
 from zzm_agent.core.model_stream import ModelStreamEvent, ModelStreamEventKind
 from zzm_agent.core.model_metadata import resolve_model_context_limit
 from zzm_agent.core.observability import ToolEvent, ToolEventCallback, ToolEventLogger
@@ -32,7 +33,6 @@ from zzm_agent.memory.store import MemoryStore
 from zzm_agent.prompt.manager import PromptManager
 
 CONFIG_PATH = Path("config.yaml")
-_ENV_VALUE_PATTERN = re.compile(r"^\$\{([A-Za-z_][A-Za-z0-9_]*)(?::-(.*))?\}$")
 _SDK_ERROR_PAYLOAD_PATTERN = re.compile(r"-\s*(\{.*\})\s*$", re.DOTALL)
 
 
@@ -236,42 +236,13 @@ def parse_args(argv: list[str] | None = None) -> argparse.Namespace:
 
 def resolve_config_path(config_path: str | Path | None = None) -> Path:
     """Resolve the config path without assuming the current working directory."""
-    candidates: list[Path] = []
-    if config_path:
-        candidates.append(Path(config_path).expanduser())
-
-    env_config = os.environ.get("ZZM_AGENT_CONFIG")
-    if env_config:
-        candidates.append(Path(env_config).expanduser())
-
-    candidates.append(Path.cwd() / CONFIG_PATH)
-    candidates.append(Path(__file__).resolve().parents[2] / CONFIG_PATH)
-
-    for candidate in candidates:
-        resolved = candidate.resolve()
-        if resolved.exists():
-            return resolved
-
-    raise FileNotFoundError(
-        "config.yaml not found. Use --config or set ZZM_AGENT_CONFIG."
-    )
-
-
-def _expand_env_value(value: Any) -> Any:
-    """Expand ${VAR} and ${VAR:-default} placeholders in config values."""
-    if isinstance(value, dict):
-        return {key: _expand_env_value(item) for key, item in value.items()}
-    if isinstance(value, list):
-        return [_expand_env_value(item) for item in value]
-    if not isinstance(value, str):
-        return value
-
-    match = _ENV_VALUE_PATTERN.fullmatch(value.strip())
-    if match is None:
-        return value
-
-    env_name, default = match.groups()
-    return os.environ.get(env_name, default or "")
+    manager = ConfigManager()
+    sources = manager.resolve_default_sources(config_path)
+    if not sources:
+        raise FileNotFoundError(
+            "config.yaml not found. Use --config or set ZZM_AGENT_CONFIG."
+        )
+    return sources[-1].path
 
 
 def _config_bool(value: Any, default: bool = False) -> bool:
@@ -315,12 +286,8 @@ def load_config(config_path: str | Path | None = None) -> dict[str, Any]:
     except ImportError as exc:
         raise RuntimeError("PyYAML is required to load config.yaml.") from exc
 
-    path = resolve_config_path(config_path)
-    with path.open(encoding="utf-8") as handle:
-        cfg = _expand_env_value(yaml.safe_load(handle) or {})
-    cfg["_config_path"] = str(path)
-    cfg["_config_dir"] = str(path.parent)
-    return cfg
+    _ = yaml
+    return ConfigManager().load(explicit_path=config_path).config
 
 
 def _resolve_plugin_dirs(cfg: dict[str, Any]) -> list[Path]:

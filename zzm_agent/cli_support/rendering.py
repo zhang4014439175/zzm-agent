@@ -495,6 +495,7 @@ def build_prompt_session(workspace: str | Path, runtime: dict[str, Any] | None =
             "/reload": "重新加载本地工具插件",
             "/models": "列出当前 base URL 可用模型",
             "/model": "查看或切换当前模型",
+            "/config": "显示当前生效配置和来源",
             "/stream": "查看或切换流式输出",
             "/memory": "显示最近历史和压缩状态",
             "/sessions": "列出所有已知的会话",
@@ -778,6 +779,7 @@ Available Commands:
     t_model.add_column("Desc", style="white")
     t_model.add_row("/models", "列出当前 base URL 可用模型")
     t_model.add_row("/model [id]", "查看或切换当前模型")
+    t_model.add_row("/config", "显示当前生效配置和来源")
     t_model.add_row("/stream [on|off]", "查看或切换流式输出模式")
 
     # 3. Memory & Facts
