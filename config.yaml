@@ -30,6 +30,13 @@ memory:
   retrieval_top_k: 3
   max_context_tokens: 32000
   compression_keep_recent: 10
+  # 智能体指令文件列表（按照列表顺序以及从根目录到当前目录的层级依次加载，后者优先级更高）
+  instruction_files:
+    - "AGENTS.md"  # 团队/项目级公共指令文件（通常会被提交到 Git 控制中共享）
+    - "ZZM.md"     # 个人/本地特有覆盖指令文件（通常会被添加到 .gitignore 中忽略）
+  # 每个指令文件的最大加载字符数上限，超出部分将被自动截断以节省模型 Token 消耗
+  instruction_max_chars: 8000
+  auto_memory_enabled: true
 
 evolution:
   enabled: false

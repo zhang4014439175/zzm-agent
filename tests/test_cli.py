@@ -1009,6 +1009,46 @@ def test_handle_slash_remember_and_forget(tmp_path):
     assert store.load_semantic_memory() == []
 
 
+def test_handle_slash_instructions_lists_loaded_instruction_files(tmp_path):
+    (tmp_path / "AGENTS.md").write_text("Use pytest.", encoding="utf-8")
+    store = MemoryStore(
+        path=tmp_path / ".zzm_agent" / "memory.json",
+        max_history=50,
+        session_id="alpha",
+        workspace_root=tmp_path,
+    )
+    console = DummyConsole()
+
+    handled = handle_slash("/instructions", DummyRegistry(), store, DummyOptimizer(), console)
+
+    assert handled is True
+    assert any("Loaded 1 instruction file" in line for line in console.lines)
+    assert any("AGENTS.md" in line for line in console.lines)
+
+
+def test_handle_slash_memory_enable_disable_updates_semantic_metadata(tmp_path):
+    store = MemoryStore(path=tmp_path / "memory.json", max_history=50, session_id="alpha")
+    store.remember_fact("Project language is Python.")
+    console = DummyConsole()
+
+    assert (
+        handle_slash("/memory-disable python", DummyRegistry(), store, DummyOptimizer(), console)
+        is True
+    )
+    assert store.load_semantic_memory() == []
+    assert store.list_semantic_memory(include_disabled=True)[0]["enabled"] is False
+
+    assert handle_slash("/semantic", DummyRegistry(), store, DummyOptimizer(), console) is True
+    assert any("disabled" in line for line in console.lines)
+    assert any("source=manual" in line for line in console.lines)
+
+    assert (
+        handle_slash("/memory-enable python", DummyRegistry(), store, DummyOptimizer(), console)
+        is True
+    )
+    assert store.load_semantic_memory()[0]["enabled"] is True
+
+
 def test_handle_slash_semantic_lists_all_long_term_memories(tmp_path):
     store = MemoryStore(path=tmp_path / "memory.json", max_history=50, session_id="alpha")
     store.remember_fact("User prefers concise answers.")

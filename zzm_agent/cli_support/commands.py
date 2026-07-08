@@ -188,6 +188,21 @@ def handle_slash(
                 str(memory.get("max_context_tokens", "")),
                 _origin_scope(origins, "memory.max_context_tokens"),
             ),
+            (
+                "memory.instruction_files",
+                ", ".join(str(item) for item in memory.get("instruction_files", [])),
+                _origin_scope(origins, "memory.instruction_files"),
+            ),
+            (
+                "memory.instruction_max_chars",
+                str(memory.get("instruction_max_chars", "")),
+                _origin_scope(origins, "memory.instruction_max_chars"),
+            ),
+            (
+                "memory.auto_memory_enabled",
+                str(memory.get("auto_memory_enabled", "")),
+                _origin_scope(origins, "memory.auto_memory_enabled"),
+            ),
         ]
 
         if console.__class__.__name__ == "Console":
@@ -480,6 +495,26 @@ def handle_slash(
                 console.print(f"[cyan]{role}[/cyan]: {content}")
         return True
 
+    if command == "/instructions":
+        files = store.list_instruction_files()
+        if not files:
+            if console.__class__.__name__ == "Console":
+                render_notification(console, "当前工作区未加载 AGENTS.md 或 ZZM.md 指令文件。", "warning")
+            else:
+                console.print("[yellow]No AGENTS.md or ZZM.md files loaded.[/yellow]")
+            return True
+
+        console.print(f"[yellow]Loaded {len(files)} instruction file(s).[/yellow]")
+        for item in files:
+            suffix = ""
+            if item.truncated:
+                suffix = f" [truncated {item.loaded_chars}/{item.original_chars} chars]"
+            console.print(
+                f"[cyan]priority {item.priority}[/cyan] "
+                f"{item.name} [dim]{item.path}[/dim]{suffix}"
+            )
+        return True
+
     if command.startswith("/remember"):
         parts = command.split(maxsplit=1)
         if len(parts) != 2 or not parts[1].strip():
@@ -494,6 +529,38 @@ def handle_slash(
             render_notification(console, f"已成功记录记忆：{entry['fact']}", "success")
         else:
             console.print(f"[green]Remembered:[/green] {entry['fact']}")
+        return True
+
+    if command.startswith("/memory-disable"):
+        parts = command.split(maxsplit=1)
+        if len(parts) != 2 or not parts[1].strip():
+            if console.__class__.__name__ == "Console":
+                render_notification(console, "命令使用方法: /memory-disable <keyword>", "warning")
+            else:
+                console.print("[yellow]Usage: /memory-disable <keyword>[/yellow]")
+            return True
+
+        changed = store.set_memory_enabled(parts[1].strip(), enabled=False)
+        if console.__class__.__name__ == "Console":
+            render_notification(console, f"已禁用 {changed} 条匹配的自动记忆。", "success")
+        else:
+            console.print(f"[green]Disabled {changed} memory item(s).[/green]")
+        return True
+
+    if command.startswith("/memory-enable"):
+        parts = command.split(maxsplit=1)
+        if len(parts) != 2 or not parts[1].strip():
+            if console.__class__.__name__ == "Console":
+                render_notification(console, "命令使用方法: /memory-enable <keyword>", "warning")
+            else:
+                console.print("[yellow]Usage: /memory-enable <keyword>[/yellow]")
+            return True
+
+        changed = store.set_memory_enabled(parts[1].strip(), enabled=True)
+        if console.__class__.__name__ == "Console":
+            render_notification(console, f"已启用 {changed} 条匹配的自动记忆。", "success")
+        else:
+            console.print(f"[green]Enabled {changed} memory item(s).[/green]")
         return True
 
     if command.startswith("/forget"):
@@ -612,8 +679,8 @@ def handle_slash(
         return True
 
     if command == "/semantic":
-        facts = store.list_semantic_facts()
-        if not facts:
+        entries = store.list_semantic_memory(include_disabled=True)
+        if not entries:
             if console.__class__.__name__ == "Console":
                 render_notification(console, "长期语义记忆库中目前没有保存任何事实。", "warning")
             else:
@@ -627,9 +694,14 @@ def handle_slash(
                 from rich import box
                 
                 content = Text()
-                for index, fact in enumerate(facts, start=1):
+                for index, entry in enumerate(entries, start=1):
+                    fact = entry.get("fact", "")
+                    source = entry.get("source", "manual")
+                    enabled = entry.get("enabled", True)
+                    status = "enabled" if enabled else "disabled"
                     content.append(f"  {index}. ", style="bold #E5C07B")
-                    content.append(f"• {fact}\n", style="white")
+                    content.append(f"• {fact}", style="white")
+                    content.append(f"  [{status}, source={source}]\n", style="dim")
                 content.rstrip()
                 
                 console.print(
@@ -643,16 +715,26 @@ def handle_slash(
                 )
             except Exception:
                 console.print(
-                    f"[yellow]{len(facts)} long-term memories.[/yellow]"
+                    f"[yellow]{len(entries)} long-term memories.[/yellow]"
                 )
-                for index, fact in enumerate(facts, start=1):
-                    console.print(f"[cyan]{index}.[/cyan] {fact}")
+                for index, entry in enumerate(entries, start=1):
+                    source = entry.get("source", "manual")
+                    status = "enabled" if entry.get("enabled", True) else "disabled"
+                    console.print(
+                        f"[cyan]{index}.[/cyan] {entry.get('fact', '')} "
+                        f"[dim]({status}, source={source})[/dim]"
+                    )
         else:
             console.print(
-                f"[yellow]{len(facts)} long-term memories.[/yellow]"
+                f"[yellow]{len(entries)} long-term memories.[/yellow]"
             )
-            for index, fact in enumerate(facts, start=1):
-                console.print(f"[cyan]{index}.[/cyan] {fact}")
+            for index, entry in enumerate(entries, start=1):
+                source = entry.get("source", "manual")
+                status = "enabled" if entry.get("enabled", True) else "disabled"
+                console.print(
+                    f"[cyan]{index}.[/cyan] {entry.get('fact', '')} "
+                    f"[dim]({status}, source={source})[/dim]"
+                )
         return True
 
     if command in {"/evolve", "/evolve run"}:

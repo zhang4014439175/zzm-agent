@@ -15,7 +15,7 @@
 
 ## 执行进度总览
 
-> **当前下一任务：7.2 Agent 指令文件与自动记忆。**
+> **当前下一任务：7.3 Slash Command 与交互式 CLI。**
 
 ### 当前能力基线
 
@@ -60,8 +60,9 @@
 ### P2：配置、指令文件与 CLI 产品化
 
 - [x] 7.1 ConfigManager、Profile 与配置作用域：合并开发全局、项目、本地和托管配置，统一模型、权限、MCP、Skills、UI 和功能开关来源
-- [ ] 7.2 Agent 指令文件与自动记忆：支持 `AGENTS.md` / `ZZM.md` 分层加载、就近覆盖、来源审计、大小预算和跨会话自动记忆
+- [x] 7.2 Agent 指令文件与自动记忆：支持 `AGENTS.md` / `ZZM.md` 分层加载、就近覆盖、来源审计、大小预算和跨会话自动记忆
 - [ ] 7.3 Slash Command 与交互式 CLI：合并开发 `/status`、`/resume`、`/sessions`、`/config`、`/permissions`、`/artifacts`、`/plan`、`/review` 等核心命令
+- [ ] 7.3A 终端输出分层与可降级渲染：先解决思考过程、工具执行和最终总结混排问题，建立可复用的 CLI 渲染边界
 - [ ] 7.4 非交互 `exec`、stdin 管道与 JSON 输出：支持脚本、CI、批处理、`--json` 事件流、最终结果输出文件和 shell completion
 - [ ] 7.5 Git / Review / Commit / PR 工作流：合并开发 diff review、stage/unstage、commit message、branch、PR 描述和 CI 失败分析入口
 - [ ] P2 阶段验收：确认终端版具备可恢复、可配置、可脚本化、可审查和可日常高频使用的产品体验
@@ -100,6 +101,7 @@
 - [ ] 11.3 Circuit Breaker 与外部依赖降级：覆盖 Provider、MCP Server、网络工具和后台服务的熔断、半开探测和手动恢复
 - [ ] 11.4 Automations、定时任务与事件触发：支持 recurring task、monitor、webhook/channel trigger、失败重试、通知和运行历史
 - [ ] 11.5 ConcurrentToolsRenderer 与 BackgroundProcessRenderer：展示并发工具、后台任务、日志 Artifact、退出码、取消和失败原因
+- [ ] 11.6 基于 prompt_toolkit 的异步交互式终端 TUI：在 async_run() 和任务调度稳定后，实现固定底部输入框、状态栏和 Esc 异步取消
 - [ ] P6 阶段验收：确认异步、并发、后台与自动化任务可观察、可取消、可恢复，且写操作不会错误并发
 
 ### P7：多 Agent 协作与 Worktree 隔离
@@ -273,6 +275,7 @@ P0 先完成现有 ReAct 的可靠性闭环；P1 收敛运行时状态，并在 
 | ConfigManager / Profile | P2 | P3 沙箱、P4 MCP/Plugin、P10 托管配置 |
 | Agent 指令文件 / 自动记忆 | P2 | P4 Skills、P5 WorkingMemory、P10 审计 |
 | CLI command / exec / JSON event | P2 | P6 自动化、P8 CI、P9 App Server |
+| TerminalRenderer / TUI Shell | P2 渲染协议 | P6 异步 TUI、P9 Desktop |
 | Git / Review / PR workflow | P2 | P7 Worktree、P8 CI、P10 安全扫描 |
 | Loop 状态机、`needs_follow_up` | P1 | P5 Planner、P6 Async |
 | Hook、Stop Hook、`stop_hook_active` | P1 | P5 Task Hook、P7 Agent Hook、P10 Governance |
@@ -1013,10 +1016,20 @@ P2 的目标是让终端版先成为可日常使用的产品，而不是只有�
 
 验收要求：
 
-- 启动时能列出加载的指令文件和优先级；
-- 指令文件有大小预算和截断提示；
-- 自动记忆有创建、查看、删除、禁用和来源记录；
-- nested repo / monorepo 的就近规则可测试。
+- [x] 启动时能列出加载的指令文件和优先级；
+- [x] 指令文件有大小预算和截断提示；
+- [x] 自动记忆有创建、查看、删除、禁用和来源记录；
+- [x] nested repo / monorepo 的就近规则可测试。
+
+完成记录：
+
+- [x] 新增 `zzm_agent/memory/instructions.py`，提供 `InstructionManager` 和 `InstructionFile`，支持 `AGENTS.md` / `ZZM.md` 从 workspace root 到当前目录的层级加载；
+- [x] `MemoryStore.build_turn_messages()` 接入项目指令文件和自动记忆，并通过 `MemoryLoadState` 记录来源、版本、截断和重复信息；
+- [x] 语义记忆新增 `source` 和 `enabled` 元数据，支持禁用后保留但不注入上下文；
+- [x] 新增 `/instructions`、`/memory-disable`、`/memory-enable`，增强 `/semantic` 和 `/config` 的来源展示；
+- [x] 默认配置新增 `memory.instruction_files`、`memory.instruction_max_chars` 和 `memory.auto_memory_enabled`；
+- [x] 扩充 `tests/test_memory_store.py` 和 `tests/test_cli.py`，覆盖指令加载、预算截断、来源审计和自动记忆启停；
+- [x] 新增 `docs/7.2-agent-instructions-auto-memory.md`，说明问题、例子、执行链路、关键数据结构、边界和验证结果。
 
 ### 7.3 Slash Command 与交互式 CLI
 
@@ -1028,6 +1041,22 @@ P2 的目标是让终端版先成为可日常使用的产品，而不是只有�
 - `/review` 能对未提交改动、暂存区或指定 commit 做只读审查；
 - `/plan` 能在编辑前展示计划并允许用户确认；
 - 命令输出在无 Rich 环境下仍可读。
+
+### 7.3A 终端输出分层与可降级渲染
+
+先做轻量但关键的终端输出整理，不在这一阶段重构成全屏 TUI。目标是解决当前思考过程、工具执行、状态提示和最终总结混在一堆文本里的问题，并为后续 `exec --json`、P6 异步 TUI 和桌面端共用同一套展示语义打基础。
+
+这一阶段应基于 `ModelStreamEvent`、`ToolProgressEvent`、`ToolResult` 和 `RendererRegistry` 建立 CLI 渲染边界。CLI 渲染层只能消费结构化事件，不应直接解析 AgentLoop 的自然语言输出，也不应修改核心运行状态。
+
+验收要求：
+
+- 思考摘要、状态提示、工具执行记录、工具结果、正文增量和最终总结按事件类型分区渲染；
+- 最终总结前有清晰分隔线，用户能一眼区分执行过程和最终结论；
+- 工具执行使用统一样式展示 `Running`、`Ran`、`Failed`、`Cancelled`，命令正文弱化显示，关键状态更醒目；
+- 长工具输出走折叠、摘要或 Artifact 引用，不把 transcript 和模型上下文冲爆；
+- 支持 `TerminalRenderer` / `PlainTextRenderer` 分层：有 TTY 和 Rich 时使用增强样式，无 TTY、无 Rich、CI、管道或重定向环境自动降级为普通文本；
+- 降级文本仍保留事件顺序、工具状态、最终总结和错误信息，便于日志、CI 和脚本消费；
+- 本阶段不实现固定底部输入框、不在同步 AgentLoop 外包线程做完整 TUI，也不承诺 Esc 能立即终止所有同步工具；这些放到 11.6。
 
 ### 7.4 非交互 `exec`、stdin 管道与 JSON 输出
 
@@ -1061,6 +1090,7 @@ zzm exec --json "summarize repo"
 
 - 终端用户能从启动、配置、执行、审查、提交到恢复形成闭环；
 - CLI 与 QueryEngine 使用同一状态和权限系统；
+- 用户能清楚区分执行过程、工具输出和最终结论；
 - 脚本化入口可用于 CI；
 - 配置、指令和记忆的来源可解释。
 
@@ -1208,12 +1238,29 @@ ToolCallScheduler 根据依赖、风险、副作用和资源限制调度工具�
 
 展示并发工具状态、完成顺序、耗时、失败、取消；展示后台进程 ID、命令、日志、退出码、运行时长和 Artifact。
 
+### 11.6 基于 prompt_toolkit 的异步交互式终端 TUI
+
+在 `async_run()`、ToolCallScheduler、后台进程和取消传播稳定后，再把交互式终端升级为真正的非阻塞 TUI。目标是接近 Codex / Claude Code 这类产品体验：Agent 执行时输入框和状态栏固定在底部，上方 transcript 可滚动，用户可以继续输入，按 Esc 或 Ctrl+C 能取消当前 Turn 或正在运行的后台任务。
+
+这一阶段不应通过把同步 `AgentLoop.run()` 简单丢进线程池来完成最终架构。可以为了兼容旧同步入口保留适配层，但产品级 TUI 应以 QueryEngine 的异步 API、CancellationController、EventBus 和渲染协议为主链路。
+
+验收要求：
+
+- 终端布局分为 transcript、固定输入框和固定状态栏，Agent 输出不会把输入框顶走；
+- Agent 执行中输入框仍可编辑，用户可排队输入下一条消息或执行 slash command；
+- Esc / Ctrl+C 调用 `cancel_turn()` 或 `cancel_task()`，取消信号能传播到模型流、并发工具、后台进程和子任务；
+- 权限确认、计划确认、工具进度、后台任务状态和最终总结不会互相覆盖或打乱布局；
+- TUI 复用 7.3A 的 TerminalRenderer 语义，不重新发明一套输出协议；
+- 无 TTY、无 Rich、CI 和管道环境继续走 PlainTextRenderer / `exec --json`，不启动全屏 TUI；
+- Windows Terminal、PowerShell、CMD、WSL、macOS/Linux 终端兼容性有测试或手动验证记录。
+
 ### 验收标准
 
 - 同步入口继续可用；
 - 只读并发有明确收益；
 - 后台任务可查询和停止；
 - 自动化任务可审计、可暂停、可失败恢复；
+- 交互式终端能在异步任务运行时保持输入可用，并能取消当前 Turn；
 - 外部依赖持续失败时会熔断。
 
 ---

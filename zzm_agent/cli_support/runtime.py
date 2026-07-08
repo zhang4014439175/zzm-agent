@@ -536,6 +536,12 @@ def build_runtime(args: argparse.Namespace, cfg: dict[str, Any]) -> dict[str, An
         max_context_tokens=context_limit.tokens,
         compression_keep_recent=cfg["memory"].get("compression_keep_recent", 10),
         model_name=cfg["model"].get("model_name"),
+        workspace_root=os.environ["ZZM_AGENT_WORKSPACE_ROOT"],
+        instruction_filenames=tuple(
+            cfg["memory"].get("instruction_files", ["AGENTS.md", "ZZM.md"])
+        ),
+        instruction_max_chars=cfg["memory"].get("instruction_max_chars", 8000),
+        auto_memory_enabled=cfg["memory"].get("auto_memory_enabled", True),
     )
     optimizer = EvolutionOptimizer(
         client=client,

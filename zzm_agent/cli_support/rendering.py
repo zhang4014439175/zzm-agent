@@ -498,10 +498,13 @@ def build_prompt_session(workspace: str | Path, runtime: dict[str, Any] | None =
             "/config": "显示当前生效配置和来源",
             "/stream": "查看或切换流式输出",
             "/memory": "显示最近历史和压缩状态",
+            "/instructions": "显示加载的项目指令文件",
             "/sessions": "列出所有已知的会话",
             "/session": "切换到指定的历史会话",
             "/new": "开启一轮全新的对话",
             "/remember": "添加一条长期的语义记忆",
+            "/memory-disable": "禁用匹配关键字的长期记忆",
+            "/memory-enable": "重新启用匹配关键字的长期记忆",
             "/forget": "删除匹配关键字的长期记忆",
             "/search": "检索历史对话和长期记忆",
             "/semantic": "列出所有长期语义记忆",
@@ -716,10 +719,13 @@ Available Commands:
 /model <id>   - Show or switch the active model
 /stream       - Show or change streaming output mode
 /memory       - Show recent conversation history and compression state
+/instructions - Show loaded AGENTS.md / ZZM.md project instructions
 /sessions     - List all known conversation sessions
 /session <id> - Switch to a specific session
 /new          - Start a clean conversation session
 /remember <f> - Add a long-term semantic memory fact
+/memory-disable <k> - Disable long-term memories matching a keyword
+/memory-enable <k>  - Re-enable long-term memories matching a keyword
 /forget <k>   - Remove long-term memories matching a keyword
 /search <k>   - Search across semantic and episodic memories
 /semantic     - List all long-term semantic memories
@@ -747,10 +753,13 @@ Available Commands:
 /model <id>   - Show or switch the active model
 /stream       - Show or change streaming output mode
 /memory       - Show recent conversation history and compression state
+/instructions - Show loaded AGENTS.md / ZZM.md project instructions
 /sessions     - List all known conversation sessions
 /session <id> - Switch to a specific session
 /new          - Start a clean conversation session
 /remember <f> - Add a long-term semantic memory fact
+/memory-disable <k> - Disable long-term memories matching a keyword
+/memory-enable <k>  - Re-enable long-term memories matching a keyword
 /forget <k>   - Remove long-term memories matching a keyword
 /search <k>   - Search across semantic and episodic memories
 /semantic     - List all long-term semantic memories
@@ -766,7 +775,7 @@ Available Commands:
     # Categorize commands into logical tables
     # 1. Session Management
     t_session = Table(show_header=False, box=None, padding=(0, 1))
-    t_session.add_column("Command", style="bold #56B6C2", width=18)
+    t_session.add_column("Command", style="bold #56B6C2", width=24)
     t_session.add_column("Desc", style="white")
     t_session.add_row("/new", "开启一轮全新的对话会话")
     t_session.add_row("/sessions", "列出所有已知的历史会话")
@@ -775,7 +784,7 @@ Available Commands:
 
     # 2. Model & Output
     t_model = Table(show_header=False, box=None, padding=(0, 1))
-    t_model.add_column("Command", style="bold #56B6C2", width=18)
+    t_model.add_column("Command", style="bold #56B6C2", width=24)
     t_model.add_column("Desc", style="white")
     t_model.add_row("/models", "列出当前 base URL 可用模型")
     t_model.add_row("/model [id]", "查看或切换当前模型")
@@ -784,17 +793,20 @@ Available Commands:
 
     # 3. Memory & Facts
     t_memory = Table(show_header=False, box=None, padding=(0, 1))
-    t_memory.add_column("Command", style="bold #56B6C2", width=18)
+    t_memory.add_column("Command", style="bold #56B6C2", width=24)
     t_memory.add_column("Desc", style="white")
     t_memory.add_row("/memory", "显示最近消息历史与压缩状态")
+    t_memory.add_row("/instructions", "显示当前加载的 AGENTS.md / ZZM.md 指令")
     t_memory.add_row("/remember <fact>", "添加一条长期语义记忆")
+    t_memory.add_row("/memory-disable <key>", "禁用匹配关键字的长期记忆")
+    t_memory.add_row("/memory-enable <key>", "重新启用匹配关键字的长期记忆")
     t_memory.add_row("/forget <key>", "删除匹配关键字的长期记忆")
     t_memory.add_row("/search <key>", "全局搜索历史对话和记忆")
     t_memory.add_row("/semantic", "列出所有长期语义记忆")
 
     # 4. Prompt Evolution
     t_evolve = Table(show_header=False, box=None, padding=(0, 1))
-    t_evolve.add_column("Command", style="bold #56B6C2", width=18)
+    t_evolve.add_column("Command", style="bold #56B6C2", width=24)
     t_evolve.add_column("Desc", style="white")
     t_evolve.add_row("/evolve run", "基于当前会话优化并生成提示词")
     t_evolve.add_row("/evolve diff", "查看新提示词与旧版本的差异")
@@ -803,26 +815,27 @@ Available Commands:
 
     # 5. Tools & System
     t_system = Table(show_header=False, box=None, padding=(0, 1))
-    t_system.add_column("Command", style="bold #56B6C2", width=18)
+    t_system.add_column("Command", style="bold #56B6C2", width=24)
     t_system.add_column("Desc", style="white")
     t_system.add_row("/tools", "列出所有注册的工具及其描述")
     t_system.add_row("/reload", "重新加载本地工具插件")
     t_system.add_row("/help", "显示本帮助信息")
 
+
     help_group = Group(
-        "[bold #61AFEF]📂 会话管理 (Session Management)[/]",
+        "[bold #61AFEF]会话管理 (Session Management)[/]",
         t_session,
         "",
-        "[bold #56B6C2]🤖 模型与控制 (Model & Output Control)[/]",
+        "[bold #56B6C2]模型与控制 (Model & Output Control)[/]",
         t_model,
         "",
-        "[bold #E5C07B]🧠 记忆与事实 (Memory & Facts Knowledge)[/]",
+        "[bold #E5C07B]记忆与事实 (Memory & Facts Knowledge)[/]",
         t_memory,
         "",
-        "[bold #C678DD]📈 提示词优化 (Prompt Evolution)[/]",
+        "[bold #C678DD]提示词优化 (Prompt Evolution)[/]",
         t_evolve,
         "",
-        "[bold #98C379]⚙️ 工具与系统 (Tools & System Debug)[/]",
+        "[bold #98C379]工具与系统 (Tools & System Debug)[/]",
         t_system,
     )
 

@@ -8,6 +8,7 @@ from zzm_agent.core.observability import UsageState
 from zzm_agent.core.runtime_state import MemoryLoadState
 from zzm_agent.memory.episodic_store import EpisodicStore
 from zzm_agent.memory.history_store import HistoryStore
+from zzm_agent.memory.instructions import InstructionManager
 from zzm_agent.memory.io import StorageIO
 from zzm_agent.memory.pinned_context import PinnedContext
 from zzm_agent.memory.retriever import KeywordMemoryRetriever, MemoryRetriever
@@ -29,12 +30,20 @@ class MemoryStore:
         compression_keep_recent: int = 10,
         model_name: str | None = None,
         token_counter: TokenCounter | None = None,
+        workspace_root: str | Path | None = None,
+        instruction_filenames: tuple[str, ...] = ("AGENTS.md", "ZZM.md"),
+        instruction_max_chars: int = 8000,
+        auto_memory_enabled: bool = True,
     ):
         self.max_history = max_history
         self.retrieval_top_k = retrieval_top_k
         self.max_context_tokens = max_context_tokens
         self.compression_keep_recent = compression_keep_recent
         self.token_counter = token_counter or TokenCounter(model=model_name)
+        self.workspace_root = Path(workspace_root).resolve() if workspace_root else None
+        self.instruction_filenames = tuple(instruction_filenames)
+        self.instruction_max_chars = instruction_max_chars
+        self.auto_memory_enabled = auto_memory_enabled
 
         self.io = StorageIO()
         self.sessions = SessionStore(self.io, path=path)
@@ -182,17 +191,29 @@ class MemoryStore:
         """Load cross-session semantic memory entries ordered by recency."""
         return self.semantic_store.load()
 
+    def list_semantic_memory(self, *, include_disabled: bool = True) -> list[dict]:
+        """Return semantic memory entries including source and enabled metadata."""
+        return self.semantic_store.load(include_disabled=include_disabled)
+
     def list_semantic_facts(self) -> list[str]:
         """Return every long-term semantic memory fact ordered by recency."""
         return self.semantic_store.list_facts()
 
-    def remember_fact(self, fact: str) -> dict:
+    def remember_fact(self, fact: str, *, source: str = "manual") -> dict:
         """Insert or refresh one semantic memory fact."""
-        return self.semantic_store.remember(fact, now=self.sessions.utc_now())
+        return self.semantic_store.remember(fact, now=self.sessions.utc_now(), source=source)
 
     def forget_fact(self, keyword: str) -> int:
         """Remove semantic memory entries whose text matches the keyword."""
         return self.semantic_store.forget(keyword)
+
+    def set_memory_enabled(self, keyword: str, enabled: bool) -> int:
+        """Enable or disable semantic memory entries matching a keyword."""
+        return self.semantic_store.set_enabled(
+            keyword,
+            enabled=enabled,
+            now=self.sessions.utc_now(),
+        )
 
     def search_memories(self, keyword: str, limit: int | None = None) -> dict[str, list[dict]]:
         """Search semantic and episodic memory entries related to one keyword."""
@@ -215,7 +236,7 @@ class MemoryStore:
         """Build system messages used to inject long-term memory into a turn."""
         memory_load_state = MemoryLoadState()
         max_items = limit if limit is not None else self.retrieval_top_k
-        if max_items <= 0:
+        if max_items <= 0 or not self.auto_memory_enabled:
             self.memory_load_state = memory_load_state
             return []
 
@@ -269,6 +290,73 @@ class MemoryStore:
         self.memory_load_state = memory_load_state
         return messages
 
+    def build_instruction_messages(
+        self,
+        *,
+        cwd: str | Path | None = None,
+        memory_load_state: MemoryLoadState | None = None,
+    ) -> list[dict[str, str]]:
+        """Build system messages from AGENTS.md / ZZM.md style instruction files."""
+        if self.workspace_root is None:
+            return []
+
+        state = memory_load_state or MemoryLoadState()
+        manager = InstructionManager(
+            workspace_root=self.workspace_root,
+            cwd=cwd or self.workspace_root,
+            filenames=self.instruction_filenames,
+            max_chars=self.instruction_max_chars,
+        )
+        files = manager.load()
+        if not files:
+            if memory_load_state is None:
+                self.memory_load_state = state
+            return []
+
+        blocks = []
+        for item in files:
+            path = str(item.path.resolve(strict=False))
+            notice = ""
+            if item.truncated:
+                notice = (
+                    f"\n[truncated: loaded {item.loaded_chars}/{item.original_chars} chars]"
+                )
+            state.record_file_source(
+                path=path,
+                source_type="project_instruction",
+                version=item.version,
+                content=item.content,
+            )
+            blocks.append(
+                f"[priority {item.priority}] {item.name} ({path})"
+                f"{notice}\n{item.content.strip()}"
+            )
+
+        if memory_load_state is None:
+            self.memory_load_state = state
+        return [
+            {
+                "role": "system",
+                "content": (
+                    "Project instructions loaded from repository files. "
+                    "Nearest files have higher priority and may override broader guidance.\n\n"
+                    + "\n\n---\n\n".join(blocks)
+                ),
+            }
+        ]
+
+    def list_instruction_files(self, *, cwd: str | Path | None = None) -> list[Any]:
+        """Return loaded project instruction files for diagnostics."""
+        if self.workspace_root is None:
+            return []
+        manager = InstructionManager(
+            workspace_root=self.workspace_root,
+            cwd=cwd or self.workspace_root,
+            filenames=self.instruction_filenames,
+            max_chars=self.instruction_max_chars,
+        )
+        return manager.load()
+
     def build_turn_messages(
         self,
         system_prompt: str,
@@ -278,8 +366,12 @@ class MemoryStore:
         """Assemble one model turn, compressing older history when needed."""
         history = self.load_history()
         messages: list[dict[str, Any]] = [{"role": "system", "content": system_prompt}]
-        messages.extend(self.build_memory_messages(query=user_input, limit=memory_limit))
+        memory_messages = self.build_memory_messages(query=user_input, limit=memory_limit)
         memory_load_state = self.memory_load_state
+        messages.extend(
+            self.build_instruction_messages(memory_load_state=memory_load_state)
+        )
+        messages.extend(memory_messages)
         pinned = PinnedContext.from_turn(user_input=user_input, history=history)
         pinned_message = pinned.to_message()
         if pinned_message is not None:

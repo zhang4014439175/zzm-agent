@@ -382,6 +382,63 @@ def test_build_turn_messages_uses_related_memory_retrieval(tmp_path):
     assert str(store.semantic_path.resolve(strict=False)) in memory_state["memory_file_versions"]
 
 
+def test_build_turn_messages_loads_project_instruction_files_with_sources(tmp_path):
+    (tmp_path / "AGENTS.md").write_text("Use pytest for verification.", encoding="utf-8")
+    nested = tmp_path / "packages" / "api"
+    nested.mkdir(parents=True)
+    (nested / "ZZM.md").write_text("API package overrides root guidance.", encoding="utf-8")
+    store = MemoryStore(
+        path=tmp_path / ".zzm_agent" / "memory.json",
+        max_history=50,
+        workspace_root=tmp_path,
+        instruction_max_chars=1000,
+    )
+
+    instruction_files = store.list_instruction_files(cwd=nested)
+    assert [item.name for item in instruction_files] == ["AGENTS.md", "ZZM.md"]
+    assert [item.priority for item in instruction_files] == [0, 1]
+
+    messages = store.build_instruction_messages(cwd=nested)
+
+    assert len(messages) == 1
+    content = messages[0]["content"]
+    assert "Use pytest for verification." in content
+    assert "API package overrides root guidance." in content
+    assert content.index("AGENTS.md") < content.index("ZZM.md")
+    source_types = [source.source_type for source in store.memory_load_state.sources]
+    assert source_types == ["project_instruction", "project_instruction"]
+
+
+def test_instruction_files_respect_character_budget_and_report_truncation(tmp_path):
+    (tmp_path / "AGENTS.md").write_text("A" * 20, encoding="utf-8")
+    store = MemoryStore(
+        path=tmp_path / ".zzm_agent" / "memory.json",
+        max_history=50,
+        workspace_root=tmp_path,
+        instruction_max_chars=8,
+    )
+
+    files = store.list_instruction_files()
+    messages = store.build_instruction_messages()
+
+    assert files[0].truncated is True
+    assert files[0].loaded_chars == 8
+    assert "truncated: loaded 8/20 chars" in messages[0]["content"]
+
+
+def test_disabled_auto_memory_is_not_injected(tmp_path):
+    store = MemoryStore(path=tmp_path / "memory.json", max_history=50)
+    store.remember_fact("Project language is Python.")
+
+    disabled = store.set_memory_enabled("python", enabled=False)
+    messages = store.build_memory_messages(query="python")
+
+    assert disabled == 1
+    assert messages == []
+    all_entries = store.list_semantic_memory(include_disabled=True)
+    assert all_entries[0]["enabled"] is False
+
+
 def test_build_memory_messages_deduplicates_retrieved_memory_sources(tmp_path):
     store = MemoryStore(
         path=tmp_path / "memory.json",
