@@ -670,7 +670,7 @@ def run_repl(runtime: dict[str, Any]) -> int:
                 stream_renderer.render_event(_StreamEvent.content_delta(chunk))
 
             def on_stream_event(event: ModelStreamEvent) -> None:
-                if not streamed["seen"]:
+                if not streamed["seen"] and stream_renderer.should_stop_working_status(event):
                     _stop_working_status(console)
                 streamed["seen"] = True
                 stream_renderer.render_event(event)

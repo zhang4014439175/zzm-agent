@@ -742,6 +742,10 @@ class PlainTextRenderer:
         if event.kind is ModelStreamEventKind.FINAL_MESSAGE:
             self.render_final(event.text)
 
+    def should_stop_working_status(self, event: ModelStreamEvent) -> bool:
+        """Return whether this event needs a clean line outside the live status."""
+        return event.kind is not ModelStreamEventKind.STATUS
+
     def render_final(self, text: str) -> None:
         if self._final_rendered:
             return
@@ -859,7 +863,7 @@ class TerminalRenderer(PlainTextRenderer):
         text = " ".join(self._reasoning.split())
         if not text:
             return
-        self.console.print(f"[dim]Reasoning:[/dim] {text}")
+        self.console.print(f"[black]Reasoning:[/black] [dim]{text}[/dim]")
         self._reasoning = ""
 
     def _render_tool_call_delta(self, event: ModelStreamEvent) -> None:

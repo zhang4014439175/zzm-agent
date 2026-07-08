@@ -1076,11 +1076,22 @@ def _handle_review(command: str, console: Any, runtime: dict[str, Any] | None) -
     )
     console.print(f"[cyan]Running read-only review for {label}...[/cyan]")
     renderer = build_terminal_renderer(console)
-    result = query_engine.submit_message(
-        prompt,
-        stream=True,
-        on_stream_event=renderer.render_event,
-    )
+    loop = getattr(query_engine, "agent_loop", None)
+    previous_tool_choice = getattr(loop, "tool_choice", None) if loop is not None else None
+    previous_auto_approve = getattr(loop, "auto_approve", None) if loop is not None else None
+    if loop is not None:
+        loop.tool_choice = "none"
+        loop.auto_approve = False
+    try:
+        result = query_engine.submit_message(
+            prompt,
+            stream=True,
+            on_stream_event=renderer.render_event,
+        )
+    finally:
+        if loop is not None:
+            loop.tool_choice = previous_tool_choice
+            loop.auto_approve = previous_auto_approve
     renderer.finish(result.reply)
     if not str(result.reply or "").strip():
         console.print(

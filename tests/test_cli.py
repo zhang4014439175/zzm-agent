@@ -4,6 +4,7 @@ from zzm_agent.cli_support.rendering import (
     PROMPT_COMPLETION_MENU_RESERVED_LINES,
     SlashCommandCompleter,
     PlainTextRenderer,
+    TerminalRenderer,
     _plain_terminal_reply,
     build_bottom_toolbar,
     build_terminal_renderer,
@@ -40,6 +41,11 @@ class DummyQueryEngine:
         self.conversation_state.permissions = PermissionState()
         self.conversation_state.artifacts = ArtifactStore()
         self.conversation_state.active_turn = None
+        self.agent_loop = type(
+            "Loop",
+            (),
+            {"tool_choice": "auto", "auto_approve": True},
+        )()
 
     def submit_message(self, message, **kwargs):
         self.submitted.append((message, kwargs))
@@ -1086,8 +1092,13 @@ def test_handle_slash_review_submits_read_only_diff(monkeypatch, tmp_path):
     assert handled is True
     assert query_engine.submitted
     prompt = query_engine.submitted[0][0]
+    submitted_kwargs = query_engine.submitted[0][1]
     assert "只读代码审查" in prompt
     assert "不要修改文件" in prompt
+    assert submitted_kwargs["stream"] is True
+    assert submitted_kwargs["on_stream_event"] is not None
+    assert query_engine.agent_loop.tool_choice == "auto"
+    assert query_engine.agent_loop.auto_approve is True
     assert "review result" in "\n".join(console.lines)
 
 
@@ -1169,6 +1180,23 @@ def test_plain_text_renderer_buffers_chunked_reasoning_and_tool_arguments():
         "Running list_directory",
         "---",
     ]
+
+
+def test_plain_text_renderer_keeps_working_status_for_status_events():
+    renderer = PlainTextRenderer(DummyConsole())
+
+    assert renderer.should_stop_working_status(ModelStreamEvent.status("turn.started")) is False
+    assert renderer.should_stop_working_status(ModelStreamEvent.reasoning_summary("thinking")) is True
+
+
+def test_terminal_renderer_dims_reasoning_content_only():
+    console = DummyConsole()
+    renderer = TerminalRenderer(console)
+
+    renderer.render_event(ModelStreamEvent.reasoning_summary("Need inspect"))
+    renderer.render_event(ModelStreamEvent.content_delta("answer"))
+
+    assert console.lines[0] == "[black]Reasoning:[/black] [dim]Need inspect[/dim]"
 
 
 def test_build_terminal_renderer_uses_plain_text_for_non_rich_console():
