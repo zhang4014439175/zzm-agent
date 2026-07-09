@@ -17,6 +17,7 @@ _EMOJI_PATTERN = re.compile(
     "]+"
 )
 PROMPT_COMPLETION_MENU_RESERVED_LINES = 1
+MAX_VISIBLE_REASONING_CHARS = 240
 
 try:
     from rich.markdown import CodeBlock, Heading
@@ -63,6 +64,14 @@ def _install_markdown_code_style_patch() -> None:
 
         Heading.__rich_console__ = render_heading
         Heading._zzm_agent_left_align = True
+
+
+def _compact_reasoning_for_display(text: str) -> str:
+    """Keep visible reasoning as a short progress hint, not a transcript wall."""
+    compact = " ".join(text.split())
+    if len(compact) <= MAX_VISIBLE_REASONING_CHARS:
+        return compact
+    return compact[: MAX_VISIBLE_REASONING_CHARS - 3].rstrip() + "..."
 
 try:
     from prompt_toolkit.completion import Completer
@@ -740,7 +749,8 @@ class PlainTextRenderer:
             self._content += event.text or ""
             return
         if event.kind is ModelStreamEventKind.FINAL_MESSAGE:
-            self.render_final(event.text)
+            if event.text:
+                self.render_final(event.text)
 
     def should_stop_working_status(self, event: ModelStreamEvent) -> bool:
         """Return whether this event needs a clean line outside the live status."""
@@ -777,7 +787,7 @@ class PlainTextRenderer:
         self._reasoning += text
 
     def _flush_reasoning(self) -> None:
-        text = " ".join(self._reasoning.split())
+        text = _compact_reasoning_for_display(self._reasoning)
         if not text:
             return
         self.console.print(f"Reasoning: {text}")
@@ -833,7 +843,8 @@ class TerminalRenderer(PlainTextRenderer):
             return
         if event.kind is ModelStreamEventKind.FINAL_MESSAGE:
             self._markdown.flush()
-            self.render_final(event.text)
+            if event.text:
+                self.render_final(event.text)
 
     def render_final(self, text: str) -> None:
         if self._final_rendered:
@@ -862,7 +873,7 @@ class TerminalRenderer(PlainTextRenderer):
         self._separator_printed = True
 
     def _flush_reasoning(self) -> None:
-        text = " ".join(self._reasoning.split())
+        text = _compact_reasoning_for_display(self._reasoning)
         if not text:
             return
         self.console.print(f"[black]Reasoning:[/black] [dim]{text}[/dim]")

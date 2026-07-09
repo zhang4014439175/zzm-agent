@@ -2,7 +2,6 @@ from __future__ import annotations
 
 import os
 import re
-import subprocess
 from pathlib import Path
 from typing import Any
 
@@ -11,7 +10,10 @@ from zzm_agent.core.tool_registry import ToolRegistry
 from zzm_agent.evolution.optimizer import EvolutionOptimizer
 from zzm_agent.memory.store import MemoryStore
 from zzm_agent.memory.token_counter import TokenCounter
-from zzm_agent.cli_support.rendering import build_terminal_renderer, render_notification
+from zzm_agent.cli_support.rendering import (
+    build_terminal_renderer,
+    render_notification,
+)
 
 
 def handle_slash(
@@ -1036,67 +1038,33 @@ def _handle_review(command: str, console: Any, runtime: dict[str, Any] | None) -
     if query_engine is None:
         console.print("[yellow]Review requires QueryEngine in the current runtime.[/yellow]")
         return
-    args = command.split()[1:]
-    diff_args = ["git", "diff"]
-    label = "working tree"
-    if args and args[0] in {"--cached", "--staged"}:
-        diff_args.append("--cached")
-        label = "staged changes"
-    elif args:
-        diff_args.extend([f"{args[0]}..HEAD"])
-        label = args[0]
 
-    try:
-        result = subprocess.run(
-            diff_args,
-            cwd=os.environ.get("ZZM_AGENT_WORKSPACE_ROOT", os.getcwd()),
-            check=False,
-            capture_output=True,
-            text=True,
-            encoding="utf-8",
-            errors="replace",
-        )
-    except Exception as exc:
-        console.print(f"[red]Failed to read git diff:[/red] {exc}")
-        return
-    if result.returncode != 0:
-        console.print(f"[red]git diff failed:[/red] {result.stderr.strip()}")
-        return
-    diff = result.stdout.strip()
-    if not diff:
-        console.print(f"[yellow]No diff found for {label}.[/yellow]")
-        return
-    if len(diff) > 24000:
-        diff = diff[:24000] + "\n... diff truncated for review ..."
+    args = command.split()[1:]
+    target = "the current working tree"
+    suggested_diff = "git diff"
+    if args and args[0] in {"--cached", "--staged"}:
+        target = "the currently staged changes"
+        suggested_diff = "git diff --cached"
+    elif args:
+        base = args[0]
+        target = f"changes from {base} to HEAD"
+        suggested_diff = f"git diff {base}..HEAD"
 
     prompt = (
-        "请对下面 git diff 做只读代码审查。只输出问题清单，按严重程度排序；"
-        "不要修改文件，不要执行写操作，不要生成补丁。\n\n"
-        f"Diff source: {label}\n\n```diff\n{diff}\n```"
+        f"Review {target}. Use the available read-only tools to inspect the diff "
+        f"and any relevant source files. Start by checking `{suggested_diff}`. "
+        "Do not modify files, do not run write operations, and do not generate a patch. "
+        "Output only a severity-sorted problem list in the final assistant answer. "
+        "Put the review findings in normal assistant content, not only in reasoning."
     )
-    console.print(f"[cyan]Running read-only review for {label}...[/cyan]")
+    console.print(f"[cyan]Running review for {target}...[/cyan]")
     renderer = build_terminal_renderer(console)
-    loop = getattr(query_engine, "agent_loop", None)
-    previous_tool_choice = getattr(loop, "tool_choice", None) if loop is not None else None
-    previous_auto_approve = getattr(loop, "auto_approve", None) if loop is not None else None
-    if loop is not None:
-        loop.tool_choice = "none"
-        loop.auto_approve = False
-    try:
-        result = query_engine.submit_message(
-            prompt,
-            stream=True,
-            on_stream_event=renderer.render_event,
-        )
-    finally:
-        if loop is not None:
-            loop.tool_choice = previous_tool_choice
-            loop.auto_approve = previous_auto_approve
+    result = query_engine.submit_message(
+        prompt,
+        stream=True,
+        on_stream_event=renderer.render_event,
+    )
     renderer.finish(result.reply)
-    if not str(result.reply or "").strip():
-        console.print(
-            "[yellow]Review completed, but the model returned no textual findings.[/yellow]"
-        )
 
 
 def _handle_placeholder_registry(
@@ -1269,3 +1237,4 @@ def _switch_runtime_model(runtime: dict[str, Any], model_id: str) -> None:
         context_limit = resolve_model_context_limit(cfg)
         store.max_context_tokens = context_limit.tokens
         runtime["model_context_limit_source"] = context_limit.source
+

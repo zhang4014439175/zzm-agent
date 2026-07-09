@@ -61,12 +61,12 @@ class _ToolExecutionOutcome:
 
 
 _TEXT_TOOL_CALL_PATTERN = re.compile(
-    r"<tool_call>\s*(?P<name>[A-Za-z_][\w.\-]*)\s*(?P<body>.*?)</tool_call>",
+    r"<tool_call(?::\w+)?>\s*(?:\s*<tool_sep(?::\w+)?>)?\s*(?P<name>[A-Za-z_][\w.\-]*)\s*(?:\s*<tool_sep(?::\w+)?>)?\s*(?P<body>.*?)</tool_call(?::\w+)?>",
     re.DOTALL | re.IGNORECASE,
 )
 _TEXT_TOOL_ARG_PAIR_PATTERN = re.compile(
-    r"<arg_key>\s*(?P<key>.*?)\s*</arg_key>\s*"
-    r"<arg_value>\s*(?P<value>.*?)\s*</arg_value>",
+    r"<arg_key(?::\w+)?>\s*(?P<key>.*?)\s*</arg_key(?::\w+)?>\s*"
+    r"<arg_value(?::\w+)?>\s*(?P<value>.*?)\s*</arg_value(?::\w+)?>",
     re.DOTALL | re.IGNORECASE,
 )
 _TEXT_TOOL_NAME_ALIASES = {
@@ -245,7 +245,9 @@ class AgentLoop:
         This is a compatibility fallback for providers/models that ignore native
         OpenAI tool calling and instead print a tool call as text.
         """
-        if "<tool_call>" not in content.lower():
+        if self.tool_choice == "none":
+            return []
+        if "<tool_call" not in content.lower():
             return []
 
         records: list[dict[str, Any]] = []
@@ -273,6 +275,8 @@ class AgentLoop:
 
     def _text_tool_call_start(self, text: str, tools: list[dict[str, Any]]) -> int:
         """Return the first pseudo tool-call/candidate start index, or -1."""
+        if self.tool_choice == "none" or not tools:
+            return -1
         lowered = text.lower()
         marker = "<tool_call"
         marker_index = lowered.find(marker)

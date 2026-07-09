@@ -1064,21 +1064,11 @@ def test_handle_slash_plan_reads_local_plan_file(tmp_path, monkeypatch):
     assert any("Plan from file" in line for line in console.lines)
 
 
-def test_handle_slash_review_submits_read_only_diff(monkeypatch, tmp_path):
+def test_handle_slash_review_submits_agentic_review_prompt(monkeypatch, tmp_path):
     monkeypatch.setenv("ZZM_AGENT_WORKSPACE_ROOT", str(tmp_path))
     query_engine = DummyQueryEngine()
     store = MemoryStore(path=tmp_path / "memory.json", max_history=50)
     console = DummyConsole()
-
-    class Completed:
-        returncode = 0
-        stdout = "diff --git a/a.py b/a.py\n+print('hi')\n"
-        stderr = ""
-
-    monkeypatch.setattr(
-        "zzm_agent.cli_support.commands.subprocess.run",
-        lambda *args, **kwargs: Completed(),
-    )
 
     handled = handle_slash(
         "/review",
@@ -1093,8 +1083,10 @@ def test_handle_slash_review_submits_read_only_diff(monkeypatch, tmp_path):
     assert query_engine.submitted
     prompt = query_engine.submitted[0][0]
     submitted_kwargs = query_engine.submitted[0][1]
-    assert "只读代码审查" in prompt
-    assert "不要修改文件" in prompt
+    assert "Review the current working tree" in prompt
+    assert "Start by checking `git diff`" in prompt
+    assert "available read-only tools" in prompt
+    assert "Do not modify files" in prompt
     assert submitted_kwargs["stream"] is True
     assert submitted_kwargs["on_stream_event"] is not None
     assert query_engine.agent_loop.tool_choice == "auto"
@@ -1102,25 +1094,14 @@ def test_handle_slash_review_submits_read_only_diff(monkeypatch, tmp_path):
     assert "review result" in "\n".join(console.lines)
 
 
-def test_handle_slash_review_reports_empty_model_reply(monkeypatch, tmp_path):
+def test_handle_slash_review_supports_staged_target(monkeypatch, tmp_path):
     monkeypatch.setenv("ZZM_AGENT_WORKSPACE_ROOT", str(tmp_path))
     query_engine = DummyQueryEngine()
-    query_engine.submit_message = lambda message, **kwargs: type("Result", (), {"reply": ""})()
     store = MemoryStore(path=tmp_path / "memory.json", max_history=50)
     console = DummyConsole()
 
-    class Completed:
-        returncode = 0
-        stdout = "diff --git a/a.py b/a.py\n+print('hi')\n"
-        stderr = ""
-
-    monkeypatch.setattr(
-        "zzm_agent.cli_support.commands.subprocess.run",
-        lambda *args, **kwargs: Completed(),
-    )
-
     handled = handle_slash(
-        "/review",
+        "/review --cached",
         DummyRegistry(),
         store,
         DummyOptimizer(),
@@ -1129,7 +1110,9 @@ def test_handle_slash_review_reports_empty_model_reply(monkeypatch, tmp_path):
     )
 
     assert handled is True
-    assert any("returned no textual findings" in line for line in console.lines)
+    prompt = query_engine.submitted[0][0]
+    assert "currently staged changes" in prompt
+    assert "Start by checking `git diff --cached`" in prompt
 
 
 def test_handle_slash_reserved_commands_report_unavailable_state(tmp_path):
@@ -1197,6 +1180,18 @@ def test_terminal_renderer_dims_reasoning_content_only():
     renderer.render_event(ModelStreamEvent.content_delta("answer"))
 
     assert console.lines[0] == "[black]Reasoning:[/black] [dim]Need inspect[/dim]"
+
+
+def test_terminal_renderer_truncates_long_reasoning():
+    console = DummyConsole()
+    renderer = TerminalRenderer(console)
+
+    renderer.render_event(ModelStreamEvent.reasoning_summary("word " * 120))
+    renderer.render_event(ModelStreamEvent.content_delta("answer"))
+
+    assert console.lines[0].startswith("[black]Reasoning:[/black] [dim]word word")
+    assert console.lines[0].endswith("...[/dim]")
+    assert len(console.lines[0]) < 300
 
 
 def test_build_terminal_renderer_uses_plain_text_for_non_rich_console():
@@ -1451,3 +1446,4 @@ def test_handle_slash_evolve_diff_apply_and_rollback(tmp_path):
 
     assert handle_slash("/evolve rollback", DummyRegistry(), store, optimizer, console) is True
     assert any("prompt-1" in line for line in console.lines)
+
