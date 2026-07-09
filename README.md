@@ -9,7 +9,7 @@
 [![CLI](https://img.shields.io/badge/Interface-REPL-2563EB?style=flat-square)](#usage)
 [![Memory](https://img.shields.io/badge/Memory-Session%20%2B%20Semantic-7C3AED?style=flat-square)](#memory-and-sessions)
 
-[English](README.md) · [简体中文](README.zh-CN.md)
+[English](README.md) | [Simplified Chinese](README.zh-CN.md)
 
 </div>
 
@@ -22,7 +22,9 @@
 | You get | Why it matters |
 | --- | --- |
 | Interactive REPL | Work with the agent continuously instead of sending one-off prompts. |
+| Non-interactive exec | Run one-shot agent tasks from scripts, CI, or shell pipelines. |
 | OpenAI-compatible runtime | Use OpenAI, OpenRouter, DashScope-compatible endpoints, or local gateways. |
+| First-run setup | On first launch, create user config and prompt for model credentials. |
 | Persistent sessions | Keep each conversation's history under its own session directory. |
 | Semantic and episodic memory | Store explicit facts and recall summaries from previous sessions. |
 | Tool plugins | Add file, search, shell, or custom tools with generated schemas. |
@@ -33,6 +35,7 @@
 - [Quick Start](#quick-start)
 - [Configuration](#configuration)
 - [Usage](#usage)
+- [Non-interactive Exec](#non-interactive-exec)
 - [REPL Commands](#repl-commands)
 - [Memory and Sessions](#memory-and-sessions)
 - [Prompt Snapshots](#prompt-snapshots)
@@ -41,6 +44,30 @@
 
 ## Quick Start
 
+Install from PyPI:
+
+```bash
+pip install zzm-agent
+zzm-agent
+```
+
+On the first interactive run, `zzm-agent` asks for:
+
+- Base URL, for example `https://api.openai.com/v1`
+- Model name, for example `gpt-4o-mini`
+- LLM API key
+
+It then creates:
+
+```text
+~/.zzm_agent/config.yaml
+~/.zzm_agent/.env
+```
+
+The API key is stored in `.env`; `config.yaml` keeps environment-variable references such as `${LLM_API_KEY}`.
+
+For local development from source:
+
 ```bash
 git clone <your-repo-url>
 cd zzm-agent
@@ -48,40 +75,34 @@ python -m venv .venv
 .\.venv\Scripts\activate
 pip install -e .
 pip install -r requirements.txt
-```
-
-Create `.env`:
-
-```bash
-LLM_BASE_URL=https://api.openai.com/v1
-LLM_API_KEY=your_api_key_here
-LLM_MODEL_NAME=gpt-4o-mini
-```
-
-Start the REPL:
-
-```bash
 zzm-agent
 ```
 
 ## Configuration
 
-`zzm-agent` loads `config.yaml` by default. You can override it with `--config` or `ZZM_AGENT_CONFIG`.
+`zzm-agent` loads scoped YAML config files and `.env` files before expanding `${ENV_NAME}` placeholders. You can override the config path with `--config` or `ZZM_AGENT_CONFIG`.
 
 | Priority | Source |
 | --- | --- |
 | 1 | `--config <path>` |
 | 2 | `ZZM_AGENT_CONFIG` |
-| 3 | `./config.yaml` |
+| 3 | `~/.zzm_agent/config.yaml` |
 | 4 | Repository default `config.yaml` |
+| 5 | `./config.yaml` |
+| 6 | `./.zzm_agent/config.local.yaml` |
+
+Environment variables are loaded from:
+
+1. `./.env`
+2. `.env` next to each loaded config file, such as `~/.zzm_agent/.env`
 
 Minimal config:
 
 ```yaml
 model:
-  base_url: "${LLM_BASE_URL}"
+  base_url: "${LLM_BASE_URL:-https://api.openai.com/v1}"
   api_key: "${LLM_API_KEY}"
-  model_name: "${LLM_MODEL_NAME}"
+  model_name: "${LLM_MODEL_NAME:-gpt-4o-mini}"
   temperature: 0.7
   max_tokens: 4096
 
@@ -94,7 +115,7 @@ agent:
     - "zzm_agent/plugins"
 
 memory:
-  path: ".zzm_agent/memory.json"
+  path: "~/.zzm_agent/memory.json"
   max_history: 50
   retrieval_top_k: 3
   max_context_tokens: 32000
@@ -109,9 +130,34 @@ memory:
 | Start explicitly | `zzm-agent repl` |
 | Resume or create a session | `zzm-agent repl --session my-session` |
 | Use a custom config | `zzm-agent repl --config path/to/config.yaml` |
+| Run one non-interactive task | `zzm-agent exec "review this repo"` |
+| Read a task from stdin | `type prompt.txt \| zzm-agent exec --stdin` |
+| Emit JSONL events | `zzm-agent exec --json "summarize changes"` |
+| Write final answer to a file | `zzm-agent exec -o answer.md "write release notes"` |
+| Print shell completion | `zzm-agent completion powershell` |
 | Run replay eval | `zzm-agent eval --suite replay` |
 | Run smoke eval with real LLM | `zzm-agent eval --suite smoke --llm` |
 | Run full eval with real LLM | `zzm-agent eval --suite full --llm` |
+
+In `exec` mode, medium and high risk tools are denied instead of prompting. This keeps CI and scripts from hanging on interactive approvals.
+
+## Non-interactive Exec
+
+Use `exec` for automation, CI checks, shell scripts, and editor integrations:
+
+```bash
+zzm-agent exec "summarize the current project"
+zzm-agent exec --stdin < prompt.txt
+zzm-agent exec --json "review the latest changes"
+zzm-agent exec -o report.md "write a concise project report"
+```
+
+With `--json`, output is JSONL:
+
+```jsonl
+{"type":"event","kind":"status","text":"turn.started","metadata":{"response_language":"zh-CN","language_source":"config"}}
+{"type":"result","reply":"Final answer","response_language":"zh-CN","language_source":"config"}
+```
 
 ## REPL Commands
 
@@ -223,7 +269,7 @@ Tools are registered through `ToolRegistry` and exposed as OpenAI-compatible fun
 | `search` | Search files and file contents inside the workspace. |
 | `shell` | Run shell commands inside the workspace. |
 
-Configure plugin directories in `config.yaml`:
+Configure plugin directories in `config.yaml`. The first-run generated user config points this value at the installed built-in plugin directory automatically; custom configs can add more directories:
 
 ```yaml
 agent:
