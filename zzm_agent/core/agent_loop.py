@@ -842,6 +842,15 @@ class AgentLoop:
             "same task, use available context, and provide the missing result."
         )
 
+    def _empty_final_after_tools_retry_message(self) -> str:
+        return (
+            "[FINAL_RESPONSE_REQUIRED]\n"
+            "You have completed at least one tool round, but the previous model "
+            "response did not include final assistant content. Stop calling tools "
+            "unless more information is strictly required, summarize the useful "
+            "tool results, and provide the final answer in normal assistant content."
+        )
+
     def _commit_turn_usage(self, usage: TokenUsage) -> None:
         """Persist the latest turn and cumulative model usage counters."""
         self.last_turn_usage = usage.copy()
@@ -920,6 +929,7 @@ class AgentLoop:
         stream: bool = True,
         on_text_chunk: Callable[[str], None] | None = None,
         on_stream_event: Callable[[ModelStreamEvent], None] | None = None,
+        runtime_instructions: list[str] | None = None,
     ) -> str:
         """
         Run a single turn of the conversation.
@@ -932,6 +942,8 @@ class AgentLoop:
             stream: Whether to request a streaming response from the model.
             on_text_chunk: Optional callback invoked for every streamed text chunk.
             on_stream_event: Optional callback invoked for normalized stream events.
+            runtime_instructions: Optional per-turn system instructions that are
+                visible to the model but not persisted as conversation history.
             
         Returns:
             The final text response from the assistant.
@@ -952,6 +964,11 @@ class AgentLoop:
             model_context_messages=messages,
             user_message=user_message,
         )
+        for instruction in runtime_instructions or []:
+            if instruction.strip():
+                message_store.append_runtime_only(
+                    {"role": "system", "content": instruction.strip()}
+                )
         self.last_message_store = message_store
         turn_usage = TokenUsage()
         turn_state = TurnState(user_input=user_input)
@@ -1068,6 +1085,7 @@ class AgentLoop:
         tool_iterations = 0
         consecutive_signature: tuple[str, str] | None = None
         consecutive_count = 0
+        empty_final_after_tools_retries = 0
         progress_monitor = ProgressMonitor()
         self.last_progress_signal = None
         self.last_reflection_count = 0
@@ -1190,6 +1208,19 @@ class AgentLoop:
 
             # If it's a simple text reply, we are done
             if not tool_calls_raw:
+                if (
+                    tool_iterations > 0
+                    and not assistant_content.strip()
+                    and empty_final_after_tools_retries < 1
+                ):
+                    empty_final_after_tools_retries += 1
+                    message_store.append_runtime_only(
+                        {
+                            "role": "system",
+                            "content": self._empty_final_after_tools_retry_message(),
+                        }
+                    )
+                    continue
                 final_reply = assistant_content
                 stop_result = self._run_hook_until_decision(
                     HookContext(

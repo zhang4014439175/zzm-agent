@@ -24,6 +24,12 @@ agent:
   plugin_dirs:
     - "zzm_agent/plugins"
 
+ui:
+  # auto 会优先跟随本轮显式要求、输入语言、会话语言和系统 locale。
+  response_language: "auto"
+  # 当 auto 无法判断时使用的默认语言。
+  default_locale_language: "zh-CN"
+
 memory:
   path: ".zzm_agent/memory.json"
   max_history: 50

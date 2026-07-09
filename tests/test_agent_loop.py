@@ -184,6 +184,37 @@ def test_agent_loop_records_usage_state_across_scopes(registry, store):
     assert loop.last_turn_state.usage_state.turn.tool_calls == 1
 
 
+def test_agent_loop_retries_empty_final_after_tool_round(registry, store):
+    loop = AgentLoop(
+        client=MagicMock(),
+        model="test-model",
+        system_prompt="You are helpful.",
+        registry=registry,
+        store=store,
+    )
+    tool_call = MagicMock()
+    tool_call.id = "call_1"
+    tool_call.function.name = "echo"
+    tool_call.function.arguments = json.dumps({"text": "world"})
+    loop.client.chat.completions.create.side_effect = [
+        make_response(tool_calls=[tool_call]),
+        make_response(content=""),
+        make_response(content="工具结果是 ECHO:world"),
+    ]
+
+    result = loop.run("call echo", stream=False)
+
+    assert result == "工具结果是 ECHO:world"
+    assert loop.client.chat.completions.create.call_count == 3
+    retry_messages = loop.client.chat.completions.create.call_args_list[2].kwargs["messages"]
+    assert any(
+        message["role"] == "system"
+        and "FINAL_RESPONSE_REQUIRED" in message["content"]
+        for message in retry_messages
+    )
+    assert store.load_history()[-1]["content"] == "工具结果是 ECHO:world"
+
+
 def test_chat_completion_error_payload_raises_clear_error(registry):
     store = make_error_test_store("api-error-payload")
     loop = AgentLoop(

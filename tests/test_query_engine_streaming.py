@@ -205,3 +205,36 @@ def test_query_engine_submits_message_and_saves_conversation_snapshot(tmp_path):
     assert envelope.payload["session_id"] == "s1"
     assert envelope.payload["active_turn"]["final_response"] == "Hello!"
     assert store.load_history()[-1]["content"] == "Hello!"
+
+
+def test_query_engine_injects_response_language_instruction(tmp_path):
+    registry = ToolRegistry()
+    store = MemoryStore(path=tmp_path / "memory.json", max_history=10, session_id="s1")
+    loop = AgentLoop(
+        client=MagicMock(),
+        model="test-model",
+        system_prompt="sys",
+        registry=registry,
+        store=store,
+    )
+    loop.client.chat.completions.create.return_value = make_response(content="好的")
+    engine = QueryEngine(
+        agent_loop=loop,
+        config={"ui": {"response_language": "zh-CN"}},
+    )
+
+    result = engine.submit_message(
+        "Review the current working tree",
+        stream=False,
+        language_input="/review",
+    )
+    messages = loop.client.chat.completions.create.call_args.kwargs["messages"]
+
+    assert result.response_language is not None
+    assert result.response_language.language == "zh-CN"
+    assert result.response_language.source == "config"
+    assert any(
+        message["role"] == "system" and "简体中文" in message["content"]
+        for message in messages
+    )
+    assert not any("简体中文" in message["content"] for message in store.load_history())

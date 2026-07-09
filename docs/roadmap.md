@@ -63,6 +63,7 @@
 - [x] 7.2 Agent 指令文件与自动记忆：支持 `AGENTS.md` / `ZZM.md` 分层加载、就近覆盖、来源审计、大小预算和跨会话自动记忆
 - [x] 7.3 Slash Command 与交互式 CLI：合并开发 `/status`、`/resume`、`/sessions`、`/config`、`/permissions`、`/artifacts`、`/plan`、`/review` 等核心命令
 - [x] 7.3A 终端输出分层与可降级渲染：先解决思考过程、工具执行和最终总结混排问题，建立可复用的 CLI 渲染边界
+- [x] 7.3B 响应语言策略、系统语言检测与全局语言设置：支持系统 locale 默认识别、会话语言继承、用户全局语言偏好和单轮语言覆盖
 - [ ] 7.4 非交互 `exec`、stdin 管道与 JSON 输出：支持脚本、CI、批处理、`--json` 事件流、最终结果输出文件和 shell completion
 - [ ] 7.5 Git / Review / Commit / PR 工作流：合并开发 diff review、stage/unstage、commit message、branch、PR 描述和 CI 失败分析入口
 - [ ] P2 阶段验收：确认终端版具备可恢复、可配置、可脚本化、可审查和可日常高频使用的产品体验
@@ -1080,6 +1081,45 @@ P2 的目标是让终端版先成为可日常使用的产品，而不是只有�
 - [x] 非 Rich console 或非 TTY 输出自动选择 `PlainTextRenderer`；
 - [x] 保留旧 `on_text_chunk` fallback；
 - [x] 新增 `docs/7.3A-terminal-renderer.md`，说明问题、例子、事件链路、数据结构和验证结果。
+
+### 7.3B 响应语言策略、系统语言检测与全局语言设置
+
+让 Agent 的回答语言像 Codex / Claude Code 一样自然：普通问题跟随用户输入语言，`/review`、`/plan`、`exec` 这类没有自然语言正文的命令继承会话语言或系统语言，而不是每个命令各自硬编码“请用中文回答”。
+
+参考方向：
+
+- Claude Code 官方设置体系包含用户、项目、本地、托管等作用域，适合承载个人偏好；它的 Output style 属于 system prompt 的一部分，说明“回答风格/语言偏好”应该在模型指令层生效，而不是渲染层临时改文本。
+- Codex 使用 `config.toml`、项目配置、`AGENTS.md`、rules、memories 等层级承载长期偏好和项目指令；响应语言也应采用“配置默认值 + 会话记忆 + 本轮输入覆盖”的链路。
+
+语言决策优先级：
+
+1. 用户本轮显式要求最高，例如“用英文回答”“下面用中文”；
+2. 当前自然语言输入检测，例如中文字符占比高则本轮输出中文；
+3. 当前会话最近一次明确语言，例如用户一直中文交流，则 `/review` 继承中文；
+4. 全局配置 `ui.response_language`，支持 `auto`、`zh-CN`、`en-US` 等；
+5. 系统 locale / 环境变量 fallback，例如 Windows UI 语言、`LANG`、`LC_ALL`；
+6. 项目默认值 fallback，仍无法判断时用 `zh-CN` 或配置默认语言。
+
+功能范围：
+
+- 新增 `ResponseLanguagePolicy` 或同等模块，负责检测、解析显式语言指令、读取配置和输出本轮语言决策；
+- 新增会话级 `response_language` 字段，记录最近一次自然语言偏好，供 slash command、非交互 `exec` 和自动任务继承；
+- 在 `AgentLoop` / `QueryEngine` 构造本轮 runtime-only system message，明确“最终回答使用某语言，代码、命令、路径、错误信息保持原文”；
+- 在 `config.yaml` / ConfigManager 中增加全局语言设置，例如 `ui.response_language: auto`、`ui.default_locale_language: zh-CN`；
+- 在 `/config` 中展示当前语言策略、系统检测结果、会话继承语言和手动设置值；
+- 支持用户在问题中临时覆盖语言，但只影响当前会话/当前轮，不自动写入全局配置，除非用户明确要求“以后都用某语言”；
+- `/review` 不再单独指定中文或英文，只提交审查任务，由统一语言策略决定最终总结语言；
+- `exec --json` 后续需要在事件 metadata 中输出 `response_language`，方便桌面端和日志回放解释语言来源。
+
+验收标准：
+
+- [x] 中文系统或中文会话中直接输入 `/review`，最终 review 总结为中文；
+- [x] 英文问题触发的普通问答最终回答为英文；
+- [x] 用户输入“用英文回答：解释项目结构”时，本轮使用英文，但不会永久覆盖全局设置；
+- [x] 用户配置 `ui.response_language: zh-CN` 后，slash command、review、exec 默认中文；
+- [x] 用户配置 `ui.response_language: auto` 时，优先根据本轮输入和会话语言自动判断；
+- [x] `/config` 能看到语言来源：explicit / input_detected / session / config / system_locale / default；
+- [x] 新增 `docs/7.3B-response-language-policy.md`，说明问题、例子、配置项、执行链路、数据结构和验证结果。
 
 ### 7.4 非交互 `exec`、stdin 管道与 JSON 输出
 

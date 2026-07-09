@@ -1610,6 +1610,8 @@ class ConversationState:
     events: EventBus = field(default_factory=EventBus)
     artifacts: ArtifactStore = field(default_factory=ArtifactStore)
     checkpoints: CheckpointStore = field(default_factory=CheckpointStore)
+    response_language: str | None = None
+    response_language_source: str | None = None
     cancellation: CancellationController | None = None
     active_turn: TurnState | None = None
     active_task: Any | None = None
@@ -1689,6 +1691,8 @@ class ConversationState:
             "events": self.events.to_records(),
             "artifacts": self.artifacts.to_records(),
             "checkpoints": self.checkpoints.to_records(),
+            "response_language": self.response_language,
+            "response_language_source": self.response_language_source,
             "cancellation": (
                 self.cancellation.to_record()
                 if self.cancellation is not None
@@ -1722,6 +1726,8 @@ class ConversationState:
             events=EventBus.from_records(record.get("events")),
             artifacts=ArtifactStore.from_records(record.get("artifacts")),
             checkpoints=CheckpointStore.from_records(record.get("checkpoints")),
+            response_language=record.get("response_language"),
+            response_language_source=record.get("response_language_source"),
             cancellation=CancellationController.from_record(record.get("cancellation")),
             active_turn=(
                 TurnState.from_record(record["active_turn"])

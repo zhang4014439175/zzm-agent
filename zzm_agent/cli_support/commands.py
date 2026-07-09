@@ -6,6 +6,7 @@ from pathlib import Path
 from typing import Any
 
 from zzm_agent.core.model_metadata import resolve_model_context_limit
+from zzm_agent.core.language_policy import detect_system_response_language
 from zzm_agent.core.tool_registry import ToolRegistry
 from zzm_agent.evolution.optimizer import EvolutionOptimizer
 from zzm_agent.memory.store import MemoryStore
@@ -217,12 +218,39 @@ def handle_slash(
         model = cfg.get("model", {})
         memory = cfg.get("memory", {})
         agent = cfg.get("agent", {})
+        ui = cfg.get("ui", {})
+        conversation = getattr(runtime.get("query_engine"), "conversation_state", None)
 
         rows = [
             ("profile", str(profile), _origin_scope(origins, "_config_profile")),
             ("model.base_url", _mask_secret(model.get("base_url")), _origin_scope(origins, "model.base_url")),
             ("model.model_name", str(model.get("model_name", "")), _origin_scope(origins, "model.model_name")),
             ("agent.stream", str(agent.get("stream", "")), _origin_scope(origins, "agent.stream")),
+            (
+                "ui.response_language",
+                str(ui.get("response_language", "auto")),
+                _origin_scope(origins, "ui.response_language"),
+            ),
+            (
+                "ui.default_locale_language",
+                str(ui.get("default_locale_language", "zh-CN")),
+                _origin_scope(origins, "ui.default_locale_language"),
+            ),
+            (
+                "system.response_language",
+                str(detect_system_response_language() or ""),
+                "system_locale",
+            ),
+            (
+                "session.response_language",
+                str(getattr(conversation, "response_language", "") or ""),
+                "runtime",
+            ),
+            (
+                "session.response_language_source",
+                str(getattr(conversation, "response_language_source", "") or ""),
+                "runtime",
+            ),
             ("memory.path", str(memory.get("path", "")), _origin_scope(origins, "memory.path")),
             (
                 "memory.max_context_tokens",
@@ -1063,6 +1091,7 @@ def _handle_review(command: str, console: Any, runtime: dict[str, Any] | None) -
         prompt,
         stream=True,
         on_stream_event=renderer.render_event,
+        language_input=command,
     )
     renderer.finish(result.reply)
 

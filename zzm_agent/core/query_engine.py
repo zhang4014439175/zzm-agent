@@ -5,6 +5,10 @@ from pathlib import Path
 from typing import Any, Callable
 
 from zzm_agent.core.agent_loop import AgentLoop
+from zzm_agent.core.language_policy import (
+    ResponseLanguageDecision,
+    resolve_response_language,
+)
 from zzm_agent.core.model_stream import ModelStreamEvent, ModelStreamEventKind
 from zzm_agent.core.runtime_state import ApplicationState, ConversationState, TurnState
 from zzm_agent.core.state_serialization import StateSnapshotStore
@@ -20,6 +24,7 @@ class QueryResult:
     reply: str
     events: list[ModelStreamEvent] = field(default_factory=list)
     turn: TurnState | None = None
+    response_language: ResponseLanguageDecision | None = None
 
 
 class QueryEngine:
@@ -29,11 +34,13 @@ class QueryEngine:
         self,
         *,
         agent_loop: AgentLoop,
+        config: dict[str, Any] | None = None,
         application_state: ApplicationState | None = None,
         conversation_state: ConversationState | None = None,
         snapshot_store: StateSnapshotStore[ConversationState] | None = None,
     ) -> None:
         self.agent_loop = agent_loop
+        self.config = config or {}
         session_id = str(getattr(agent_loop.store, "session_id", "default"))
         self.application_state = application_state or ApplicationState(
             active_session_id=session_id
@@ -53,11 +60,13 @@ class QueryEngine:
         *,
         agent_loop: AgentLoop,
         snapshot_path: str | Path,
+        config: dict[str, Any] | None = None,
         application_state: ApplicationState | None = None,
         conversation_state: ConversationState | None = None,
     ) -> "QueryEngine":
         return cls(
             agent_loop=agent_loop,
+            config=config,
             application_state=application_state,
             conversation_state=conversation_state,
             snapshot_store=StateSnapshotStore(snapshot_path),
@@ -70,6 +79,7 @@ class QueryEngine:
         stream: bool = True,
         on_stream_event: StreamEventCallback | None = None,
         on_text_chunk: Callable[[str], None] | None = None,
+        language_input: str | None = None,
     ) -> QueryResult:
         events: list[ModelStreamEvent] = []
 
@@ -78,9 +88,23 @@ class QueryEngine:
             if on_stream_event is not None:
                 on_stream_event(event)
 
+        language_decision = resolve_response_language(
+            language_input if language_input is not None else user_input,
+            previous_language=self.conversation_state.response_language,
+            config=self.config,
+        )
+        self.conversation_state.response_language = language_decision.language
+        self.conversation_state.response_language_source = language_decision.source
+
         self.conversation_state.active_turn = TurnState(user_input=user_input)
         self.conversation_state.active_turn.start()
-        emit(ModelStreamEvent.status("turn.started"))
+        emit(
+            ModelStreamEvent.status(
+                "turn.started",
+                response_language=language_decision.language,
+                language_source=language_decision.source,
+            )
+        )
         self._save_snapshot("turn.started")
 
         try:
@@ -89,6 +113,7 @@ class QueryEngine:
                 stream=stream,
                 on_text_chunk=on_text_chunk,
                 on_stream_event=emit,
+                runtime_instructions=[language_decision.instruction],
             )
         except Exception as exc:
             if self.conversation_state.active_turn is not None:
@@ -112,6 +137,7 @@ class QueryEngine:
             reply=reply,
             events=events,
             turn=self.conversation_state.active_turn,
+            response_language=language_decision,
         )
 
     def _save_snapshot(self, reason: str) -> None:

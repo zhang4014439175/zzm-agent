@@ -41,6 +41,8 @@ class DummyQueryEngine:
         self.conversation_state.permissions = PermissionState()
         self.conversation_state.artifacts = ArtifactStore()
         self.conversation_state.active_turn = None
+        self.conversation_state.response_language = "zh-CN"
+        self.conversation_state.response_language_source = "session"
         self.agent_loop = type(
             "Loop",
             (),
@@ -419,6 +421,10 @@ def test_config_command_shows_effective_config(tmp_path):
                 "model_name": "demo-model",
             },
             "agent": {"stream": True},
+            "ui": {
+                "response_language": "auto",
+                "default_locale_language": "zh-CN",
+            },
             "memory": {
                 "path": ".zzm_agent/memory.json",
                 "max_context_tokens": 32000,
@@ -443,6 +449,9 @@ def test_config_command_shows_effective_config(tmp_path):
     rendered = "\n".join(console.lines)
     assert "Effective config" in rendered
     assert "model.model_name: demo-model" in rendered
+    assert "ui.response_language: auto" in rendered
+    assert "ui.default_locale_language: zh-CN" in rendered
+    assert "system.response_language" in rendered
     assert "Sources" in rendered
 
 
@@ -1089,6 +1098,7 @@ def test_handle_slash_review_submits_agentic_review_prompt(monkeypatch, tmp_path
     assert "Do not modify files" in prompt
     assert submitted_kwargs["stream"] is True
     assert submitted_kwargs["on_stream_event"] is not None
+    assert submitted_kwargs["language_input"] == "/review"
     assert query_engine.agent_loop.tool_choice == "auto"
     assert query_engine.agent_loop.auto_approve is True
     assert "review result" in "\n".join(console.lines)
@@ -1111,8 +1121,10 @@ def test_handle_slash_review_supports_staged_target(monkeypatch, tmp_path):
 
     assert handled is True
     prompt = query_engine.submitted[0][0]
+    submitted_kwargs = query_engine.submitted[0][1]
     assert "currently staged changes" in prompt
     assert "Start by checking `git diff --cached`" in prompt
+    assert submitted_kwargs["language_input"] == "/review --cached"
 
 
 def test_handle_slash_reserved_commands_report_unavailable_state(tmp_path):

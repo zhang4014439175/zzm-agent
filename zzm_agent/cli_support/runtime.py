@@ -592,6 +592,7 @@ def build_runtime(args: argparse.Namespace, cfg: dict[str, Any]) -> dict[str, An
     query_engine = QueryEngine.with_snapshot_path(
         agent_loop=loop,
         snapshot_path=snapshot_path,
+        config=cfg,
     )
 
     return {
