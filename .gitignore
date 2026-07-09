@@ -28,3 +28,4 @@ __pycache__/
 sessions
 semantic.json
 semantic.json.bak
+dist

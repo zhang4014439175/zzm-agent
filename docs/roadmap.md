@@ -15,7 +15,7 @@
 
 ## 执行进度总览
 
-> **当前下一任务：7.4 非交互 `exec`、stdin 管道与 JSON 输出。**
+> **当前下一任务：7.5 Git / Review / Commit / PR 工作流。**
 
 ### 当前能力基线
 
@@ -64,7 +64,7 @@
 - [x] 7.3 Slash Command 与交互式 CLI：合并开发 `/status`、`/resume`、`/sessions`、`/config`、`/permissions`、`/artifacts`、`/plan`、`/review` 等核心命令
 - [x] 7.3A 终端输出分层与可降级渲染：先解决思考过程、工具执行和最终总结混排问题，建立可复用的 CLI 渲染边界
 - [x] 7.3B 响应语言策略、系统语言检测与全局语言设置：支持系统 locale 默认识别、会话语言继承、用户全局语言偏好和单轮语言覆盖
-- [ ] 7.4 非交互 `exec`、stdin 管道与 JSON 输出：支持脚本、CI、批处理、`--json` 事件流、最终结果输出文件和 shell completion
+- [x] 7.4 非交互 `exec`、stdin 管道与 JSON 输出：支持脚本、CI、批处理、`--json` 事件流、最终结果输出文件和 shell completion
 - [ ] 7.5 Git / Review / Commit / PR 工作流：合并开发 diff review、stage/unstage、commit message、branch、PR 描述和 CI 失败分析入口
 - [ ] P2 阶段验收：确认终端版具备可恢复、可配置、可脚本化、可审查和可日常高频使用的产品体验
 
@@ -1133,10 +1133,22 @@ zzm exec --json "summarize repo"
 
 验收要求：
 
-- 支持 stdin、非交互最终结果、JSON event stream 和退出码；
-- 支持输出最终消息到文件；
-- 非交互模式无法弹出新权限时必须失败并说明原因；
-- 支持 shell completion 和 prompt history。
+- [x] 支持 stdin、非交互最终结果、JSON event stream 和退出码；
+- [x] 支持输出最终消息到文件；
+- [x] 非交互模式无法弹出新权限时必须失败并说明原因；
+- [x] 支持 shell completion 和 prompt history。
+
+已落地行为：
+
+- 新增 `zzm-agent exec` 子命令，支持一次性提交任务，不进入 REPL；
+- 新增 `--stdin`，将标准输入内容合并到任务 prompt，适合管道接收 `git diff`、日志、文件列表和测试输出；
+- 新增 `--json`，按 JSONL 输出 `ModelStreamEvent`，最后输出 `type=result` 记录，包含最终回答和语言来源；
+- 新增 `--output/-o`，将最终 assistant message 写入文件，适合生成 review 报告、commit message 草稿或 CI 摘要；
+- `exec` 复用 `QueryEngine`、`AgentLoop`、配置、记忆、语言策略、状态快照和事件模型，与 REPL 使用同一运行时；
+- `exec` 使用非交互权限确认回调，需要人工批准的工具不会弹出菜单或卡住 CI，而是被拒绝并回写给模型；
+- 新增 `zzm-agent completion [bash|zsh|powershell]`，输出轻量 shell completion 脚本；
+- REPL 继续使用 `prompt_toolkit` 文件历史；`exec` 不写交互输入历史，避免 CI 或脚本把大量日志污染人工 prompt history；
+- 新增 `docs/7.4-non-interactive-exec-json.md`，说明使用场景、失败模式、执行链路、事件结构、对应代码和测试位置。
 
 ### 7.5 Git / Review / Commit / PR 工作流
 

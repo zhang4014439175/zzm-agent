@@ -6,6 +6,7 @@ import json
 import os
 import re
 import time
+from getpass import getpass
 from pathlib import Path
 from typing import Any
 
@@ -34,6 +35,16 @@ from zzm_agent.prompt.manager import PromptManager
 
 CONFIG_PATH = Path("config.yaml")
 _SDK_ERROR_PAYLOAD_PATTERN = re.compile(r"-\s*(\{.*\})\s*$", re.DOTALL)
+DEFAULT_BASE_URL = "https://api.openai.com/v1"
+DEFAULT_MODEL_NAME = "gpt-4o-mini"
+
+
+class FirstRunSetupRequired(RuntimeError):
+    """Raised when first-run setup needs interactive input."""
+
+
+class MissingModelConfig(RuntimeError):
+    """Raised when model credentials are missing after config loading."""
 
 
 class _WorkingStatus:
@@ -226,9 +237,28 @@ def parse_args(argv: list[str] | None = None) -> argparse.Namespace:
     eval_parser.add_argument("--llm", action="store_true", help="Enable real LLM for smoke/full suites")
     eval_parser.add_argument("--config", dest="config_path", help="Path to the YAML config file.")
 
+    exec_parser = subparsers.add_parser("exec", help="Run one non-interactive agent task")
+    exec_parser.add_argument("prompt", nargs="*", help="Task prompt. Multiple words are joined with spaces.")
+    exec_parser.add_argument("--stdin", action="store_true", help="Append stdin content to the task prompt.")
+    exec_parser.add_argument("--json", action="store_true", dest="json_output", help="Emit JSONL stream events to stdout.")
+    exec_parser.add_argument("--output", "-o", dest="output_path", help="Write the final assistant message to a file.")
+    exec_parser.add_argument("--session", dest="session_id", help="Resume or create a specific session id.")
+    exec_parser.add_argument("--config", dest="config_path", help="Path to the YAML config file.")
+    exec_parser.add_argument("--safe", action="store_true", help="Use stricter confirmation policies.")
+    exec_parser.add_argument("--debug", action="store_true", help="Show full tracebacks for runtime errors.")
+
+    completion_parser = subparsers.add_parser("completion", help="Print shell completion script")
+    completion_parser.add_argument(
+        "shell",
+        nargs="?",
+        choices=["bash", "zsh", "powershell"],
+        default="bash",
+        help="Shell type to generate completion for.",
+    )
+
     if argv is None:
         argv = sys.argv[1:]
-    if not argv or argv[0] not in ["repl", "eval"]:
+    if not argv or argv[0] not in ["repl", "eval", "exec", "completion"]:
         argv = ["repl"] + argv
 
     return parser.parse_args(argv)
@@ -243,6 +273,263 @@ def resolve_config_path(config_path: str | Path | None = None) -> Path:
             "config.yaml not found. Use --config or set ZZM_AGENT_CONFIG."
         )
     return sources[-1].path
+
+
+def _default_user_config_dir() -> Path:
+    return Path.home() / ".zzm_agent"
+
+
+def _default_user_config_path() -> Path:
+    return _default_user_config_dir() / "config.yaml"
+
+
+def _default_user_env_path() -> Path:
+    return _default_user_config_dir() / ".env"
+
+
+def _installed_plugin_dir() -> Path:
+    return Path(__file__).resolve().parents[1] / "plugins"
+
+
+def _default_config_text() -> str:
+    plugin_dir = str(_installed_plugin_dir()).replace("\\", "/")
+    return (
+        "model:\n"
+        f'  base_url: "${{LLM_BASE_URL:-{DEFAULT_BASE_URL}}}"\n'
+        '  api_key: "${LLM_API_KEY}"\n'
+        f'  model_name: "${{LLM_MODEL_NAME:-{DEFAULT_MODEL_NAME}}}"\n'
+        "  temperature: 0.7\n"
+        "  max_tokens: 4096\n"
+        "  context_window_tokens:\n"
+        "  input_price_per_1m: 0\n"
+        "  output_price_per_1m: 0\n"
+        "\n"
+        "agent:\n"
+        '  system_prompt: "You are zzm-agent, a concise and helpful personal assistant."\n'
+        "  auto_approve: false\n"
+        "  max_tool_iterations: 20\n"
+        "  duplicate_tool_call_limit: 3\n"
+        "  max_tool_retries: 1\n"
+        "  stream: true\n"
+        '  tool_choice: "auto"\n'
+        "  plugin_dirs:\n"
+        f'    - "{plugin_dir}"\n'
+        "\n"
+        "ui:\n"
+        '  response_language: "auto"\n'
+        '  default_locale_language: "zh-CN"\n'
+        "\n"
+        "memory:\n"
+        '  path: "~/.zzm_agent/memory.json"\n'
+        "  max_history: 50\n"
+        "  retrieval_top_k: 3\n"
+        "  max_context_tokens: 32000\n"
+        "  compression_keep_recent: 10\n"
+        "  instruction_files:\n"
+        '    - "AGENTS.md"\n'
+        '    - "ZZM.md"\n'
+        "  instruction_max_chars: 8000\n"
+        "  auto_memory_enabled: true\n"
+        "\n"
+        "evolution:\n"
+        "  enabled: false\n"
+        '  trigger: "manual"\n'
+        "  sample_size: 20\n"
+        "  history_versions: 5\n"
+        "  auto_interval:\n"
+        "  threshold:\n"
+    )
+
+
+def _dotenv_escape(value: str) -> str:
+    return value.replace("\\", "\\\\").replace('"', '\\"')
+
+
+def _write_dotenv_values(env_path: Path, values: dict[str, str]) -> None:
+    existing: dict[str, str] = {}
+    ordered_keys: list[str] = []
+    if env_path.exists():
+        for line in env_path.read_text(encoding="utf-8").splitlines():
+            stripped = line.strip()
+            if not stripped or stripped.startswith("#") or "=" not in line:
+                continue
+            key, value = line.split("=", 1)
+            key = key.strip()
+            if key:
+                existing[key] = value.strip().strip('"')
+                ordered_keys.append(key)
+
+    for key, value in values.items():
+        if value:
+            existing[key] = value
+            if key not in ordered_keys:
+                ordered_keys.append(key)
+
+    env_path.parent.mkdir(parents=True, exist_ok=True)
+    lines = [
+        "# zzm-agent local model credentials.",
+        "# This file is intentionally stored outside project repositories by default.",
+    ]
+    for key in ordered_keys:
+        if key in existing:
+            lines.append(f'{key}="{_dotenv_escape(existing[key])}"')
+    env_path.write_text("\n".join(lines) + "\n", encoding="utf-8")
+
+
+def _load_dotenv_file(path: Path) -> None:
+    if not path.exists():
+        return
+    try:
+        from dotenv import load_dotenv
+    except ImportError:
+        for line in path.read_text(encoding="utf-8").splitlines():
+            stripped = line.strip()
+            if not stripped or stripped.startswith("#") or "=" not in stripped:
+                continue
+            key, value = stripped.split("=", 1)
+            key = key.strip()
+            value = value.strip().strip('"').strip("'")
+            os.environ.setdefault(key, value)
+        return
+    load_dotenv(path, override=False)
+
+
+def _load_dotenv_files(sources: list[Any]) -> None:
+    _load_dotenv_file(Path.cwd() / ".env")
+    seen: set[Path] = set()
+    for source in sources:
+        path = (Path(source.path).parent / ".env").resolve()
+        if path not in seen:
+            seen.add(path)
+            _load_dotenv_file(path)
+
+
+def create_first_run_config(
+    *,
+    config_path: Path | None = None,
+    env_path: Path | None = None,
+    base_url: str = DEFAULT_BASE_URL,
+    model_name: str = DEFAULT_MODEL_NAME,
+    api_key: str = "",
+) -> Path:
+    """Create a user-level config and optional .env values for first run."""
+    target_config = config_path or _default_user_config_path()
+    target_env = env_path or target_config.parent / ".env"
+    target_config.parent.mkdir(parents=True, exist_ok=True)
+    if not target_config.exists():
+        target_config.write_text(_default_config_text(), encoding="utf-8")
+    _write_dotenv_values(
+        target_env,
+        {
+            "LLM_BASE_URL": base_url,
+            "LLM_MODEL_NAME": model_name,
+            "LLM_API_KEY": api_key,
+        },
+    )
+    return target_config
+
+
+def prompt_for_model_config(
+    *,
+    input_func: Any = input,
+    secret_input_func: Any = getpass,
+    output_func: Any = print,
+    base_url: str = DEFAULT_BASE_URL,
+    model_name: str = DEFAULT_MODEL_NAME,
+) -> dict[str, str]:
+    """Ask for model settings and return values suitable for .env."""
+    output_func("zzm-agent first-run setup")
+    output_func("Enter your OpenAI-compatible model settings. Press Enter to keep defaults.")
+    raw_base_url = input_func(f"Base URL [{base_url}]: ").strip()
+    raw_model_name = input_func(f"Model name [{model_name}]: ").strip()
+    api_key = secret_input_func("LLM API key: ").strip()
+    return {
+        "base_url": raw_base_url or base_url,
+        "model_name": raw_model_name or model_name,
+        "api_key": api_key,
+    }
+
+
+def ensure_first_run_config(args: argparse.Namespace, *, stdin: Any = None) -> Path | None:
+    """Create a user config on first interactive REPL startup."""
+    import sys
+
+    stdin = stdin or sys.stdin
+    if getattr(args, "command", "repl") != "repl":
+        return None
+    if getattr(args, "config_path", None) or os.environ.get("ZZM_AGENT_CONFIG"):
+        return None
+
+    manager = ConfigManager()
+    if manager.resolve_default_sources(None):
+        return None
+    if not getattr(stdin, "isatty", lambda: False)():
+        raise FirstRunSetupRequired(
+            "No config found. Run zzm-agent in an interactive terminal once, "
+            "or create ~/.zzm_agent/config.yaml, or pass --config."
+        )
+
+    values = prompt_for_model_config()
+    if not values["api_key"]:
+        raise MissingModelConfig(
+            "LLM API key is required. Re-run zzm-agent and enter a key, "
+            "or set LLM_API_KEY / ZZM_AGENT_API_KEY / OPENAI_API_KEY."
+        )
+    config_path = create_first_run_config(**values)
+    os.environ.setdefault("LLM_BASE_URL", values["base_url"])
+    os.environ.setdefault("LLM_MODEL_NAME", values["model_name"])
+    os.environ.setdefault("LLM_API_KEY", values["api_key"])
+    print(f"Created config: {config_path}")
+    print(f"Saved credentials: {config_path.parent / '.env'}")
+    return config_path
+
+
+def ensure_model_credentials(cfg: dict[str, Any], args: argparse.Namespace, *, stdin: Any = None) -> None:
+    """Prompt for missing model credentials and persist them beside the config."""
+    import sys
+
+    model_cfg = cfg.setdefault("model", {})
+    api_key = (
+        model_cfg.get("api_key")
+        or os.environ.get("LLM_API_KEY")
+        or os.environ.get("ZZM_AGENT_API_KEY")
+        or os.environ.get("OPENAI_API_KEY")
+    )
+    if api_key:
+        return
+    if getattr(args, "command", "repl") != "repl":
+        raise MissingModelConfig(
+            "Model API key is required. Set model.api_key, LLM_API_KEY, "
+            "ZZM_AGENT_API_KEY, or OPENAI_API_KEY."
+        )
+    stdin = stdin or sys.stdin
+    if not getattr(stdin, "isatty", lambda: False)():
+        raise MissingModelConfig(
+            "Model API key is required. Run zzm-agent interactively once, "
+            "or set LLM_API_KEY / ZZM_AGENT_API_KEY / OPENAI_API_KEY."
+        )
+
+    base_url = str(model_cfg.get("base_url") or DEFAULT_BASE_URL)
+    model_name = str(model_cfg.get("model_name") or DEFAULT_MODEL_NAME)
+    values = prompt_for_model_config(base_url=base_url, model_name=model_name)
+    if not values["api_key"]:
+        raise MissingModelConfig("LLM API key is required before starting zzm-agent.")
+
+    config_dir = Path(cfg.get("_config_dir") or _default_user_config_dir()).expanduser()
+    _write_dotenv_values(
+        config_dir / ".env",
+        {
+            "LLM_BASE_URL": values["base_url"],
+            "LLM_MODEL_NAME": values["model_name"],
+            "LLM_API_KEY": values["api_key"],
+        },
+    )
+    os.environ.setdefault("LLM_BASE_URL", values["base_url"])
+    os.environ.setdefault("LLM_MODEL_NAME", values["model_name"])
+    os.environ.setdefault("LLM_API_KEY", values["api_key"])
+    model_cfg["base_url"] = model_cfg.get("base_url") or values["base_url"]
+    model_cfg["model_name"] = model_cfg.get("model_name") or values["model_name"]
+    model_cfg["api_key"] = values["api_key"]
 
 
 def _config_bool(value: Any, default: bool = False) -> bool:
@@ -276,18 +563,21 @@ def load_config(config_path: str | Path | None = None) -> dict[str, Any]:
         RuntimeError: If PyYAML is not installed in the current interpreter.
     """
     try:
-        from dotenv import load_dotenv
-        load_dotenv()
-    except ImportError:
-        pass
-
-    try:
         import yaml
     except ImportError as exc:
         raise RuntimeError("PyYAML is required to load config.yaml.") from exc
 
     _ = yaml
-    return ConfigManager().load(explicit_path=config_path).config
+    manager = ConfigManager()
+    _load_dotenv_file(Path.cwd() / ".env")
+    sources = manager.resolve_default_sources(config_path)
+    if not sources:
+        raise FirstRunSetupRequired(
+            "config.yaml not found. Run zzm-agent in an interactive terminal once, "
+            "or use --config, or set ZZM_AGENT_CONFIG."
+        )
+    _load_dotenv_files(sources)
+    return manager.load(sources=sources).config
 
 
 def _resolve_plugin_dirs(cfg: dict[str, Any]) -> list[Path]:
@@ -325,6 +615,19 @@ def build_tool_confirmation_callback(console: Any):
             always_approved.add(name)
             return True
         return answer == "1"
+
+    return confirm_tool
+
+
+def build_noninteractive_confirmation_callback(console: Any):
+    """Return a confirmation callback that never blocks for user input."""
+
+    def confirm_tool(name: str, arguments: dict[str, Any], risk_level: str) -> bool:
+        console.print(
+            f"[yellow]Denied {risk_level} risk tool in non-interactive exec mode:[/yellow] "
+            f"{name} {_format_compact_arguments(arguments)}"
+        )
+        return False
 
     return confirm_tool
 
@@ -578,7 +881,11 @@ def build_runtime(args: argparse.Namespace, cfg: dict[str, Any]) -> dict[str, An
         max_tokens=cfg["model"].get("max_tokens"),
         auto_approve=cfg["agent"].get("auto_approve", False),
         safe_mode=args.safe,
-        confirm_tool=build_tool_confirmation_callback(console),
+        confirm_tool=(
+            build_noninteractive_confirmation_callback(console)
+            if getattr(args, "command", "repl") == "exec"
+            else build_tool_confirmation_callback(console)
+        ),
         max_tool_iterations=loop_policy["max_tool_iterations"],
         duplicate_tool_call_limit=loop_policy["duplicate_tool_call_limit"],
         max_tool_retries=loop_policy["max_tool_retries"],
@@ -610,6 +917,140 @@ def build_runtime(args: argparse.Namespace, cfg: dict[str, Any]) -> dict[str, An
         "stream": _config_bool(cfg.get("agent", {}).get("stream"), default=True),
         "debug": bool(getattr(args, "debug", False)),
     }
+
+
+def _build_exec_prompt(args: argparse.Namespace, stdin_text: str = "") -> str:
+    prompt = " ".join(getattr(args, "prompt", []) or []).strip()
+    if getattr(args, "stdin", False):
+        stdin_text = stdin_text.strip()
+        if stdin_text:
+            if prompt:
+                return f"{prompt}\n\nInput from stdin:\n{stdin_text}"
+            return stdin_text
+    return prompt
+
+
+def _write_exec_output_file(path: str | Path, text: str) -> None:
+    output_path = Path(path).expanduser()
+    output_path.parent.mkdir(parents=True, exist_ok=True)
+    output_path.write_text(text, encoding="utf-8")
+
+
+def _json_event_line(event: ModelStreamEvent) -> str:
+    return json.dumps(
+        {"type": "event", **event.to_record()},
+        ensure_ascii=False,
+        sort_keys=True,
+    )
+
+
+def _json_result_line(reply: str, result: Any) -> str:
+    response_language = getattr(result, "response_language", None)
+    return json.dumps(
+        {
+            "type": "result",
+            "reply": reply,
+            "response_language": getattr(response_language, "language", None),
+            "language_source": getattr(response_language, "source", None),
+        },
+        ensure_ascii=False,
+        sort_keys=True,
+    )
+
+
+def run_exec(
+    runtime: dict[str, Any],
+    args: argparse.Namespace,
+    *,
+    stdin_text: str = "",
+    stdout: Any | None = None,
+    stderr: Any | None = None,
+) -> int:
+    """Run one non-interactive task for scripts, CI and shell pipelines."""
+    import sys
+
+    stdout = stdout or sys.stdout
+    stderr = stderr or sys.stderr
+    prompt = _build_exec_prompt(args, stdin_text)
+    if not prompt:
+        stderr.write("zzm-agent exec requires a prompt or --stdin content.\n")
+        return 2
+
+    query_engine = runtime.get("query_engine")
+    if query_engine is None:
+        stderr.write("zzm-agent exec requires QueryEngine in the runtime.\n")
+        return 1
+
+    json_output = bool(getattr(args, "json_output", False))
+    events: list[ModelStreamEvent] = []
+
+    def on_stream_event(event: ModelStreamEvent) -> None:
+        events.append(event)
+        if json_output:
+            stdout.write(_json_event_line(event) + "\n")
+            flush = getattr(stdout, "flush", None)
+            if callable(flush):
+                flush()
+
+    try:
+        result = query_engine.submit_message(
+            prompt,
+            stream=json_output,
+            on_stream_event=on_stream_event if json_output else None,
+            language_input=prompt,
+        )
+    except Exception as exc:
+        if json_output:
+            stdout.write(
+                json.dumps(
+                    {"type": "error", "message": _format_repl_exception_with_runtime(exc, runtime)},
+                    ensure_ascii=False,
+                    sort_keys=True,
+                )
+                + "\n"
+            )
+        else:
+            stderr.write(_format_repl_exception_with_runtime(exc, runtime) + "\n")
+        return 1
+
+    reply = result.reply
+    output_path = getattr(args, "output_path", None)
+    if output_path:
+        _write_exec_output_file(output_path, reply)
+    if json_output:
+        stdout.write(_json_result_line(reply, result) + "\n")
+    elif not output_path:
+        stdout.write(reply)
+        if reply and not reply.endswith("\n"):
+            stdout.write("\n")
+    return 0
+
+
+def render_completion_script(shell: str) -> str:
+    """Return a lightweight static completion script for common shells."""
+    commands = "repl eval exec completion"
+    options = "--help --config --session --safe --debug --stdin --json --output --suite --llm"
+    if shell == "powershell":
+        return (
+            "Register-ArgumentCompleter -Native -CommandName zzm-agent -ScriptBlock {\n"
+            "  param($wordToComplete, $commandAst, $cursorPosition)\n"
+            f"  '{commands} {options}'.Split(' ') | Where-Object {{ $_ -like \"$wordToComplete*\" }}\n"
+            "}\n"
+        )
+    if shell == "zsh":
+        return (
+            "#compdef zzm-agent\n"
+            "_arguments '*::arg:->args'\n"
+            "case $state in\n"
+            f"  args) compadd {commands} {options} ;;\n"
+            "esac\n"
+        )
+    return (
+        "_zzm_agent_complete() {\n"
+        f"  COMPREPLY=( $(compgen -W \"{commands} {options}\" -- \"${{COMP_WORDS[COMP_CWORD]}}\") )\n"
+        "}\n"
+        "complete -F _zzm_agent_complete zzm-agent\n"
+    )
 
 
 def run_repl(runtime: dict[str, Any]) -> int:
@@ -755,13 +1196,22 @@ def main(argv: list[str] | None = None) -> int:
     args: argparse.Namespace | None = None
     try:
         args = parse_args(argv)
+        if getattr(args, "command", "repl") == "completion":
+            print(render_completion_script(args.shell), end="")
+            return 0
+
+        ensure_first_run_config(args)
         cfg = load_config(args.config_path)
         
         if getattr(args, "command", "repl") == "eval":
             from zzm_agent.eval.runner import run_eval
             return run_eval(args.suite, args.llm, cfg)
-            
+
+        ensure_model_credentials(cfg, args)
         runtime = build_runtime(args, cfg)
+        if getattr(args, "command", "repl") == "exec":
+            stdin_text = sys.stdin.read() if getattr(args, "stdin", False) else ""
+            return run_exec(runtime, args, stdin_text=stdin_text)
         return run_repl(runtime)
     except StorageCorruptionError as exc:
         console = build_console()
@@ -770,6 +1220,10 @@ def main(argv: list[str] | None = None) -> int:
         else:
             console.print(f"[red]Storage corruption: {exc}[/red]")
         return 1
+    except (FirstRunSetupRequired, MissingModelConfig) as exc:
+        console = build_console()
+        console.print(f"[yellow]{exc}[/yellow]")
+        return 2
     except Exception:
         console = build_console()
         if args is not None and getattr(args, "debug", False):

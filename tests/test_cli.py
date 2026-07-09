@@ -12,12 +12,18 @@ from zzm_agent.cli_support.rendering import (
 from zzm_agent.core.model_stream import ModelStreamEvent
 from zzm_agent.cli_support.runtime import (
     _build_working_footer,
+    _build_exec_prompt,
     build_tool_confirmation_callback,
+    build_noninteractive_confirmation_callback,
     _ask_tool_approval_choice,
     _config_bool,
     _format_repl_exception,
     _format_repl_exception_with_runtime,
     _resolve_plugin_dirs,
+    create_first_run_config,
+    ensure_model_credentials,
+    render_completion_script,
+    run_exec,
     _start_working_status,
     _stop_working_status,
     get_agent_loop_policy,
@@ -171,6 +177,27 @@ def test_parse_args_supports_safe_flag():
     assert args.safe is True
 
 
+def test_parse_args_supports_exec_flags():
+    args = parse_args([
+        "exec",
+        "--stdin",
+        "--json",
+        "--output",
+        "answer.md",
+        "--session",
+        "ci",
+        "review",
+        "diff",
+    ])
+
+    assert args.command == "exec"
+    assert args.stdin is True
+    assert args.json_output is True
+    assert args.output_path == "answer.md"
+    assert args.session_id == "ci"
+    assert args.prompt == ["review", "diff"]
+
+
 def test_slash_command_completer_highlights_selected_command():
     pytest = __import__("pytest")
     document_module = pytest.importorskip("prompt_toolkit.document")
@@ -254,6 +281,85 @@ def test_load_config_expands_env_placeholders(tmp_path, monkeypatch):
 
     assert cfg["model"]["api_key"] == "secret"
     assert cfg["_config_dir"] == str(config_path.parent)
+
+
+def test_load_config_reads_env_next_to_config(tmp_path, monkeypatch):
+    monkeypatch.chdir(tmp_path)
+    config_path = tmp_path / "config.yaml"
+    config_path.write_text(
+        "model:\n"
+        '  api_key: "${LLM_API_KEY}"\n'
+        '  base_url: "${LLM_BASE_URL:-https://example.com}"\n'
+        '  model_name: "${LLM_MODEL_NAME:-demo}"\n',
+        encoding="utf-8",
+    )
+    (tmp_path / ".env").write_text(
+        'LLM_API_KEY="from-env-file"\n'
+        'LLM_MODEL_NAME="env-model"\n',
+        encoding="utf-8",
+    )
+    monkeypatch.delenv("LLM_API_KEY", raising=False)
+    monkeypatch.delenv("LLM_MODEL_NAME", raising=False)
+    monkeypatch.delenv("LLM_BASE_URL", raising=False)
+
+    cfg = load_config(config_path)
+
+    assert cfg["model"]["api_key"] == "from-env-file"
+    assert cfg["model"]["model_name"] == "env-model"
+
+
+def test_create_first_run_config_writes_config_and_env(tmp_path):
+    config_path = tmp_path / "config.yaml"
+    env_path = tmp_path / ".env"
+
+    created = create_first_run_config(
+        config_path=config_path,
+        env_path=env_path,
+        base_url="https://models.example/v1",
+        model_name="demo-model",
+        api_key="secret",
+    )
+
+    assert created == config_path
+    config_text = config_path.read_text(encoding="utf-8")
+    env_text = env_path.read_text(encoding="utf-8")
+    assert "${LLM_API_KEY}" in config_text
+    assert "zzm_agent/plugins" in config_text.replace("\\", "/")
+    assert 'LLM_API_KEY="secret"' in env_text
+    assert 'LLM_MODEL_NAME="demo-model"' in env_text
+
+
+def test_ensure_model_credentials_prompts_and_writes_env(tmp_path, monkeypatch):
+    cfg = {
+        "_config_dir": str(tmp_path),
+        "model": {
+            "base_url": "https://models.example/v1",
+            "model_name": "demo-model",
+            "api_key": "",
+        },
+    }
+    args = parse_args([])
+
+    monkeypatch.delenv("LLM_API_KEY", raising=False)
+    monkeypatch.delenv("ZZM_AGENT_API_KEY", raising=False)
+    monkeypatch.delenv("OPENAI_API_KEY", raising=False)
+    monkeypatch.setattr(
+        "zzm_agent.cli_support.runtime.prompt_for_model_config",
+        lambda **kwargs: {
+            "base_url": kwargs.get("base_url", "https://models.example/v1"),
+            "model_name": kwargs.get("model_name", "demo-model"),
+            "api_key": "secret",
+        },
+    )
+
+    ensure_model_credentials(
+        cfg,
+        args,
+        stdin=type("TTY", (), {"isatty": lambda self: True})(),
+    )
+
+    assert cfg["model"]["api_key"] == "secret"
+    assert 'LLM_API_KEY="secret"' in (tmp_path / ".env").read_text(encoding="utf-8")
 
 
 def test_parse_args_accepts_debug_flag():
@@ -369,6 +475,101 @@ def test_working_footer_matches_bottom_toolbar_runtime_data(tmp_path, monkeypatc
     assert str(tmp_path) in rendered
     assert "Model: demo-model" in rendered
     assert "Context: 1000/64000" in rendered
+
+
+def test_exec_prompt_appends_stdin_content():
+    args = parse_args(["exec", "--stdin", "review", "these", "files"])
+
+    prompt = _build_exec_prompt(args, "a.py\nb.py\n")
+
+    assert prompt == "review these files\n\nInput from stdin:\na.py\nb.py"
+
+
+def test_run_exec_prints_final_reply():
+    class QueryEngine:
+        def __init__(self):
+            self.calls = []
+
+        def submit_message(self, prompt, **kwargs):
+            self.calls.append((prompt, kwargs))
+            return type("Result", (), {"reply": "完成", "response_language": None})()
+
+    stdout = __import__("io").StringIO()
+    stderr = __import__("io").StringIO()
+    args = parse_args(["exec", "hello"])
+    engine = QueryEngine()
+
+    code = run_exec({"query_engine": engine}, args, stdout=stdout, stderr=stderr)
+
+    assert code == 0
+    assert stdout.getvalue() == "完成\n"
+    assert stderr.getvalue() == ""
+    assert engine.calls[0][0] == "hello"
+    assert engine.calls[0][1]["stream"] is False
+
+
+def test_run_exec_emits_json_events_and_result():
+    class QueryEngine:
+        def submit_message(self, prompt, **kwargs):
+            kwargs["on_stream_event"](ModelStreamEvent.status("turn.started", response_language="zh-CN"))
+            return type(
+                "Result",
+                (),
+                {
+                    "reply": "完成",
+                    "response_language": type(
+                        "Language",
+                        (),
+                        {"language": "zh-CN", "source": "config"},
+                    )(),
+                },
+            )()
+
+    stdout = __import__("io").StringIO()
+    args = parse_args(["exec", "--json", "hello"])
+
+    code = run_exec({"query_engine": QueryEngine()}, args, stdout=stdout)
+
+    lines = [__import__("json").loads(line) for line in stdout.getvalue().splitlines()]
+    assert code == 0
+    assert lines[0]["type"] == "event"
+    assert lines[0]["kind"] == "status"
+    assert lines[0]["metadata"]["response_language"] == "zh-CN"
+    assert lines[1]["type"] == "result"
+    assert lines[1]["reply"] == "完成"
+    assert lines[1]["language_source"] == "config"
+
+
+def test_run_exec_writes_final_reply_to_file(tmp_path):
+    class QueryEngine:
+        def submit_message(self, prompt, **kwargs):
+            return type("Result", (), {"reply": "文件内容", "response_language": None})()
+
+    output_path = tmp_path / "out" / "answer.md"
+    stdout = __import__("io").StringIO()
+    args = parse_args(["exec", "--output", str(output_path), "hello"])
+
+    code = run_exec({"query_engine": QueryEngine()}, args, stdout=stdout)
+
+    assert code == 0
+    assert stdout.getvalue() == ""
+    assert output_path.read_text(encoding="utf-8") == "文件内容"
+
+
+def test_noninteractive_confirmation_denies_without_prompting():
+    console = DummyConsole()
+    confirm = build_noninteractive_confirmation_callback(console)
+
+    assert confirm("run_shell", {"command": "git status"}, "high") is False
+    assert any("non-interactive exec mode" in line for line in console.lines)
+
+
+def test_completion_script_mentions_exec():
+    script = render_completion_script("bash")
+
+    assert "exec" in script
+    assert "--stdin" in script
+    assert "--json" in script
 
 
 def test_plugin_dirs_resolve_relative_to_config_file(tmp_path, monkeypatch):
