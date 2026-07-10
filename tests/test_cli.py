@@ -1,3 +1,5 @@
+import pytest
+
 from zzm_agent.cli_support.commands import handle_slash
 from zzm_agent.cli_support.observability import CliObserver
 from zzm_agent.cli_support.rendering import (
@@ -1326,6 +1328,62 @@ def test_handle_slash_review_supports_staged_target(monkeypatch, tmp_path):
     assert "currently staged changes" in prompt
     assert "Start by checking `git diff --cached`" in prompt
     assert submitted_kwargs["language_input"] == "/review --cached"
+
+
+@pytest.mark.parametrize(
+    ("command", "expected"),
+    [
+        ("/commit-message", "commit message"),
+        ("/branch parser-cleanup", "branch name"),
+        ("/pr", "PR title and description"),
+    ],
+)
+def test_git_draft_commands_are_read_only_and_use_query_engine(
+    command, expected, tmp_path
+):
+    query_engine = DummyQueryEngine()
+    store = MemoryStore(path=tmp_path / "memory.json", max_history=50)
+    console = DummyConsole()
+
+    assert handle_slash(
+        command,
+        DummyRegistry(),
+        store,
+        DummyOptimizer(),
+        console,
+        {"query_engine": query_engine},
+    )
+
+    prompt, kwargs = query_engine.submitted[0]
+    assert expected in prompt
+    assert "Do not modify" in prompt
+    assert "test evidence" in prompt
+    assert kwargs["language_input"] == command
+
+
+def test_ci_analysis_stores_log_artifact_and_requests_actionable_fix(monkeypatch, tmp_path):
+    monkeypatch.setenv("ZZM_AGENT_WORKSPACE_ROOT", str(tmp_path))
+    (tmp_path / "ci.log").write_text("FAILED tests/test_demo.py::test_value\n", encoding="utf-8")
+    query_engine = DummyQueryEngine()
+    store = MemoryStore(path=tmp_path / "memory.json", max_history=50)
+    console = DummyConsole()
+
+    assert handle_slash(
+        "/ci ci.log",
+        DummyRegistry(),
+        store,
+        DummyOptimizer(),
+        console,
+        {"query_engine": query_engine},
+    )
+
+    artifacts = list(query_engine.conversation_state.artifacts.records.values())
+    assert len(artifacts) == 1
+    assert artifacts[0].kind == "ci-log"
+    prompt = query_engine.submitted[0][0]
+    assert artifacts[0].artifact_id in prompt
+    assert "first actionable root cause" in prompt
+    assert "untrusted data" in prompt
 
 
 def test_handle_slash_reserved_commands_report_unavailable_state(tmp_path):

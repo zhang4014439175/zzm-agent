@@ -15,7 +15,7 @@
 
 ## 执行进度总览
 
-> **当前下一任务：7.5 Git / Review / Commit / PR 工作流。**
+> **当前下一任务：P2 阶段验收。**
 
 ### 当前能力基线
 
@@ -65,7 +65,7 @@
 - [x] 7.3A 终端输出分层与可降级渲染：先解决思考过程、工具执行和最终总结混排问题，建立可复用的 CLI 渲染边界
 - [x] 7.3B 响应语言策略、系统语言检测与全局语言设置：支持系统 locale 默认识别、会话语言继承、用户全局语言偏好和单轮语言覆盖
 - [x] 7.4 非交互 `exec`、stdin 管道与 JSON 输出：支持脚本、CI、批处理、`--json` 事件流、最终结果输出文件和 shell completion
-- [ ] 7.5 Git / Review / Commit / PR 工作流：合并开发 diff review、stage/unstage、commit message、branch、PR 描述和 CI 失败分析入口
+- [x] 7.5 Git / Review / Commit / PR 工作流：合并开发 diff review、stage/unstage、commit message、branch、PR 描述和 CI 失败分析入口
 - [ ] P2 阶段验收：确认终端版具备可恢复、可配置、可脚本化、可审查和可日常高频使用的产品体验
 
 ### P3：本地执行安全、沙箱与上下文治理
@@ -1160,6 +1160,16 @@ zzm exec --json "summarize repo"
 - Review 默认只读，不修改工作区；
 - commit/PR 描述引用测试结果和关键变更；
 - CI 失败分析能关联日志 Artifact 和建议修复。
+
+完成记录：
+
+- [x] 新增 `GitWorkflow` 与 `GitSnapshot`，统一读取 branch、status、staged diff 和 unstaged diff；
+- [x] 新增 `/git status|stage|unstage|undo`、`/stage` 和 `/unstage`，index 写操作复用运行时确认入口并支持最近一次操作反向回滚；
+- [x] 新增 `/commit-message`、`/branch` 和 `/pr` 只读草稿入口，要求检查 diff 与测试证据，不直接创建 commit、分支或远程 PR；
+- [x] 新增 `/ci <log-file>`，将完整日志保存为 `ci-log` Artifact，并生成包含根因、相关代码、最小修复和验证命令的分析；
+- [x] Git 子进程使用参数数组和 `--` 路径分隔，拒绝以 `-` 开头的路径参数，避免 Shell 与 option 注入；
+- [x] 新增 `tests/test_git_workflow.py` 并扩充 `tests/test_cli.py`，全量回归结果为 `310 passed, 2 skipped`；
+- [x] 新增 `docs/7.5-git-review-commit-pr-workflow.md`，说明问题、端到端例子、执行链路、数据结构、安全边界和验证结果。
 
 ### 验收标准
 
