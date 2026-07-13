@@ -39,6 +39,18 @@ def test_read_file_can_access_workspace_file(tmp_path, monkeypatch):
     assert "note.txt" in result
 
 
+def test_read_and_search_cannot_access_dotenv(tmp_path, monkeypatch):
+    monkeypatch.setenv("ZZM_AGENT_WORKSPACE_ROOT", str(tmp_path))
+    (tmp_path / ".env").write_text("API_KEY=secret", encoding="utf-8")
+    registry = build_plugin_registry()
+
+    read_result = registry.call("read_file", {"path": ".env"})
+    search_result = registry.call("grep_search", {"pattern": "secret", "path": ".env"})
+
+    assert "Sensitive path cannot be read" in read_result
+    assert "Sensitive path cannot be read" in search_result
+
+
 def _make_dir_symlink(link_path: Path, target_path: Path) -> None:
     try:
         os.symlink(target_path, link_path, target_is_directory=True)

@@ -1,7 +1,7 @@
-import os
 from pathlib import Path
 
 from zzm_agent.core.runtime_state import FileStateCache
+from zzm_agent.core.sandbox import get_sandbox_profile
 from zzm_agent.core.tool_registry import tool
 
 
@@ -19,46 +19,9 @@ def reset_file_state_cache() -> None:
     _FILE_STATE_CACHE = FileStateCache()
 
 
-def _workspace_root() -> Path:
-    root = os.environ.get("ZZM_AGENT_WORKSPACE_ROOT")
-    if root:
-        return Path(root).expanduser().resolve(strict=False)
-    return Path.cwd().resolve(strict=False)
-
-
-def _ensure_inside_workspace(real_path: Path, workspace_root: Path) -> None:
-    """Reject paths whose real filesystem location is outside the workspace."""
-    if not real_path.is_relative_to(workspace_root):
-        raise ValueError(f"Path escapes workspace root: {workspace_root}")
-
-
-def _resolve_existing_parent(candidate: Path, workspace_root: Path) -> Path:
-    """Return the nearest existing parent, resolving symlinks on that parent."""
-    parent = candidate.parent
-    while not parent.exists() and parent != parent.parent:
-        parent = parent.parent
-
-    real_parent = parent.resolve(strict=True) if parent.exists() else parent.resolve(strict=False)
-    _ensure_inside_workspace(real_parent, workspace_root)
-    return real_parent
-
-
-def _resolve_workspace_path(path: str) -> Path:
+def _resolve_workspace_path(path: str, *, access: str = "read") -> Path:
     """Resolve a user-provided path and ensure it stays inside the workspace."""
-    workspace_root = _workspace_root()
-    expanded = Path(path).expanduser()
-    # Treat relative paths as relative to the workspace root, not the real CWD.
-    if not expanded.is_absolute():
-        candidate = (workspace_root / expanded).resolve(strict=False)
-    else:
-        candidate = expanded.resolve(strict=False)
-
-    _ensure_inside_workspace(candidate, workspace_root)
-    if candidate.exists():
-        _ensure_inside_workspace(candidate.resolve(strict=True), workspace_root)
-    else:
-        _resolve_existing_parent(candidate, workspace_root)
-    return candidate
+    return get_sandbox_profile().authorize_path(path, access=access)
 
 
 def _file_stat_payload(path: Path) -> tuple[int, int]:
@@ -184,7 +147,7 @@ def file_edit(path: str, target: str, replacement: str, replace_all: str = "fals
         A success message with the number of replacements made, or an error.
     """
     try:
-        p = _resolve_workspace_path(path)
+        p = _resolve_workspace_path(path, access="write")
 
         if not p.exists():
             return f"Error: File not found: {path}"
@@ -248,7 +211,7 @@ def write_file(path: str, content: str) -> str:
         A success message indicating how many characters were written.
     """
     try:
-        p = _resolve_workspace_path(path)
+        p = _resolve_workspace_path(path, access="write")
 
         # Automatically create missing parent directories
         p.parent.mkdir(parents=True, exist_ok=True)
@@ -284,7 +247,7 @@ def file_append(path: str, content: str) -> str:
         A success message.
     """
     try:
-        p = _resolve_workspace_path(path)
+        p = _resolve_workspace_path(path, access="write")
         p.parent.mkdir(parents=True, exist_ok=True)
 
         with p.open("a", encoding="utf-8") as f:

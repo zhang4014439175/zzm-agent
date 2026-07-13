@@ -15,7 +15,7 @@
 
 ## 执行进度总览
 
-> **当前下一任务：8.2 文件系统与网络沙箱 Profile。**
+> **当前下一任务：8.3 工具超时、取消与资源清理。**
 
 ### 当前能力基线
 
@@ -71,7 +71,7 @@
 ### P3：本地执行安全、沙箱与上下文治理
 
 - [x] 8.1 工具生命周期、参数校验与权限网关：合并开发工具注册、参数 schema 校验、风险分级、权限确认、执行前后事件和结果记录
-- [ ] 8.2 文件系统与网络沙箱 Profile：支持 read/write/deny、workspace roots、敏感文件拒读、网络域名 allow/deny、localhost/private network 规则和 Windows/WSL 差异
+- [x] 8.2 文件系统与网络沙箱 Profile：支持 read/write/deny、workspace roots、敏感文件拒读、网络域名 allow/deny、localhost/private network 规则和 Windows/WSL 差异
 - [ ] 8.3 工具超时、取消与资源清理：为模型请求、Shell、文件操作、MCP 工具和后台进程提供超时、用户取消、安全检查点和清理回调
 - [ ] 8.4 ChangeSet、Patch 与 `/undo`：记录受管文件变更、生成可审查 Patch、支持按变更集撤销并处理冲突
 - [ ] 8.5 Token Budget、自动压缩与上下文解释：合并开发上下文预算、超长工具结果 Artifact 化、自动 compact、prompt cache 策略和上下文来源说明
@@ -1228,6 +1228,17 @@ tool call -> 参数解析 -> schema 校验 -> 风险分级 -> 权限确认 -> �
 - 写入默认限制在 workspace roots；
 - 网络默认关闭或按 profile 限制域名；
 - 沙箱失败能请求受控升级而不是静默绕过。
+
+完成记录：
+
+- [x] 新增核心 `SandboxProfile`，统一 workspace roots、显式 deny、敏感路径和网络边界；
+- [x] 文件与搜索插件统一复用 `authorize_path()`，默认拒读 `.env`、`.ssh`、云凭据目录和私钥名称；
+- [x] 写操作默认限制在 workspace roots，并继续防止真实路径和符号链接父目录逃逸；
+- [x] 新增 `authorize_url()`，网络默认关闭，支持域名 allow/deny、localhost、loopback、private/link-local 独立策略；
+- [x] `SandboxViolation` 进入结构化 permission 错误，明确要求受控 Profile 变更或显式升级，禁止静默绕过；
+- [x] 记录 Windows、WSL、Unix 路径分隔、符号链接、socket 与应用层/OS 层沙箱差异；
+- [x] 新增 `tests/test_sandbox_profile.py` 并扩充插件安全测试，定向回归 `43 passed, 2 skipped`，全量回归 `323 passed, 2 skipped`；
+- [x] 新增 `docs/8.2-filesystem-network-sandbox-profile.md`，说明场景、链路、配置、边界与验证结果。
 
 ### 8.3 工具超时、取消与资源清理
 

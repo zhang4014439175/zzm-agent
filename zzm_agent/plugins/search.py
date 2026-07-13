@@ -3,6 +3,7 @@ import re
 from pathlib import Path
 
 from zzm_agent.core.tool_registry import tool
+from zzm_agent.core.sandbox import SandboxViolation, get_sandbox_profile
 
 
 def _workspace_root() -> Path:
@@ -10,12 +11,6 @@ def _workspace_root() -> Path:
     if root:
         return Path(root).expanduser().resolve(strict=False)
     return Path.cwd().resolve(strict=False)
-
-
-def _ensure_inside_workspace(real_path: Path, workspace_root: Path) -> None:
-    """Reject paths whose real filesystem location is outside the workspace."""
-    if not real_path.is_relative_to(workspace_root):
-        raise ValueError(f"Path escapes workspace root: {workspace_root}")
 
 
 def _is_real_path_inside_workspace(path: Path, workspace_root: Path) -> bool:
@@ -29,17 +24,7 @@ def _is_real_path_inside_workspace(path: Path, workspace_root: Path) -> bool:
 
 def _resolve_workspace_path(path: str) -> Path:
     """Resolve a user-provided path and ensure it stays inside the workspace."""
-    workspace_root = _workspace_root()
-    expanded = Path(path).expanduser()
-    # Treat relative paths as relative to the workspace root, not the real CWD.
-    if not expanded.is_absolute():
-        candidate = (workspace_root / expanded).resolve(strict=False)
-    else:
-        candidate = expanded.resolve(strict=False)
-    _ensure_inside_workspace(candidate, workspace_root)
-    if candidate.exists():
-        _ensure_inside_workspace(candidate.resolve(strict=True), workspace_root)
-    return candidate
+    return get_sandbox_profile().authorize_path(path, access="read")
 
 
 # Binary file extensions to skip during text search
@@ -142,8 +127,9 @@ def grep_search(
                 break
 
             try:
+                get_sandbox_profile().authorize_path(file_path, access="read")
                 content = file_path.read_text(encoding="utf-8", errors="replace")
-            except (OSError, PermissionError):
+            except (OSError, PermissionError, SandboxViolation):
                 continue
 
             for line_num, line in enumerate(content.splitlines(), start=1):

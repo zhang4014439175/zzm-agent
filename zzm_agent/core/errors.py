@@ -118,6 +118,15 @@ def tool_error_from_exception(exc: Exception) -> ToolError:
             category=ERROR_ARGUMENT,
             deterministic=True,
         )
+    if exc.__class__.__name__ == "SandboxViolation":
+        return ToolError(
+            error_type="SandboxViolation",
+            message=str(exc),
+            recovery_hint="Request a controlled sandbox profile change or explicit escalation; never bypass the denied path or network boundary.",
+            retryable=False,
+            category=ERROR_PERMISSION,
+            deterministic=True,
+        )
     if isinstance(exc, PermissionError):
         return ToolError(
             error_type="ToolPermissionError",
