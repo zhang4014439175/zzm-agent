@@ -136,6 +136,15 @@ def tool_error_from_exception(exc: Exception) -> ToolError:
             category=ERROR_ENVIRONMENT,
             deterministic=True,
         )
+    if exc.__class__.__name__ == "ToolArgumentValidationError":
+        return ToolError(
+            error_type="ToolArgumentValidationError",
+            message=str(exc),
+            recovery_hint="Check required parameters, names, and value types against the registered tool schema; do not request permission until they validate.",
+            retryable=False,
+            category=ERROR_ARGUMENT,
+            deterministic=True,
+        )
     if isinstance(exc, TypeError):
         return ToolError(
             error_type="ToolArgumentError",

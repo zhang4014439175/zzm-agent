@@ -15,7 +15,7 @@
 
 ## 执行进度总览
 
-> **当前下一任务：8.1 工具生命周期、参数校验与权限网关。**
+> **当前下一任务：8.2 文件系统与网络沙箱 Profile。**
 
 ### 当前能力基线
 
@@ -70,7 +70,7 @@
 
 ### P3：本地执行安全、沙箱与上下文治理
 
-- [ ] 8.1 工具生命周期、参数校验与权限网关：合并开发工具注册、参数 schema 校验、风险分级、权限确认、执行前后事件和结果记录
+- [x] 8.1 工具生命周期、参数校验与权限网关：合并开发工具注册、参数 schema 校验、风险分级、权限确认、执行前后事件和结果记录
 - [ ] 8.2 文件系统与网络沙箱 Profile：支持 read/write/deny、workspace roots、敏感文件拒读、网络域名 allow/deny、localhost/private network 规则和 Windows/WSL 差异
 - [ ] 8.3 工具超时、取消与资源清理：为模型请求、Shell、文件操作、MCP 工具和后台进程提供超时、用户取消、安全检查点和清理回调
 - [ ] 8.4 ChangeSet、Patch 与 `/undo`：记录受管文件变更、生成可审查 Patch、支持按变更集撤销并处理冲突
@@ -1207,6 +1207,16 @@ tool call -> 参数解析 -> schema 校验 -> 风险分级 -> 权限确认 -> �
 - 高风险工具必须经过权限策略；
 - MCP、内置工具和未来插件工具都走同一网关；
 - 工具调用前后都有可回放事件。
+
+完成记录：
+
+- [x] ToolRegistry 注册 schema 增加 `additionalProperties=false`，统一拒绝模型虚构的额外参数；
+- [x] 新增 `validate_arguments()`，在函数执行前校验必填项、未知字段与基础 JSON 类型，且不做隐式类型转换；
+- [x] `ToolRegistry.call()` 强制经过校验，使内置工具、插件工具和未来适配器不能绕过入口；
+- [x] AgentLoop 在 BEFORE_TOOL hook 后、权限确认前执行校验，无效高风险调用不会请求授权或发出 `tool.start`；
+- [x] 新增 `ToolArgumentValidationError` 结构化错误语义，并保持既有 argument recovery hint 兼容；
+- [x] 扩充 `tests/test_tool_registry.py` 和 `tests/test_agent_loop.py`，最终定向回归 `56 passed`，全量回归 `317 passed, 2 skipped`；
+- [x] 新增 `docs/8.1-tool-lifecycle-permission-gateway.md`，说明真实问题、执行链路、事件语义、代码位置与阶段边界。
 
 ### 8.2 文件系统与网络沙箱 Profile
 

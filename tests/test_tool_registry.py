@@ -1,4 +1,10 @@
-from zzm_agent.core.tool_registry import ToolRegistry, tool
+import pytest
+
+from zzm_agent.core.tool_registry import (
+    ToolArgumentValidationError,
+    ToolRegistry,
+    tool,
+)
 
 
 def test_tool_decorator_registers_function():
@@ -66,6 +72,45 @@ def test_call_tool():
 
     result = registry.call("add", {"a": 3, "b": 4})
     assert result == 7
+
+
+def test_invalid_arguments_never_enter_tool_function():
+    registry = ToolRegistry()
+    calls = []
+
+    @registry.tool(description="write a value", risk_level="high")
+    def write_value(path: str, count: int = 1) -> str:
+        calls.append((path, count))
+        return "ok"
+
+    with pytest.raises(ToolArgumentValidationError, match="missing required.*path"):
+        registry.call("write_value", {"count": 1})
+    with pytest.raises(ToolArgumentValidationError, match="must be integer"):
+        registry.call("write_value", {"path": "x", "count": "1"})
+    with pytest.raises(ToolArgumentValidationError, match="unknown parameter.*force"):
+        registry.call("write_value", {"path": "x", "force": True})
+
+    assert calls == []
+
+
+def test_schema_rejects_additional_properties_and_validation_does_not_coerce():
+    registry = ToolRegistry()
+
+    @registry.tool(description="typed arguments")
+    def typed(enabled: bool, ratio: float, items: list, metadata: dict) -> str:
+        return "ok"
+
+    parameters = registry.get_schemas()[0]["function"]["parameters"]
+    assert parameters["additionalProperties"] is False
+    assert registry.validate_arguments(
+        "typed",
+        {"enabled": True, "ratio": 2, "items": [], "metadata": {}},
+    )["ratio"] == 2
+    with pytest.raises(ToolArgumentValidationError, match="boolean"):
+        registry.validate_arguments(
+            "typed",
+            {"enabled": 1, "ratio": 2, "items": [], "metadata": {}},
+        )
 
 
 def test_supported_types():

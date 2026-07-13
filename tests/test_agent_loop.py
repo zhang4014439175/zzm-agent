@@ -1088,6 +1088,47 @@ def test_high_risk_tool_requires_approval(tmp_path):
     assert history[2]["content"] == "User denied tool execution."
 
 
+def test_invalid_high_risk_arguments_fail_before_confirmation_or_execution(tmp_path):
+    registry = ToolRegistry()
+    executions = []
+
+    @registry.tool(description="危险工具", risk_level="high")
+    def wipe(target: str) -> str:
+        executions.append(target)
+        return f"WIPED:{target}"
+
+    store = MemoryStore(path=tmp_path / "memory.json", max_history=10)
+    tool_call = MagicMock()
+    tool_call.id = "call_invalid"
+    tool_call.function.name = "wipe"
+    tool_call.function.arguments = json.dumps({"target": 123})
+    confirmations = []
+    starts = []
+    errors = []
+    loop = AgentLoop(
+        client=MagicMock(),
+        model="test-model",
+        system_prompt="sys",
+        registry=registry,
+        store=store,
+        confirm_tool=lambda *args: confirmations.append(args) or True,
+        on_tool_start=starts.append,
+        on_tool_error=errors.append,
+    )
+    loop.client.chat.completions.create.side_effect = [
+        make_response(tool_calls=[tool_call]),
+        make_response(content="Invalid arguments handled."),
+    ]
+
+    assert loop.run("wipe", stream=False) == "Invalid arguments handled."
+    assert executions == []
+    assert confirmations == []
+    assert starts == []
+    assert len(errors) == 1
+    assert errors[0].error_type == "ToolArgumentValidationError"
+    assert "must be string" in errors[0].error_message
+
+
 def test_medium_risk_tool_requires_approval_by_default(tmp_path):
     registry = ToolRegistry()
 

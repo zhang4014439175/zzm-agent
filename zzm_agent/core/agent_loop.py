@@ -1368,6 +1368,9 @@ class AgentLoop:
                         and before_tool.modified_arguments is not None
                     ):
                         args = before_tool.modified_arguments
+                    # Validate after hooks have had their only chance to modify
+                    # arguments, but before permission prompts or tool side effects.
+                    args = self.registry.validate_arguments(name, args)
                     request_id: str | None = None
                     granted_decision = self.permission_state.find_active_grant(
                         tool_name=name,

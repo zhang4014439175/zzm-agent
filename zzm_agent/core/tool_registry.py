@@ -26,6 +26,15 @@ _VALID_RISK_LEVELS = {"low", "medium", "high"}
 _DOCSTRING_ARG_PATTERN = re.compile(r"^\s*(\w+)\s*:\s*(.+?)\s*$")
 
 
+class ToolArgumentValidationError(TypeError):
+    """Raised before tool code runs when arguments do not match its schema."""
+
+    def __init__(self, tool_name: str, issues: list[str]):
+        self.tool_name = tool_name
+        self.issues = list(issues)
+        super().__init__(f"Invalid arguments for tool {tool_name}: " + "; ".join(issues))
+
+
 @dataclass
 class PluginLoadError:
     """A plugin failure captured without aborting registry startup."""
@@ -120,6 +129,7 @@ class ToolRegistry:
                         "type": "object",
                         "properties": properties,
                         "required": required,
+                        "additionalProperties": False,
                     },
                 },
             }
@@ -217,7 +227,72 @@ class ToolRegistry:
         """
         if name not in self.tools:
             raise KeyError(f"Tool not found: {name}")
-        return self.tools[name]["fn"](**arguments)
+        validated = self.validate_arguments(name, arguments)
+        return self.tools[name]["fn"](**validated)
+
+    def validate_arguments(self, name: str, arguments: Any) -> dict[str, Any]:
+        """Validate one call against the registered JSON schema without coercion."""
+        if name not in self.tools:
+            raise KeyError(f"Tool not found: {name}")
+        if not isinstance(arguments, dict):
+            raise ToolArgumentValidationError(name, ["arguments must be a JSON object"])
+
+        parameters = self.tools[name]["schema"]["function"]["parameters"]
+        properties = dict(parameters.get("properties") or {})
+        required = set(parameters.get("required") or [])
+        issues: list[str] = []
+
+        missing = sorted(required - set(arguments))
+        if missing:
+            issues.append("missing required parameter(s): " + ", ".join(missing))
+
+        unknown = sorted(set(arguments) - set(properties))
+        if unknown and parameters.get("additionalProperties") is False:
+            issues.append("unknown parameter(s): " + ", ".join(unknown))
+
+        for key in sorted(set(arguments) & set(properties)):
+            expected = properties[key].get("type", "string")
+            if not self._matches_json_type(arguments[key], expected):
+                actual = self._json_type_name(arguments[key])
+                issues.append(f"parameter {key!r} must be {expected}, got {actual}")
+
+        if issues:
+            raise ToolArgumentValidationError(name, issues)
+        return dict(arguments)
+
+    @staticmethod
+    def _matches_json_type(value: Any, expected: str) -> bool:
+        if expected == "string":
+            return isinstance(value, str)
+        if expected == "integer":
+            return isinstance(value, int) and not isinstance(value, bool)
+        if expected == "number":
+            return isinstance(value, (int, float)) and not isinstance(value, bool)
+        if expected == "boolean":
+            return isinstance(value, bool)
+        if expected == "array":
+            return isinstance(value, list)
+        if expected == "object":
+            return isinstance(value, dict)
+        return True
+
+    @staticmethod
+    def _json_type_name(value: Any) -> str:
+        if value is None:
+            return "null"
+        if isinstance(value, bool):
+            return "boolean"
+        if isinstance(value, str):
+            return "string"
+        if isinstance(value, int):
+            return "integer"
+        if isinstance(value, float):
+            return "number"
+        if isinstance(value, list):
+            return "array"
+        if isinstance(value, dict):
+            return "object"
+        return type(value).__name__
 
     def get_tool_meta(self, name: str) -> dict[str, Any]:
         """Return metadata for one registered tool."""
