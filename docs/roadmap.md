@@ -15,7 +15,7 @@
 
 ## 执行进度总览
 
-> **当前下一任务：P2 阶段验收。**
+> **当前下一任务：8.1 工具生命周期、参数校验与权限网关。**
 
 ### 当前能力基线
 
@@ -66,7 +66,7 @@
 - [x] 7.3B 响应语言策略、系统语言检测与全局语言设置：支持系统 locale 默认识别、会话语言继承、用户全局语言偏好和单轮语言覆盖
 - [x] 7.4 非交互 `exec`、stdin 管道与 JSON 输出：支持脚本、CI、批处理、`--json` 事件流、最终结果输出文件和 shell completion
 - [x] 7.5 Git / Review / Commit / PR 工作流：合并开发 diff review、stage/unstage、commit message、branch、PR 描述和 CI 失败分析入口
-- [ ] P2 阶段验收：确认终端版具备可恢复、可配置、可脚本化、可审查和可日常高频使用的产品体验
+- [x] P2 阶段验收：确认终端版具备可恢复、可配置、可脚本化、可审查和可日常高频使用的产品体验
 
 ### P3：本地执行安全、沙箱与上下文治理
 
@@ -1178,6 +1178,14 @@ zzm exec --json "summarize repo"
 - 用户能清楚区分执行过程、工具输出和最终结论；
 - 脚本化入口可用于 CI；
 - 配置、指令和记忆的来源可解释。
+
+完成记录：
+
+- [x] 新增 `tests/test_p2_acceptance.py`，从用户闭环验证配置来源、项目指令、会话恢复、JSONL、渲染分层、Git 回滚和 CI Artifact；
+- [x] 确认 REPL、slash command 与非交互 `exec` 共享 QueryEngine、ConversationState 和权限入口；
+- [x] 确认 Git index 写操作需要确认且可逆，review、commit/branch/PR 草稿和 CI 分析保持只读边界；
+- [x] 新增 `docs/p2-acceptance.md`，说明用户痛点、端到端例子、执行链路、关键数据结构、边界和验证证据；
+- [x] 阶段定向测试 `4 passed`，全量回归 `314 passed, 2 skipped`。
 
 ---
 
