@@ -1,6 +1,8 @@
 import pytest
 
 from zzm_agent.core.tool_registry import (
+    ToolCleanupError,
+    ToolDeadlineExceeded,
     ToolArgumentValidationError,
     ToolRegistry,
     tool,
@@ -113,6 +115,74 @@ def test_schema_rejects_additional_properties_and_validation_does_not_coerce():
         )
 
 
+def test_tool_cleanup_runs_lifo_on_success_and_failure():
+    registry = ToolRegistry()
+    events = []
+
+    @registry.tool(description="work")
+    def work(fail: bool = False) -> str:
+        events.append("execute")
+        if fail:
+            raise ValueError("boom")
+        return "ok"
+
+    registry.register_cleanup("work", lambda *_: events.append("cleanup-1"))
+    registry.register_cleanup("work", lambda *_: events.append("cleanup-2"))
+    assert registry.call("work", {}) == "ok"
+    assert events == ["execute", "cleanup-2", "cleanup-1"]
+
+    events.clear()
+    with pytest.raises(ValueError, match="boom"):
+        registry.call("work", {"fail": True})
+    assert events == ["execute", "cleanup-2", "cleanup-1"]
+
+
+def test_cleanup_failure_is_visible_after_success():
+    registry = ToolRegistry()
+
+    @registry.tool(description="work")
+    def work() -> str:
+        return "ok"
+
+    def broken_cleanup(*_args):
+        raise RuntimeError("close failed")
+
+    registry.register_cleanup("work", broken_cleanup)
+    with pytest.raises(ToolCleanupError, match="close failed"):
+        registry.call("work", {})
+
+
+def test_sync_tool_timeout_is_reported_at_safe_checkpoint(monkeypatch):
+    registry = ToolRegistry()
+
+    @registry.tool(description="slow", timeout_seconds=1)
+    def slow() -> str:
+        return "late"
+
+    times = iter([10.0, 12.0])
+    monkeypatch.setattr("zzm_agent.core.tool_registry.perf_counter", lambda: next(times))
+    with pytest.raises(ToolDeadlineExceeded, match="safe checkpoint"):
+        registry.call("slow", {})
+
+
+def test_pre_cancelled_token_blocks_registry_execution():
+    from zzm_agent.core.runtime_state import CancellationToken, CancellationError
+
+    registry = ToolRegistry()
+    calls = []
+
+    @registry.tool(description="work")
+    def work() -> str:
+        calls.append(True)
+        return "ok"
+
+    token = CancellationToken(token_id="tool:1", scope="tool")
+    token.cancel("user_cancelled")
+    with pytest.raises(CancellationError):
+        registry.call("work", {}, cancellation_token=token)
+    assert calls == []
+
+
 def test_supported_types():
     """Test that Python types are correctly mapped to JSON Schema types."""
     registry = ToolRegistry()
@@ -142,6 +212,7 @@ def test_tool_metadata_exposes_risk_level():
         "risk_level": "high",
         "group": "",
         "examples": [],
+        "timeout_seconds": None,
     }
 
 

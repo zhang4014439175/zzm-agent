@@ -1,6 +1,7 @@
 import json
 import re
 from dataclasses import dataclass
+from inspect import Parameter, signature
 from time import perf_counter, sleep
 from typing import TYPE_CHECKING, Any, Callable
 
@@ -772,7 +773,9 @@ class AgentLoop:
             attempts += 1
             try:
                 return _ToolExecutionOutcome(
-                    content=str(self.registry.call(name, args)),
+                    content=str(
+                        self._call_registry_tool(name, args, cancellation_token)
+                    ),
                     success=True,
                     attempts=attempts,
                 )
@@ -813,6 +816,34 @@ class AgentLoop:
             attempts=attempts,
             error=last_error,
         )
+
+    def _call_registry_tool(
+        self,
+        name: str,
+        args: dict[str, Any],
+        cancellation_token: CancellationToken | None,
+    ) -> Any:
+        """Call registries with native cancellation when they support it."""
+        call = self.registry.call
+        try:
+            parameters = signature(call).parameters.values()
+            supports_cancellation = any(
+                parameter.name == "cancellation_token"
+                or parameter.kind is Parameter.VAR_KEYWORD
+                for parameter in parameters
+            )
+        except (TypeError, ValueError):
+            supports_cancellation = False
+
+        if supports_cancellation:
+            return call(name, args, cancellation_token=cancellation_token)
+
+        if cancellation_token is not None:
+            cancellation_token.raise_if_cancelled()
+        result = call(name, args)
+        if cancellation_token is not None:
+            cancellation_token.raise_if_cancelled()
+        return result
 
     def _emit_tool_event(
         self,

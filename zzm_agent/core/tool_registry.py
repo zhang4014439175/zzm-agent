@@ -5,6 +5,7 @@ import json
 import re
 import sys
 import traceback
+from time import perf_counter
 from dataclasses import dataclass, field
 from contextlib import contextmanager
 from pathlib import Path
@@ -33,6 +34,14 @@ class ToolArgumentValidationError(TypeError):
         self.tool_name = tool_name
         self.issues = list(issues)
         super().__init__(f"Invalid arguments for tool {tool_name}: " + "; ".join(issues))
+
+
+class ToolCleanupError(RuntimeError):
+    """Raised when a tool completed but its mandatory cleanup failed."""
+
+
+class ToolDeadlineExceeded(TimeoutError):
+    """Raised at the next safe checkpoint after a synchronous tool exceeds its budget."""
 
 
 @dataclass
@@ -72,6 +81,7 @@ class ToolRegistry:
         self.plugin_errors: list[PluginLoadError] = []
         self._plugin_instances: list[BasePlugin] = []
         self._registration_context_stack: list[_RegistrationContext] = []
+        self._cleanup_callbacks: dict[str, list[Callable[..., None]]] = {}
 
     def tool(
         self,
@@ -79,6 +89,7 @@ class ToolRegistry:
         risk_level: str = "low",
         group: str = "",
         examples: list[str] | None = None,
+        timeout_seconds: float | None = None,
     ) -> Callable:
         """
         Decorator to register a function as a tool.
@@ -144,6 +155,9 @@ class ToolRegistry:
                 "namespace": context.namespace,
                 "group": group or context.group,
                 "examples": list(examples or []),
+                "timeout_seconds": (
+                    max(0.001, float(timeout_seconds)) if timeout_seconds is not None else None
+                ),
             }
             return fn
         return decorator
@@ -211,7 +225,13 @@ class ToolRegistry:
         """
         return [v["schema"] for v in self.tools.values()]
 
-    def call(self, name: str, arguments: dict[str, Any]) -> Any:
+    def call(
+        self,
+        name: str,
+        arguments: dict[str, Any],
+        *,
+        cancellation_token: Any | None = None,
+    ) -> Any:
         """
         Invoke a registered tool by name with the provided arguments.
         
@@ -228,7 +248,49 @@ class ToolRegistry:
         if name not in self.tools:
             raise KeyError(f"Tool not found: {name}")
         validated = self.validate_arguments(name, arguments)
-        return self.tools[name]["fn"](**validated)
+        if cancellation_token is not None:
+            cancellation_token.raise_if_cancelled()
+        started_at = perf_counter()
+        result: Any = None
+        execution_error: BaseException | None = None
+        try:
+            result = self.tools[name]["fn"](**validated)
+            if cancellation_token is not None:
+                cancellation_token.raise_if_cancelled()
+            timeout = self.tools[name].get("timeout_seconds")
+            elapsed = perf_counter() - started_at
+            if timeout is not None and elapsed > timeout:
+                raise ToolDeadlineExceeded(
+                    f"Tool {name} exceeded {timeout:g}s; synchronous execution could only stop at the next safe checkpoint."
+                )
+            return result
+        except BaseException as exc:
+            execution_error = exc
+            raise
+        finally:
+            cleanup_errors = []
+            for callback in reversed(self._cleanup_callbacks.get(name, [])):
+                try:
+                    callback(name, dict(validated), result, execution_error)
+                except Exception as exc:
+                    cleanup_errors.append(str(exc))
+            if cleanup_errors and execution_error is None:
+                raise ToolCleanupError(
+                    f"Cleanup failed for tool {name}: " + "; ".join(cleanup_errors)
+                )
+
+    def register_cleanup(self, name: str, callback: Callable[..., None]) -> Callable[[], None]:
+        """Register a LIFO cleanup callback that runs after every tool attempt."""
+        if name not in self.tools:
+            raise KeyError(f"Tool not found: {name}")
+        callbacks = self._cleanup_callbacks.setdefault(name, [])
+        callbacks.append(callback)
+
+        def unregister() -> None:
+            if callback in callbacks:
+                callbacks.remove(callback)
+
+        return unregister
 
     def validate_arguments(self, name: str, arguments: Any) -> dict[str, Any]:
         """Validate one call against the registered JSON schema without coercion."""
@@ -305,6 +367,7 @@ class ToolRegistry:
             "risk_level": tool_data["risk_level"],
             "group": tool_data.get("group", ""),
             "examples": list(tool_data.get("examples", [])),
+            "timeout_seconds": tool_data.get("timeout_seconds"),
         }
 
     def configure_plugin_dirs(
@@ -547,7 +610,12 @@ def set_active_registry(registry: ToolRegistry) -> None:
     _active_registry = registry
 
 
-def tool(description: str, risk_level: str = "low") -> Callable:
+def tool(
+    description: str,
+    risk_level: str = "low",
+    *,
+    timeout_seconds: float | None = None,
+) -> Callable:
     """
     Convenience decorator that uses the global active ToolRegistry.
     
@@ -562,4 +630,8 @@ def tool(description: str, risk_level: str = "low") -> Callable:
     """
     if _active_registry is None:
         raise RuntimeError("Active ToolRegistry is not set")
-    return _active_registry.tool(description, risk_level=risk_level)
+    return _active_registry.tool(
+        description,
+        risk_level=risk_level,
+        timeout_seconds=timeout_seconds,
+    )

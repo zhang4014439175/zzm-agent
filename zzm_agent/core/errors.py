@@ -99,7 +99,16 @@ def _extract_retry_after_seconds(exc: Exception) -> float | None:
 def tool_error_from_exception(exc: Exception) -> ToolError:
     """Convert an unexpected tool exception into a recoverable model payload."""
     if isinstance(exc, TimeoutError):
-        return CommandTimeoutError(str(exc))
+        error = CommandTimeoutError(str(exc))
+        if exc.__class__.__name__ == "ToolDeadlineExceeded":
+            error.error_type = "ToolDeadlineExceeded"
+            error.retryable = False
+            error.deterministic = True
+            error.recovery_hint = (
+                "The synchronous tool exceeded its budget and stopped at the next safe checkpoint; "
+                "reduce its scope or use a cancellable/background implementation."
+            )
+        return error
     if isinstance(exc, json.JSONDecodeError):
         return ToolError(
             error_type="InvalidToolArguments",
