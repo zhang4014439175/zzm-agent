@@ -22,6 +22,7 @@ from zzm_agent.cli_support.rendering import (
     render_error_card,
 )
 from zzm_agent.core.agent_loop import AgentLoop
+from zzm_agent.core.change_set import ChangeSetStore
 from zzm_agent.core.config import ConfigManager
 from zzm_agent.core.model_stream import ModelStreamEvent
 from zzm_agent.core.model_metadata import resolve_model_context_limit
@@ -864,6 +865,13 @@ def build_runtime(args: argparse.Namespace, cfg: dict[str, Any]) -> dict[str, An
         output_price_per_1m=float(model_cfg.get("output_price_per_1m", 0.0) or 0.0),
     )
     tool_event_logger = ToolEventLogger(workspace_root / TOOL_EVENTS_PATH)
+    change_sets = ChangeSetStore(workspace_root, session_id=store.session_id)
+
+    def capture_change_start(event: ToolEvent) -> None:
+        # Session switching happens in the CLI without rebuilding the registry.
+        # Bind each recorded write to whichever session is active at execution.
+        change_sets.session_id = store.session_id
+        change_sets.capture_start(event)
     prompt_manager = PromptManager(
         base_prompt=system_prompt,
         workspace_root=workspace_root,
@@ -890,9 +898,20 @@ def build_runtime(args: argparse.Namespace, cfg: dict[str, Any]) -> dict[str, An
         duplicate_tool_call_limit=loop_policy["duplicate_tool_call_limit"],
         max_tool_retries=loop_policy["max_tool_retries"],
         tool_choice=cfg.get("agent", {}).get("tool_choice", "auto"),
-        on_tool_start=_fanout_tool_callbacks(observer.on_tool_start, tool_event_logger),
-        on_tool_end=_fanout_tool_callbacks(observer.on_tool_end, tool_event_logger),
-        on_tool_error=_fanout_tool_callbacks(observer.on_tool_error, tool_event_logger),
+        on_tool_start=_fanout_tool_callbacks(
+            observer.on_tool_start, tool_event_logger, capture_change_start
+        ),
+        on_tool_end=_fanout_tool_callbacks(
+            observer.on_tool_end,
+            tool_event_logger,
+            lambda event: change_sets.capture_end(
+                event,
+                turn_id=(loop.last_turn_state.turn_id if loop.last_turn_state else None),
+            ),
+        ),
+        on_tool_error=_fanout_tool_callbacks(
+            observer.on_tool_error, tool_event_logger, change_sets.capture_end
+        ),
         prompt_manager=prompt_manager,
     )
     snapshot_path = workspace_root / ZZM_AGENT_DIR / "state" / f"{store.session_id}.json"
@@ -913,6 +932,7 @@ def build_runtime(args: argparse.Namespace, cfg: dict[str, Any]) -> dict[str, An
         "query_engine": query_engine,
         "prompt_manager": prompt_manager,
         "observer": observer,
+        "change_sets": change_sets,
         "model_context_limit_source": context_limit.source,
         "stream": _config_bool(cfg.get("agent", {}).get("stream"), default=True),
         "debug": bool(getattr(args, "debug", False)),

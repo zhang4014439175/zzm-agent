@@ -87,7 +87,11 @@ def handle_slash(
         return True
 
     if command == "/undo":
-        console.print("[yellow]暂无受管的文件变更可撤销。ChangeSet 将在 8.4 接入。[/yellow]")
+        _handle_undo(command, console, runtime)
+        return True
+
+    if command.startswith("/undo "):
+        _handle_undo(command, console, runtime)
         return True
 
     if command == "/skills":
@@ -1239,6 +1243,27 @@ def _handle_ci_analysis(command: str, console: Any, runtime: dict[str, Any] | No
         f"CI log:\n{log_text[:20000]}"
     )
     _submit_git_prompt(prompt, command, console, runtime)
+
+
+def _handle_undo(command: str, console: Any, runtime: dict[str, Any] | None) -> None:
+    """Undo one managed file change after verifying no later edit exists."""
+    change_sets = (runtime or {}).get("change_sets")
+    if change_sets is None:
+        console.print("[yellow]ChangeSet tracking is unavailable in this runtime.[/yellow]")
+        return
+    parts = command.split(maxsplit=1)
+    change_set_id = parts[1].strip() if len(parts) == 2 else None
+    result = change_sets.undo(change_set_id or None)
+    if result.undone:
+        console.print(f"[green]{result.message}[/green]")
+        return
+    if result.change_set is not None and result.change_set.status == "conflicted":
+        console.print(f"[red]{result.message}[/red]")
+        console.print(
+            "[dim]No file was changed. Review the file, then make a new managed edit if needed.[/dim]"
+        )
+        return
+    console.print(f"[yellow]{result.message}[/yellow]")
 
 
 def _handle_placeholder_registry(

@@ -1397,7 +1397,7 @@ def test_handle_slash_reserved_commands_report_unavailable_state(tmp_path):
     rendered = "\n".join(console.lines)
     assert "Skills state is not connected yet" in rendered
     assert "MCP state is not connected yet" in rendered
-    assert "暂无受管的文件变更可撤销" in rendered
+    assert "ChangeSet tracking is unavailable" in rendered
 
 
 def test_plain_text_renderer_separates_process_from_final_answer():

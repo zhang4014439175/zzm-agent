@@ -55,7 +55,7 @@
 
 ## 执行进度总览
 
-> **当前下一任务：8.4 ChangeSet、Patch 与 `/undo`。**
+> **当前下一任务：8.5 Token Budget、自动压缩与上下文解释。**
 
 ### 当前能力基线
 
@@ -113,7 +113,7 @@
 - [x] 8.1 工具生命周期、参数校验与权限网关：合并开发工具注册、参数 schema 校验、风险分级、权限确认、执行前后事件和结果记录
 - [x] 8.2 文件系统与网络沙箱 Profile：支持 read/write/deny、workspace roots、敏感文件拒读、网络域名 allow/deny、localhost/private network 规则和 Windows/WSL 差异
 - [x] 8.3 工具超时、取消与资源清理：为模型请求、Shell、文件操作、MCP 工具和后台进程提供超时、用户取消、安全检查点和清理回调
-- [ ] 8.4 ChangeSet、Patch 与 `/undo`：记录受管文件变更、生成可审查 Patch、支持按变更集撤销并处理冲突
+- [x] 8.4 ChangeSet、Patch 与 `/undo`：记录受管文件变更、生成可审查 Patch、支持按变更集撤销并处理冲突
 - [ ] 8.5 Token Budget、自动压缩与上下文解释：合并开发上下文预算、超长工具结果 Artifact 化、自动 compact、prompt cache 策略和上下文来源说明
 - [ ] 8.6 本地工具 Renderer 合集：合并开发 FileRead、FileEdit、Search、Shell、动态活动描述和纯文本降级渲染
 - [ ] P3 阶段验收：确认本地工具执行有确定性安全边界、可撤销、可取消、可解释，且长结果不会污染模型上下文
@@ -1297,6 +1297,15 @@ tool call -> 参数解析 -> schema 校验 -> 风险分级 -> 权限确认 -> �
 ### 8.4 ChangeSet、Patch 与 `/undo`
 
 所有受管写操作生成 ChangeSet，记录 before/after hash、Patch、tool call、Turn 和撤销状态。`/undo` 必须检测文件是否已被用户或外部工具改动。
+
+完成记录：
+
+- [x] 新增持久化 `ChangeSetStore`，在成功的 `file_edit`、`write_file`、`file_append` 工具调用后记录文件内容、前后 SHA-256 摘要、统一 diff、工具调用 ID、会话、Turn 和撤销状态；
+- [x] ChangeSet 仅在文件实际变化后写入 `.zzm_agent/changesets.json`，重启后仍可读取；
+- [x] 新增 `/undo` 和 `/undo <changeset-id>`，默认撤销当前会话最近一项仍生效的受管变更，支持恢复覆盖前内容或删除由 Agent 新建的文件；
+- [x] 撤销前使用写入后摘要验证当前文件。检测到用户或外部工具后续修改时标记冲突、保留文件并明确报告，不静默覆盖；
+- [x] 新增 `tests/test_change_set.py` 并更新 CLI 断言，覆盖补丁和元数据、持久化、恢复、创建文件删除、冲突保护和 slash command；定向回归 `88 passed`；
+- [x] 新增 `docs/8.4-changeset-patch-undo.md`，说明用户可见行为、使用例子、限制、实现位置和验证结果。
 
 ### 8.5 Token Budget、自动压缩与上下文解释
 

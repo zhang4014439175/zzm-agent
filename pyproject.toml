@@ -4,7 +4,7 @@ build-backend = "setuptools.build_meta"
 
 [project]
 name = "zzm-agent"
-version = "0.1.1"
+version = "0.1.2"
 requires-python = ">=3.11"
 description = "A sleek and professional agentic coding console and CLI assistant."
 readme = "README.pypi.md"
