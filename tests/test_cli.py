@@ -840,6 +840,7 @@ def test_agent_loop_policy_uses_defaults_for_legacy_config():
         "max_tool_iterations": 20,
         "duplicate_tool_call_limit": 3,
         "max_tool_retries": 1,
+        "empty_final_retries": 2,
     }
 
 
@@ -849,6 +850,7 @@ def test_agent_loop_policy_reads_configured_values():
             "max_tool_iterations": 8,
             "duplicate_tool_call_limit": 2,
             "max_tool_retries": 4,
+            "empty_final_retries": 5,
         }
     })
 
@@ -856,6 +858,7 @@ def test_agent_loop_policy_reads_configured_values():
         "max_tool_iterations": 8,
         "duplicate_tool_call_limit": 2,
         "max_tool_retries": 4,
+        "empty_final_retries": 5,
     }
 
 
@@ -865,6 +868,7 @@ def test_agent_loop_policy_clamps_values_to_at_least_one():
             "max_tool_iterations": 0,
             "duplicate_tool_call_limit": -5,
             "max_tool_retries": -1,
+            "empty_final_retries": -2,
         }
     })
 
@@ -872,6 +876,7 @@ def test_agent_loop_policy_clamps_values_to_at_least_one():
         "max_tool_iterations": 1,
         "duplicate_tool_call_limit": 1,
         "max_tool_retries": 0,
+        "empty_final_retries": 0,
     }
 
 
@@ -1441,6 +1446,23 @@ def test_plain_text_renderer_keeps_working_status_for_status_events():
 
     assert renderer.should_stop_working_status(ModelStreamEvent.status("turn.started")) is False
     assert renderer.should_stop_working_status(ModelStreamEvent.reasoning_summary("thinking")) is True
+
+
+def test_plain_text_renderer_displays_termination_reason():
+    console = DummyConsole()
+    renderer = PlainTextRenderer(console)
+
+    renderer.render_event(
+        ModelStreamEvent.termination(
+            "blocked",
+            "empty_model_response",
+            provider_finish_reason="stop",
+        )
+    )
+
+    assert console.lines == [
+        "Ended: blocked (empty_model_response, provider=stop)"
+    ]
 
 
 def test_terminal_renderer_dims_reasoning_content_only():

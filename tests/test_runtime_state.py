@@ -435,6 +435,26 @@ def test_loop_state_allows_stop_hook_after_model_response():
     assert loop.stop_hook_attempts == 1
 
 
+def test_turn_termination_round_trips_with_provider_reason():
+    turn = TurnState(user_input="inspect")
+    turn.start_loop()
+    turn.record_provider_finish_reason("stop")
+    turn.block(
+        "No response",
+        reason="empty_model_response",
+        recovery_attempts=2,
+    )
+
+    restored = TurnState.from_record(turn.to_record())
+
+    assert restored.status is TurnStatus.BLOCKED
+    assert restored.provider_finish_reason_history == ["stop"]
+    assert restored.termination is not None
+    assert restored.termination.reason == "empty_model_response"
+    assert restored.termination.provider_finish_reason == "stop"
+    assert restored.termination.recovery_attempts == 2
+
+
 def test_loop_state_rejects_illegal_transition_from_idle_to_tools():
     loop = LoopState()
 

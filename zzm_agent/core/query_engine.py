@@ -119,6 +119,12 @@ class QueryEngine:
             if self.conversation_state.active_turn is not None:
                 self.conversation_state.active_turn.fail(str(exc))
             emit(ModelStreamEvent.error(str(exc)))
+            emit(
+                ModelStreamEvent.termination(
+                    "failed",
+                    str(exc),
+                )
+            )
             self._save_snapshot("turn.failed")
             raise
 
@@ -130,9 +136,40 @@ class QueryEngine:
         self.conversation_state.usage = self.agent_loop.cumulative_usage
         self.conversation_state.usage_state = self.agent_loop.usage_state
         self.conversation_state.permissions = self.agent_loop.permission_state
-        if not events or events[-1].kind is not ModelStreamEventKind.FINAL_MESSAGE:
-            emit(ModelStreamEvent.final_message(reply))
-        self._save_snapshot("turn.completed")
+        turn = self.conversation_state.active_turn
+        status = str(getattr(turn.status, "value", turn.status)) if turn else "failed"
+        termination = turn.termination if turn is not None else None
+        reason = termination.reason if termination is not None else "missing_turn_state"
+        provider_finish_reason = (
+            termination.provider_finish_reason
+            if termination is not None
+            else None
+        )
+        recovery_attempts = (
+            termination.recovery_attempts if termination is not None else 0
+        )
+        if not any(
+            event.kind is ModelStreamEventKind.FINAL_MESSAGE
+            and event.text == reply
+            for event in events
+        ):
+            emit(
+                ModelStreamEvent.final_message(
+                    reply,
+                    status=status,
+                    reason=reason,
+                    provider_finish_reason=provider_finish_reason,
+                )
+            )
+        emit(
+            ModelStreamEvent.termination(
+                status,
+                reason,
+                provider_finish_reason=provider_finish_reason,
+                recovery_attempts=recovery_attempts,
+            )
+        )
+        self._save_snapshot(f"turn.{status}")
         return QueryResult(
             reply=reply,
             events=events,

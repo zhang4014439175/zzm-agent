@@ -65,6 +65,7 @@ def test_p1_query_engine_snapshot_is_observable_and_recoverable(tmp_path):
     assert [event.kind for event in result.events] == [
         ModelStreamEventKind.STATUS,
         ModelStreamEventKind.FINAL_MESSAGE,
+        ModelStreamEventKind.TERMINATION,
     ]
     assert envelope is not None
     assert envelope.metadata["reason"] == "turn.completed"
@@ -110,7 +111,13 @@ def test_p1_stream_events_separate_reasoning_content_and_final(tmp_path):
         for event in result.events
         if event.kind is ModelStreamEventKind.CONTENT_DELTA
     ] == ["Hel", "lo"]
-    assert result.events[-1].text == "Hello"
+    final_events = [
+        event
+        for event in result.events
+        if event.kind is ModelStreamEventKind.FINAL_MESSAGE
+    ]
+    assert final_events[-1].text == "Hello"
+    assert result.events[-1].kind is ModelStreamEventKind.TERMINATION
 
 
 def test_p1_legacy_agent_loop_run_remains_compatible(tmp_path):

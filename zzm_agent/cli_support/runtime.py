@@ -311,6 +311,7 @@ def _default_config_text() -> str:
         "  max_tool_iterations: 20\n"
         "  duplicate_tool_call_limit: 3\n"
         "  max_tool_retries: 1\n"
+        "  empty_final_retries: 2\n"
         "  stream: true\n"
         '  tool_choice: "auto"\n'
         "  plugin_dirs:\n"
@@ -802,6 +803,10 @@ def get_agent_loop_policy(cfg: dict[str, Any]) -> dict[str, int]:
             0,
             int(agent_cfg.get("max_tool_retries", 1)),
         ),
+        "empty_final_retries": max(
+            0,
+            int(agent_cfg.get("empty_final_retries", 2)),
+        ),
     }
 
 
@@ -897,6 +902,7 @@ def build_runtime(args: argparse.Namespace, cfg: dict[str, Any]) -> dict[str, An
         max_tool_iterations=loop_policy["max_tool_iterations"],
         duplicate_tool_call_limit=loop_policy["duplicate_tool_call_limit"],
         max_tool_retries=loop_policy["max_tool_retries"],
+        empty_final_retries=loop_policy["empty_final_retries"],
         tool_choice=cfg.get("agent", {}).get("tool_choice", "auto"),
         on_tool_start=_fanout_tool_callbacks(
             observer.on_tool_start, tool_event_logger, capture_change_start

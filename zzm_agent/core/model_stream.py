@@ -15,6 +15,7 @@ class ModelStreamEventKind(str, Enum):
     TOOL_RESULT = "tool_result"
     USAGE = "usage"
     FINAL_MESSAGE = "final_message"
+    TERMINATION = "termination"
     ERROR = "error"
 
 
@@ -87,6 +88,19 @@ class ModelStreamEvent:
     @classmethod
     def final_message(cls, text: str, **metadata: Any) -> "ModelStreamEvent":
         return cls(ModelStreamEventKind.FINAL_MESSAGE, text=text, metadata=metadata)
+
+    @classmethod
+    def termination(
+        cls,
+        status: str,
+        reason: str,
+        **metadata: Any,
+    ) -> "ModelStreamEvent":
+        return cls(
+            ModelStreamEventKind.TERMINATION,
+            text=status,
+            metadata={"status": status, "reason": reason, **metadata},
+        )
 
     @classmethod
     def error(cls, text: str, **metadata: Any) -> "ModelStreamEvent":

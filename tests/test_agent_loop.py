@@ -215,6 +215,54 @@ def test_agent_loop_retries_empty_final_after_tool_round(registry, store):
     assert store.load_history()[-1]["content"] == "工具结果是 ECHO:world"
 
 
+def test_agent_loop_retries_empty_reply_without_tool_round(registry, store):
+    loop = AgentLoop(
+        client=MagicMock(),
+        model="test-model",
+        system_prompt="You are helpful.",
+        registry=registry,
+        store=store,
+        empty_final_retries=1,
+    )
+    loop.client.chat.completions.create.side_effect = [
+        make_response(content=""),
+        make_response(content="recovered"),
+    ]
+
+    result = loop.run("finish this", stream=False)
+
+    assert result == "recovered"
+    assert loop.client.chat.completions.create.call_count == 2
+    assert loop.last_turn_state is not None
+    assert loop.last_turn_state.status.value == "completed"
+
+
+def test_agent_loop_blocks_after_empty_reply_recovery_is_exhausted(registry, store):
+    loop = AgentLoop(
+        client=MagicMock(),
+        model="test-model",
+        system_prompt="You are helpful.",
+        registry=registry,
+        store=store,
+        empty_final_retries=2,
+    )
+    loop.client.chat.completions.create.side_effect = [
+        make_response(content=""),
+        make_response(content=""),
+        make_response(content=""),
+    ]
+
+    result = loop.run("finish this", stream=False)
+
+    assert "模型连续返回空内容" in result
+    assert loop.client.chat.completions.create.call_count == 3
+    assert loop.last_turn_state is not None
+    assert loop.last_turn_state.status.value == "blocked"
+    assert loop.last_turn_state.termination is not None
+    assert loop.last_turn_state.termination.reason == "empty_model_response"
+    assert loop.last_turn_state.termination.recovery_attempts == 2
+
+
 def test_chat_completion_error_payload_raises_clear_error(registry):
     store = make_error_test_store("api-error-payload")
     loop = AgentLoop(
@@ -228,6 +276,10 @@ def test_chat_completion_error_payload_raises_clear_error(registry):
 
     with pytest.raises(RuntimeError, match="Internal Server Error .*500"):
         loop.run("Hi", stream=False)
+
+    assert loop.last_turn_state is not None
+    assert loop.last_turn_state.status.value == "failed"
+    assert loop.last_turn_state.termination is not None
 
     assert store.load_history() == []
 

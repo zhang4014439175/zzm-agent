@@ -58,6 +58,7 @@ class ModelResponse:
     tool_calls: list[dict[str, Any]] = field(default_factory=list)
     raw_usage: Any = None
     raw_response: Any = None
+    finish_reason: str | None = None
 
 
 @dataclass(frozen=True)
@@ -79,6 +80,7 @@ class ModelStreamChunk:
     tool_call_deltas: list[ModelToolCallDelta] = field(default_factory=list)
     raw_usage: Any = None
     raw_chunk: Any = None
+    finish_reason: str | None = None
 
 
 class OpenAIChatCompletionsAdapter:
@@ -112,6 +114,7 @@ class OpenAIChatCompletionsAdapter:
             ],
             raw_usage=getattr(response, "usage", None),
             raw_response=response,
+            finish_reason=getattr(choices[0], "finish_reason", None),
         )
 
     def iter_stream_chunks(self, response: Iterable[Any]) -> Iterable[ModelStreamChunk]:
@@ -138,6 +141,7 @@ class OpenAIChatCompletionsAdapter:
                 ],
                 raw_usage=usage,
                 raw_chunk=chunk,
+                finish_reason=getattr(choice, "finish_reason", None),
             )
 
     def _normalize_tool_call(self, tool_call: Any) -> dict[str, Any]:

@@ -118,6 +118,7 @@ class AgentLoop:
         cancellation_controller: CancellationController | None = None,
         hook_registry: HookRegistry | None = None,
         max_stop_hook_attempts: int = 1,
+        empty_final_retries: int = 2,
         model_adapter: OpenAIChatCompletionsAdapter | None = None,
     ):
         """
@@ -145,6 +146,7 @@ class AgentLoop:
             cancellation_controller: Optional controller for external cancellation.
             hook_registry: Optional synchronous hook registry for lifecycle decisions.
             max_stop_hook_attempts: Maximum Stop Hook retries before blocking.
+            empty_final_retries: Empty model replies to recover before blocking.
             model_adapter: Optional adapter that normalizes provider-specific responses.
         """
         self.client = client
@@ -186,6 +188,7 @@ class AgentLoop:
         self.last_cancellation_token: CancellationToken | None = None
         self.hook_registry = hook_registry or HookRegistry()
         self.max_stop_hook_attempts = max(0, max_stop_hook_attempts)
+        self.empty_final_retries = max(0, empty_final_retries)
         self.last_tool_results: list[ToolResult] = []
 
     def _build_tool_call_record(
@@ -492,7 +495,7 @@ class AgentLoop:
         self,
         messages: list[dict[str, Any]],
         tools: list[dict[str, Any]],
-    ) -> tuple[str, list[dict[str, Any]], bool, TokenUsage]:
+    ) -> tuple[str, list[dict[str, Any]], bool, TokenUsage, str | None]:
         kwargs = self._chat_completion_kwargs(messages, tools, stream=False)
 
         try:
@@ -511,6 +514,7 @@ class AgentLoop:
             tool_calls,
             False,
             self._usage_from_sdk_object(normalized.raw_usage),
+            normalized.finish_reason,
         )
 
     def _stream_once(
@@ -519,12 +523,13 @@ class AgentLoop:
         tools: list[dict[str, Any]],
         on_text_chunk: Callable[[str], None] | None,
         on_stream_event: Callable[[ModelStreamEvent], None] | None = None,
-    ) -> tuple[str, list[dict[str, Any]], bool, TokenUsage]:
+    ) -> tuple[str, list[dict[str, Any]], bool, TokenUsage, str | None]:
         kwargs = self._chat_completion_kwargs(messages, tools, stream=True)
 
         text_parts: list[str] = []
         emitted_text_length = 0
         usage = TokenUsage()
+        finish_reason: str | None = None
         # Streamed tool calls are incremental: the model can emit the same call
         # over multiple chunks, so we rebuild each call by its stable index.
         tool_call_map: dict[int, dict[str, Any]] = {}
@@ -540,6 +545,8 @@ class AgentLoop:
                         return self._complete_once(messages=messages, tools=tools)
                     raise
             for chunk in self.model_adapter.iter_stream_chunks(response):
+                if chunk.finish_reason is not None:
+                    finish_reason = str(chunk.finish_reason)
                 chunk_usage = self._usage_from_sdk_object(chunk.raw_usage)
                 if chunk_usage.has_tokens():
                     usage.add(chunk_usage)
@@ -607,12 +614,12 @@ class AgentLoop:
         except (KeyboardInterrupt, GeneratorExit):
             # Let the caller keep any text already shown to the user, but signal
             # that this turn was interrupted so partial tool state is discarded.
-            return "".join(text_parts), [], True, usage
+            return "".join(text_parts), [], True, usage, finish_reason
         except Exception:
             if text_parts:
                 # If the transport dies mid-stream after visible output, treat it
                 # like an interrupted response instead of raising after partial render.
-                return "".join(text_parts), [], True, usage
+                return "".join(text_parts), [], True, usage, finish_reason
             raise
 
         # Tool calls must be replayed in their original order for downstream execution.
@@ -621,7 +628,7 @@ class AgentLoop:
         if not tool_calls:
             tool_calls = self._extract_text_tool_calls(content)
             if tool_calls:
-                return "", tool_calls, False, usage
+                return "", tool_calls, False, usage, finish_reason
         if (on_text_chunk is not None or on_stream_event is not None) and emitted_text_length < len(content):
             visible_text = content[emitted_text_length:]
             if on_text_chunk is not None:
@@ -630,7 +637,7 @@ class AgentLoop:
                 on_stream_event(ModelStreamEvent.content_delta(visible_text))
         if on_stream_event is not None:
             on_stream_event(ModelStreamEvent.final_message(content))
-        return content, tool_calls, False, usage
+        return content, tool_calls, False, usage, finish_reason
 
     def _requires_tool_confirmation(self, risk_level: str) -> bool:
         """Return whether a tool call needs interactive approval."""
@@ -873,13 +880,13 @@ class AgentLoop:
             "same task, use available context, and provide the missing result."
         )
 
-    def _empty_final_after_tools_retry_message(self) -> str:
+    def _empty_final_retry_message(self) -> str:
         return (
             "[FINAL_RESPONSE_REQUIRED]\n"
-            "You have completed at least one tool round, but the previous model "
-            "response did not include final assistant content. Stop calling tools "
-            "unless more information is strictly required, summarize the useful "
-            "tool results, and provide the final answer in normal assistant content."
+            "The previous model response contained neither assistant content nor "
+            "a tool call, so it cannot complete the task. Continue the same task. "
+            "If work is complete, provide a final answer in normal assistant content; "
+            "otherwise call the next required tool or clearly explain the blocker."
         )
 
     def _commit_turn_usage(self, usage: TokenUsage) -> None:
@@ -962,6 +969,56 @@ class AgentLoop:
         on_stream_event: Callable[[ModelStreamEvent], None] | None = None,
         runtime_instructions: list[str] | None = None,
     ) -> str:
+        """Run one turn and preserve a failed termination on uncaught errors."""
+        try:
+            return self._run_turn(
+                user_input,
+                stream=stream,
+                on_text_chunk=on_text_chunk,
+                on_stream_event=on_stream_event,
+                runtime_instructions=runtime_instructions,
+            )
+        except Exception as exc:
+            turn_state = self.last_turn_state
+            if turn_state is not None and turn_state.termination is None:
+                turn_state.fail(str(exc))
+                try:
+                    session_id = str(getattr(self.store, "session_id", "default"))
+                    context = HookContext(
+                        hook_type=HookType.TURN_END,
+                        session_id=session_id,
+                        turn_id=turn_state.turn_id,
+                        model=self.model,
+                        user_input=user_input,
+                        error=str(exc),
+                        metadata={"status": "failed", "reason": str(exc)},
+                    )
+                    self.hook_registry.run(context)
+                    self.hook_registry.run(
+                        HookContext(
+                            hook_type=HookType.SESSION_END,
+                            session_id=session_id,
+                            turn_id=turn_state.turn_id,
+                            model=self.model,
+                            user_input=user_input,
+                            error=str(exc),
+                            metadata={"status": "failed", "reason": str(exc)},
+                        )
+                    )
+                except Exception:
+                    pass
+            if self.cancellation_controller is not None:
+                self.cancellation_controller.finish_turn()
+            raise
+
+    def _run_turn(
+        self,
+        user_input: str,
+        stream: bool = True,
+        on_text_chunk: Callable[[str], None] | None = None,
+        on_stream_event: Callable[[ModelStreamEvent], None] | None = None,
+        runtime_instructions: list[str] | None = None,
+    ) -> str:
         """
         Run a single turn of the conversation.
         
@@ -1027,6 +1084,14 @@ class AgentLoop:
             final_response: str = "",
             error: str | None = None,
         ) -> None:
+            termination_reason = error or (
+                "model_completed" if status == "completed" else status
+            )
+            termination_metadata = {
+                "status": status,
+                "reason": termination_reason,
+                "provider_finish_reason": turn_state.provider_finish_reason,
+            }
             context = HookContext(
                 hook_type=HookType.TURN_END,
                 session_id=str(session_id or "default"),
@@ -1035,7 +1100,7 @@ class AgentLoop:
                 user_input=user_input,
                 final_response=final_response,
                 error=error,
-                metadata={"status": status},
+                metadata=termination_metadata,
             )
             self.hook_registry.run(context)
             self.hook_registry.run(
@@ -1047,12 +1112,21 @@ class AgentLoop:
                     user_input=user_input,
                     final_response=final_response,
                     error=error,
-                    metadata={"status": status},
+                    metadata=termination_metadata,
                 )
             )
 
-        def block_current_turn(message: str, reason: str = "hook_blocked") -> str:
-            turn_state.block(message, reason=reason)
+        def block_current_turn(
+            message: str,
+            reason: str = "hook_blocked",
+            *,
+            recovery_attempts: int = 0,
+        ) -> str:
+            turn_state.block(
+                message,
+                reason=reason,
+                recovery_attempts=recovery_attempts,
+            )
             message_store.rollback_pending()
             message_store.pending_messages.append(dict(user_message))
             message_store.append_pending({"role": "assistant", "content": message})
@@ -1116,7 +1190,7 @@ class AgentLoop:
         tool_iterations = 0
         consecutive_signature: tuple[str, str] | None = None
         consecutive_count = 0
-        empty_final_after_tools_retries = 0
+        empty_final_recovery_attempts = 0
         progress_monitor = ProgressMonitor()
         self.last_progress_signal = None
         self.last_reflection_count = 0
@@ -1167,7 +1241,13 @@ class AgentLoop:
             if stream:
                 loop_state.record_model_call()
                 loop_state.record_streaming_response()
-                assistant_content, tool_calls_raw, interrupted, call_usage = self._stream_once(
+                (
+                    assistant_content,
+                    tool_calls_raw,
+                    interrupted,
+                    call_usage,
+                    provider_finish_reason,
+                ) = self._stream_once(
                     messages=model_context_messages,
                     tools=tools,
                     on_text_chunk=on_text_chunk,
@@ -1175,7 +1255,13 @@ class AgentLoop:
                 )
             else:
                 loop_state.record_model_call()
-                assistant_content, tool_calls_raw, interrupted, call_usage = self._complete_once(
+                (
+                    assistant_content,
+                    tool_calls_raw,
+                    interrupted,
+                    call_usage,
+                    provider_finish_reason,
+                ) = self._complete_once(
                     messages=model_context_messages,
                     tools=tools,
                 )
@@ -1207,9 +1293,11 @@ class AgentLoop:
                         "tool_iteration": tool_iterations,
                         "interrupted": interrupted,
                         "tool_call_count": len(tool_calls_raw),
+                        "provider_finish_reason": provider_finish_reason,
                     },
                 )
             )
+            turn_state.record_provider_finish_reason(provider_finish_reason)
             after_model_decision = after_model.normalized_decision()
             if after_model_decision is HookDecision.BLOCK:
                 return block_current_turn(
@@ -1239,16 +1327,40 @@ class AgentLoop:
 
             # If it's a simple text reply, we are done
             if not tool_calls_raw:
-                if (
-                    tool_iterations > 0
-                    and not assistant_content.strip()
-                    and empty_final_after_tools_retries < 1
-                ):
-                    empty_final_after_tools_retries += 1
+                if not assistant_content.strip():
+                    if empty_final_recovery_attempts >= self.empty_final_retries:
+                        context_tokens = int(
+                            self.last_context_window.get("total_tokens", 0) or 0
+                        )
+                        finish_detail = (
+                            f"（Provider finish reason: {provider_finish_reason}）"
+                            if provider_finish_reason
+                            else "（Provider 未提供 finish reason）"
+                        )
+                        return block_current_turn(
+                            "任务已阻塞：模型连续返回空内容且没有工具调用，"
+                            f"已自动恢复 {empty_final_recovery_attempts} 次仍未成功。"
+                            f"模型调用 {loop_state.model_iterations} 次，"
+                            f"工具轮次 {loop_state.tool_iterations} 次，"
+                            f"当前上下文估算 {context_tokens} tokens。"
+                            f"{finish_detail} 可在终端输入“继续”重新提交后续请求。",
+                            reason="empty_model_response",
+                            recovery_attempts=empty_final_recovery_attempts,
+                        )
+                    empty_final_recovery_attempts += 1
+                    if on_stream_event is not None:
+                        on_stream_event(
+                            ModelStreamEvent.status(
+                                "model.empty_response_retry",
+                                attempt=empty_final_recovery_attempts,
+                                max_attempts=self.empty_final_retries,
+                                provider_finish_reason=provider_finish_reason,
+                            )
+                        )
                     message_store.append_runtime_only(
                         {
                             "role": "system",
-                            "content": self._empty_final_after_tools_retry_message(),
+                            "content": self._empty_final_retry_message(),
                         }
                     )
                     continue
@@ -1303,7 +1415,11 @@ class AgentLoop:
 
                 # Only the final assistant reply marks the turn as complete.
                 message_store.commit(self.store.append)
-                turn_state.complete(final_reply, usage=turn_usage)
+                turn_state.complete(
+                    final_reply,
+                    usage=turn_usage,
+                    reason="model_completed",
+                )
                 self._commit_turn_usage(turn_usage)
                 run_end_hooks(status="completed", final_response=final_reply)
                 self.cancellation_controller.finish_turn()

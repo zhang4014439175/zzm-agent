@@ -747,6 +747,9 @@ class PlainTextRenderer:
         if event.kind is ModelStreamEventKind.ERROR:
             self.console.print(f"Error: {event.text}")
             return
+        if event.kind is ModelStreamEventKind.TERMINATION:
+            self._render_termination(event)
+            return
         if event.kind is ModelStreamEventKind.CONTENT_DELTA:
             self._flush_reasoning()
             if self._seen_process:
@@ -809,6 +812,15 @@ class PlainTextRenderer:
         self._printed_tool_calls.add(key)
         self.console.print(f"Running {event.tool_name}")
 
+    def _render_termination(self, event: ModelStreamEvent) -> None:
+        status = str(event.metadata.get("status") or event.text or "unknown")
+        reason = str(event.metadata.get("reason") or "unknown")
+        provider_reason = event.metadata.get("provider_finish_reason")
+        provider_text = (
+            f", provider={provider_reason}" if provider_reason else ""
+        )
+        self.console.print(f"Ended: {status} ({reason}{provider_text})")
+
 
 class TerminalRenderer(PlainTextRenderer):
     """Render normalized model stream events for the interactive terminal."""
@@ -836,6 +848,19 @@ class TerminalRenderer(PlainTextRenderer):
             return
         if event.kind is ModelStreamEventKind.ERROR:
             self.console.print(f"[red]Error:[/red] {event.text}")
+            return
+        if event.kind is ModelStreamEventKind.TERMINATION:
+            self._markdown.flush()
+            status = str(event.metadata.get("status") or event.text or "unknown")
+            reason = str(event.metadata.get("reason") or "unknown")
+            provider_reason = event.metadata.get("provider_finish_reason")
+            provider_text = (
+                f"; provider={provider_reason}" if provider_reason else ""
+            )
+            style = "green" if status == "completed" else "yellow"
+            self.console.print(
+                f"[{style}]Ended: {status}[/{style}] [dim]({reason}{provider_text})[/dim]"
+            )
             return
         if event.kind is ModelStreamEventKind.CONTENT_DELTA:
             if event.text:

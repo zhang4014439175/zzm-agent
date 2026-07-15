@@ -10,19 +10,25 @@ from zzm_agent.core.tool_registry import ToolRegistry
 from zzm_agent.memory.store import MemoryStore
 
 
-def make_response(content=None, tool_calls=None):
+def make_response(content=None, tool_calls=None, finish_reason=None):
     message = SimpleNamespace(content=content, tool_calls=tool_calls or [])
-    choice = SimpleNamespace(message=message)
+    choice = SimpleNamespace(message=message, finish_reason=finish_reason)
     return SimpleNamespace(choices=[choice], usage=None, error=None)
 
 
-def make_stream_chunk(content=None, reasoning=None, tool_calls=None, usage=None):
+def make_stream_chunk(
+    content=None,
+    reasoning=None,
+    tool_calls=None,
+    usage=None,
+    finish_reason=None,
+):
     delta = SimpleNamespace(
         content=content,
         reasoning_summary=reasoning,
         tool_calls=tool_calls or [],
     )
-    choice = SimpleNamespace(delta=delta)
+    choice = SimpleNamespace(delta=delta, finish_reason=finish_reason)
     return SimpleNamespace(choices=[choice], usage=usage)
 
 
@@ -43,10 +49,11 @@ def test_openai_adapter_normalizes_response_and_stream_chunks():
     adapter = OpenAIChatCompletionsAdapter(client=MagicMock())
 
     response = adapter.normalize_response(
-        make_response(content="hello", tool_calls=[tool_call])
+        make_response(content="hello", tool_calls=[tool_call], finish_reason="tool_calls")
     )
 
     assert response.content == "hello"
+    assert response.finish_reason == "tool_calls"
     assert response.tool_calls == [
         {
             "id": "call_1",
@@ -60,6 +67,7 @@ def test_openai_adapter_normalizes_response_and_stream_chunks():
             [
                 make_stream_chunk(reasoning="checking"),
                 make_stream_chunk(content="Hel"),
+                make_stream_chunk(finish_reason="stop"),
                 make_stream_chunk(
                     tool_calls=[
                         make_tool_call_delta(
@@ -76,9 +84,10 @@ def test_openai_adapter_normalizes_response_and_stream_chunks():
 
     assert chunks[0].reasoning_summary == "checking"
     assert chunks[1].content_delta == "Hel"
-    assert chunks[2].tool_call_deltas[0].tool_call_id == "call_2"
-    assert chunks[2].tool_call_deltas[0].name_delta == "ec"
-    assert chunks[2].tool_call_deltas[0].arguments_delta == '{"te'
+    assert chunks[2].finish_reason == "stop"
+    assert chunks[3].tool_call_deltas[0].tool_call_id == "call_2"
+    assert chunks[3].tool_call_deltas[0].name_delta == "ec"
+    assert chunks[3].tool_call_deltas[0].arguments_delta == '{"te'
 
 
 def test_agent_loop_emits_visible_stream_events_without_pseudo_tool_xml(tmp_path):
@@ -186,7 +195,10 @@ def test_query_engine_submits_message_and_saves_conversation_snapshot(tmp_path):
         registry=registry,
         store=store,
     )
-    loop.client.chat.completions.create.return_value = make_response(content="Hello!")
+    loop.client.chat.completions.create.return_value = make_response(
+        content="Hello!",
+        finish_reason="stop",
+    )
     snapshot_store = StateSnapshotStore(tmp_path / "conversation.json")
     engine = QueryEngine(
         agent_loop=loop,
@@ -199,12 +211,48 @@ def test_query_engine_submits_message_and_saves_conversation_snapshot(tmp_path):
     assert result.reply == "Hello!"
     assert result.turn is not None
     assert result.turn.final_response == "Hello!"
+    assert result.turn.termination is not None
+    assert result.turn.termination.reason == "model_completed"
+    assert result.turn.termination.provider_finish_reason == "stop"
+    assert result.events[-1].kind is ModelStreamEventKind.TERMINATION
     assert envelope is not None
     assert envelope.state_type == "conversation"
     assert envelope.metadata["reason"] == "turn.completed"
     assert envelope.payload["session_id"] == "s1"
     assert envelope.payload["active_turn"]["final_response"] == "Hello!"
     assert store.load_history()[-1]["content"] == "Hello!"
+
+
+def test_query_engine_persists_and_emits_empty_response_block(tmp_path):
+    registry = ToolRegistry()
+    store = MemoryStore(path=tmp_path / "memory.json", max_history=10, session_id="s1")
+    loop = AgentLoop(
+        client=MagicMock(),
+        model="test-model",
+        system_prompt="sys",
+        registry=registry,
+        store=store,
+        empty_final_retries=1,
+    )
+    loop.client.chat.completions.create.side_effect = [
+        make_response(content="", finish_reason="stop"),
+        make_response(content="", finish_reason="stop"),
+    ]
+    snapshot_store = StateSnapshotStore(tmp_path / "conversation.json")
+    engine = QueryEngine(agent_loop=loop, snapshot_store=snapshot_store)
+
+    result = engine.submit_message("do work", stream=False)
+    envelope = snapshot_store.load_envelope()
+
+    assert result.turn is not None
+    assert result.turn.status.value == "blocked"
+    assert result.turn.termination is not None
+    assert result.turn.termination.reason == "empty_model_response"
+    assert result.turn.termination.recovery_attempts == 1
+    assert envelope is not None
+    assert envelope.metadata["reason"] == "turn.blocked"
+    assert result.events[-1].kind is ModelStreamEventKind.TERMINATION
+    assert result.events[-1].metadata["reason"] == "empty_model_response"
 
 
 def test_query_engine_injects_response_language_instruction(tmp_path):

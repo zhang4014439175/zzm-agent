@@ -24,6 +24,7 @@ class TurnStatus(str, Enum):
     PENDING = "pending"
     IN_PROGRESS = "in_progress"
     COMPLETED = "completed"
+    YIELDED = "yielded"
     BLOCKED = "blocked"
     CANCELLED = "cancelled"
     FAILED = "failed"
@@ -47,6 +48,7 @@ class LoopPhase(str, Enum):
     REFLECTING = "reflecting"
     RUNNING_STOP_HOOKS = "running_stop_hooks"
     COMPLETED = "completed"
+    YIELDED = "yielded"
     BLOCKED = "blocked"
     CANCELLED = "cancelled"
     FAILED = "failed"
@@ -60,6 +62,7 @@ class LoopTransition(str, Enum):
     REFLECTION_RETRY = "reflection_retry"
     STOP_HOOK_RETRY = "stop_hook_retry"
     COMPLETED = "completed"
+    YIELDED = "yielded"
     NO_PROGRESS = "no_progress"
     ITERATION_LIMIT = "iteration_limit"
     DUPLICATE_CALL_LIMIT = "duplicate_call_limit"
@@ -72,6 +75,41 @@ class LoopTransition(str, Enum):
     PERMISSION_REQUESTED = "permission_requested"
     TOOL_EXECUTION = "tool_execution"
     OBSERVATION = "observation"
+
+
+@dataclass(frozen=True)
+class TurnTermination:
+    """Persisted explanation of why control left one user turn."""
+
+    status: TurnStatus
+    reason: str
+    provider_finish_reason: str | None = None
+    recovery_attempts: int = 0
+    occurred_at: str = field(
+        default_factory=lambda: datetime.now(timezone.utc).isoformat()
+    )
+
+    def to_record(self) -> dict[str, Any]:
+        return {
+            "status": self.status.value,
+            "reason": self.reason,
+            "provider_finish_reason": self.provider_finish_reason,
+            "recovery_attempts": self.recovery_attempts,
+            "occurred_at": self.occurred_at,
+        }
+
+    @classmethod
+    def from_record(cls, record: dict[str, Any]) -> "TurnTermination":
+        return cls(
+            status=TurnStatus(record.get("status", TurnStatus.FAILED.value)),
+            reason=str(record.get("reason") or "unknown"),
+            provider_finish_reason=record.get("provider_finish_reason"),
+            recovery_attempts=max(0, int(record.get("recovery_attempts", 0) or 0)),
+            occurred_at=str(
+                record.get("occurred_at")
+                or datetime.now(timezone.utc).isoformat()
+            ),
+        )
 
 
 class LoopTransitionError(RuntimeError):
@@ -1050,6 +1088,7 @@ class MemoryLoadState:
 
 _TERMINAL_LOOP_PHASES = {
     LoopPhase.COMPLETED,
+    LoopPhase.YIELDED,
     LoopPhase.BLOCKED,
     LoopPhase.CANCELLED,
     LoopPhase.FAILED,
@@ -1059,6 +1098,7 @@ _ALLOWED_LOOP_TRANSITIONS: dict[LoopPhase, set[LoopPhase]] = {
     LoopPhase.IDLE: {
         LoopPhase.PREPARING,
         LoopPhase.COMPLETED,
+        LoopPhase.YIELDED,
         LoopPhase.BLOCKED,
         LoopPhase.CANCELLED,
         LoopPhase.FAILED,
@@ -1066,6 +1106,7 @@ _ALLOWED_LOOP_TRANSITIONS: dict[LoopPhase, set[LoopPhase]] = {
     LoopPhase.PREPARING: {
         LoopPhase.CALLING_MODEL,
         LoopPhase.COMPLETED,
+        LoopPhase.YIELDED,
         LoopPhase.BLOCKED,
         LoopPhase.CANCELLED,
         LoopPhase.FAILED,
@@ -1075,6 +1116,7 @@ _ALLOWED_LOOP_TRANSITIONS: dict[LoopPhase, set[LoopPhase]] = {
         LoopPhase.VALIDATING_TOOL_CALLS,
         LoopPhase.RUNNING_STOP_HOOKS,
         LoopPhase.COMPLETED,
+        LoopPhase.YIELDED,
         LoopPhase.BLOCKED,
         LoopPhase.CANCELLED,
         LoopPhase.FAILED,
@@ -1083,6 +1125,7 @@ _ALLOWED_LOOP_TRANSITIONS: dict[LoopPhase, set[LoopPhase]] = {
         LoopPhase.VALIDATING_TOOL_CALLS,
         LoopPhase.RUNNING_STOP_HOOKS,
         LoopPhase.COMPLETED,
+        LoopPhase.YIELDED,
         LoopPhase.BLOCKED,
         LoopPhase.CANCELLED,
         LoopPhase.FAILED,
@@ -1117,6 +1160,7 @@ _ALLOWED_LOOP_TRANSITIONS: dict[LoopPhase, set[LoopPhase]] = {
         LoopPhase.REFLECTING,
         LoopPhase.RUNNING_STOP_HOOKS,
         LoopPhase.COMPLETED,
+        LoopPhase.YIELDED,
         LoopPhase.BLOCKED,
         LoopPhase.CANCELLED,
         LoopPhase.FAILED,
@@ -1130,11 +1174,13 @@ _ALLOWED_LOOP_TRANSITIONS: dict[LoopPhase, set[LoopPhase]] = {
     LoopPhase.RUNNING_STOP_HOOKS: {
         LoopPhase.CALLING_MODEL,
         LoopPhase.COMPLETED,
+        LoopPhase.YIELDED,
         LoopPhase.BLOCKED,
         LoopPhase.CANCELLED,
         LoopPhase.FAILED,
     },
     LoopPhase.COMPLETED: set(),
+    LoopPhase.YIELDED: set(),
     LoopPhase.BLOCKED: set(),
     LoopPhase.CANCELLED: set(),
     LoopPhase.FAILED: set(),
@@ -1359,6 +1405,14 @@ class LoopState:
         self.current_tool_calls = []
         self.transition_to(LoopPhase.COMPLETED, reason)
 
+    def mark_yielded(
+        self,
+        reason: LoopTransition | str = LoopTransition.YIELDED,
+    ) -> None:
+        self.needs_follow_up = True
+        self.current_tool_calls = []
+        self.transition_to(LoopPhase.YIELDED, reason)
+
     def mark_blocked(
         self,
         reason: LoopTransition | str = LoopTransition.BLOCKED,
@@ -1472,6 +1526,9 @@ class TurnState:
     loop: LoopState | None = None
     final_response: str | None = None
     error: str | None = None
+    provider_finish_reason: str | None = None
+    provider_finish_reason_history: list[str] = field(default_factory=list)
+    termination: TurnTermination | None = None
 
     scope: ClassVar[StateScope] = StateScope.TURN
 
@@ -1493,32 +1550,78 @@ class TurnState:
         self.usage.add(usage)
         self.usage_state.turn.add(usage)
 
-    def complete(self, final_response: str, usage: TokenUsage | None = None) -> None:
+    def record_provider_finish_reason(self, reason: str | None) -> None:
+        if reason is None:
+            return
+        normalized = str(reason).strip()
+        if not normalized:
+            return
+        self.provider_finish_reason = normalized
+        self.provider_finish_reason_history.append(normalized)
+
+    def _terminate(
+        self,
+        status: TurnStatus,
+        reason: str,
+        *,
+        recovery_attempts: int = 0,
+    ) -> None:
+        self.status = status
+        self.termination = TurnTermination(
+            status=status,
+            reason=reason,
+            provider_finish_reason=self.provider_finish_reason,
+            recovery_attempts=recovery_attempts,
+        )
+
+    def complete(
+        self,
+        final_response: str,
+        usage: TokenUsage | None = None,
+        *,
+        reason: str = "model_completed",
+    ) -> None:
         if usage is not None:
             self.usage = usage.copy()
             self.usage_state.turn = usage.copy()
         self.final_response = final_response
         self.error = None
-        self.status = TurnStatus.COMPLETED
+        self._terminate(TurnStatus.COMPLETED, reason)
         if self.loop is not None:
-            self.loop.mark_completed()
+            self.loop.mark_completed(reason)
 
-    def block(self, final_response: str, reason: str = "blocked") -> None:
+    def block(
+        self,
+        final_response: str,
+        reason: str = "blocked",
+        *,
+        recovery_attempts: int = 0,
+    ) -> None:
         self.final_response = final_response
         self.error = reason
-        self.status = TurnStatus.BLOCKED
+        self._terminate(
+            TurnStatus.BLOCKED,
+            reason,
+            recovery_attempts=recovery_attempts,
+        )
         if self.loop is not None:
             self.loop.mark_blocked(reason)
 
+    def yield_control(self, reason: str = "yielded") -> None:
+        self.error = None
+        self._terminate(TurnStatus.YIELDED, reason)
+        if self.loop is not None:
+            self.loop.mark_yielded(reason)
+
     def fail(self, error: str) -> None:
         self.error = error
-        self.status = TurnStatus.FAILED
+        self._terminate(TurnStatus.FAILED, error)
         if self.loop is not None:
-            self.loop.mark_failed()
+            self.loop.mark_failed(error)
 
     def cancel(self, reason: str = "cancelled") -> None:
         self.error = reason
-        self.status = TurnStatus.CANCELLED
+        self._terminate(TurnStatus.CANCELLED, reason)
         if self.loop is not None:
             self.loop.mark_cancelled(reason)
 
@@ -1544,6 +1647,13 @@ class TurnState:
             "loop": self.loop.to_record() if self.loop is not None else None,
             "final_response": self.final_response,
             "error": self.error,
+            "provider_finish_reason": self.provider_finish_reason,
+            "provider_finish_reason_history": list(
+                self.provider_finish_reason_history
+            ),
+            "termination": (
+                self.termination.to_record() if self.termination is not None else None
+            ),
         }
 
     @classmethod
@@ -1591,6 +1701,17 @@ class TurnState:
             ),
             final_response=record.get("final_response"),
             error=record.get("error"),
+            provider_finish_reason=record.get("provider_finish_reason"),
+            provider_finish_reason_history=[
+                str(item)
+                for item in record.get("provider_finish_reason_history", [])
+                if item is not None
+            ],
+            termination=(
+                TurnTermination.from_record(record["termination"])
+                if isinstance(record.get("termination"), dict)
+                else None
+            ),
         )
         return state
 
