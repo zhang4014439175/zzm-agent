@@ -186,7 +186,7 @@ flowchart TD
 
 ## 执行进度总览
 
-> **当前下一任务：8.6 本地工具 Renderer 合集。**
+> **当前下一任务：P3 阶段验收。**
 
 ### 当前能力基线
 
@@ -258,7 +258,7 @@ flowchart TD
 - [x] 8.4A.3 SegmentResult 与安全让出：把工具轮次/上下文段上限从“终止任务”改为 yielded 检查点，不把内部换段暴露为任务失败
 - [x] 8.4A.4 QueryEngine 自动续段与基础完成门禁：压缩后自动继续同一任务，只有明确完成、阻塞、失败或取消才把控制权交回用户
 - [x] 8.4A 阶段验收：确认长工具任务不会静默结束或因单段轮次耗尽而假完成，简单任务无额外续跑开销
-- [ ] 8.6 本地工具 Renderer 合集：合并开发 FileRead、FileEdit、Search、Shell、动态活动描述和纯文本降级渲染
+- [x] 8.6 本地工具 Renderer 合集：合并开发 FileRead、FileEdit、Search、Shell、动态活动描述和纯文本降级渲染
 - [ ] P3 阶段验收：确认本地工具执行有确定性安全边界、可撤销、可取消、可解释，长结果不会污染模型上下文，且所有任务结束原因可见
 - [ ] P3 可选扩展 A — OS 级沙箱：在应用层路径策略之外，研究 Windows Job Object、受限进程、Linux namespace/seccomp 或容器隔离；用真实逃逸测试验证文件、进程和网络边界
 - [ ] P3 可选扩展 B — Secrets Store：集中读取、引用和轮换 API Key/Token，工具只获得所需凭据句柄，敏感值不得进入 Prompt、Artifact、事件或异常文本
@@ -1561,6 +1561,8 @@ tool call -> 参数解析 -> schema 校验 -> 风险分级 -> 权限确认 -> �
 ### 8.6 本地工具 Renderer 合集
 
 合并开发 FileRead、FileEdit、Search、Shell、动态活动描述和纯文本降级 Renderer。Renderer 消费 ToolResult / ToolProgressEvent，不直接解析自然语言输出。
+
+完成记录：已增加文件读取、文件编辑、搜索和 Shell 专用 Renderer，CLI 根据结构化参数生成动态活动描述，并消费 AgentLoop 发布的 ToolResult 展示成功、失败、折叠内容和 Artifact；未知工具继续走纯文本降级。功能说明见 `docs/8.6-local-tool-renderers.md`。
 
 ### 验收标准
 

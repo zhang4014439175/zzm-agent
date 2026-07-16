@@ -2003,6 +2003,19 @@ class AgentLoop:
                 self.last_tool_results.append(structured_result)
                 turn_state.tool_results.append(structured_result.to_record())
                 turn_state.artifacts.extend(structured_result.artifacts)
+                # UI 只消费结构化结果事实；在模型回填前发布，确保终端与持久状态
+                # 看到同一个 ToolResult，同时不让 Renderer 反向解析自然语言输出。
+                if on_stream_event is not None:
+                    on_stream_event(
+                        ModelStreamEvent.tool_result(
+                            str(structured_result.display_content.get("text") or ""),
+                            tool_call_id=structured_result.tool_call_id,
+                            tool_name=structured_result.tool_name,
+                            tool_result=structured_result.to_record(),
+                            arguments=dict(args),
+                            risk_level=risk_level,
+                        )
+                    )
                 tool_result_msg = structured_result.to_model_message()
                 message_store.append_pending(tool_result_msg)
                 observation_content = result_str

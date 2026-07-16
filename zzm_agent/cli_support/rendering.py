@@ -6,7 +6,12 @@ from pathlib import Path
 from typing import Any, Iterable
 
 from zzm_agent.constants import ZZM_AGENT_DIR
+from zzm_agent.core.local_tool_renderers import (
+    build_local_tool_renderer_registry,
+    parse_tool_arguments,
+)
 from zzm_agent.core.model_stream import ModelStreamEvent, ModelStreamEventKind
+from zzm_agent.core.tool_results import ToolRenderContext, ToolResult
 
 _EMOJI_PATTERN = re.compile(
     "["
@@ -718,6 +723,11 @@ class PlainTextRenderer:
     """Render stream events as plain text for non-Rich or redirected output."""
 
     def __init__(self, console: Any):
+        """初始化纯文本流 Renderer，并准备工具参数与专用 Renderer 状态。
+
+        console 接收最终输出；实例会缓存分段到达的工具参数，直到结果事件到达。
+        所有缓存仅服务当前渲染会话，不修改 Agent 状态；未知工具自动走纯文本降级。
+        """
         self.console = console
         self._content = ""
         self._reasoning = ""
@@ -725,6 +735,9 @@ class PlainTextRenderer:
         self._separator_printed = False
         self._seen_process = False
         self._printed_tool_calls: set[str] = set()
+        self._tool_arguments: dict[str, str] = {}
+        self._tool_names: dict[str, str] = {}
+        self._tool_renderers = build_local_tool_renderer_registry()
 
     def render_event(self, event: ModelStreamEvent) -> None:
         if event.kind is ModelStreamEventKind.STATUS:
@@ -738,11 +751,7 @@ class PlainTextRenderer:
             self._render_tool_call_delta(event)
             return
         if event.kind is ModelStreamEventKind.TOOL_RESULT:
-            self._flush_reasoning()
-            self._seen_process = True
-            name = event.tool_name or "tool"
-            text = f": {event.text}" if event.text else ""
-            self.console.print(f"Ran {name}{text}")
+            self._render_tool_result(event, rich=False)
             return
         if event.kind is ModelStreamEventKind.ERROR:
             self.console.print(f"Error: {event.text}")
@@ -802,15 +811,74 @@ class PlainTextRenderer:
         self._reasoning = ""
 
     def _render_tool_call_delta(self, event: ModelStreamEvent) -> None:
+        """收集流式工具名与参数，并在首次可识别时输出动态活动描述。
+
+        参数可能跨多个事件到达，因此按 tool_call_id 累加。首次事件缺少 ID 时
+        使用工具名作为兼容键；重复片段不会重复打印 Running 行。
+        """
+        key = event.tool_call_id or event.tool_name or "<pending>"
+        if event.arguments_delta:
+            self._tool_arguments[key] = self._tool_arguments.get(key, "") + event.arguments_delta
+        if event.tool_name:
+            self._tool_names[key] = event.tool_name
         if not event.tool_name:
             return
         self._flush_reasoning()
-        key = event.tool_call_id or event.tool_name
         if key in self._printed_tool_calls:
             return
         self._seen_process = True
         self._printed_tool_calls.add(key)
-        self.console.print(f"Running {event.tool_name}")
+        context = self._tool_context(event)
+        view = self._tool_renderers.select(context).render_use(context)
+        self.console.print(f"Running {view.text}")
+
+    def _tool_context(self, event: ModelStreamEvent) -> ToolRenderContext:
+        """从流事件和已缓存参数建立只读 ToolRenderContext。
+
+        结果事件优先使用 AgentLoop 提供的完整 arguments；流式调用阶段则尝试
+        解析累计 JSON。解析失败只影响描述精度，不阻断渲染或工具执行。
+        """
+        key = event.tool_call_id or event.tool_name or "<pending>"
+        arguments = event.metadata.get("arguments")
+        if not isinstance(arguments, dict):
+            arguments = parse_tool_arguments(self._tool_arguments.get(key, ""))
+        return ToolRenderContext(
+            tool_name=event.tool_name or self._tool_names.get(key, "tool"),
+            tool_call_id=event.tool_call_id or key,
+            arguments_summary=dict(arguments),
+            risk_level=str(event.metadata.get("risk_level") or "unknown"),
+        )
+
+    def _render_tool_result(self, event: ModelStreamEvent, *, rich: bool) -> None:
+        """用 ToolResult 和专用 Renderer 展示完成或失败，不解析自然语言状态。
+
+        新事件携带完整 tool_result 记录；旧调用只带 text 时会构造兼容结果。
+        输出始终保留 Ran/Failed 状态词，Rich 模式仅增加样式，不改变文本事实。
+        """
+        self._flush_reasoning()
+        self._seen_process = True
+        context = self._tool_context(event)
+        record = event.metadata.get("tool_result")
+        if isinstance(record, dict):
+            result = ToolResult.from_record(record)
+        else:
+            result = ToolResult.from_text(
+                tool_call_id=context.tool_call_id,
+                tool_name=context.tool_name,
+                status=str(event.metadata.get("status") or "success"),
+                content=event.text or "",
+            )
+        renderer = self._tool_renderers.select(context)
+        failed = result.status not in {"success", "completed", "ok"}
+        view = renderer.render_error(context, result) if failed else renderer.render_result(context, result)
+        label = "Failed" if failed else "Ran"
+        if rich:
+            style = "red" if failed else "bold"
+            detail = f" [dim]{view.text}[/dim]" if view.text else ""
+            self.console.print(f"[{style}]{label}[/{style}] [cyan]{context.tool_name}[/cyan]{detail}")
+        else:
+            detail = f": {view.text}" if view.text else ""
+            self.console.print(f"{label} {context.tool_name}{detail}")
 
     def _render_termination(self, event: ModelStreamEvent) -> None:
         status = str(event.metadata.get("status") or event.text or "unknown")
@@ -840,11 +908,7 @@ class TerminalRenderer(PlainTextRenderer):
             self._render_tool_call_delta(event)
             return
         if event.kind is ModelStreamEventKind.TOOL_RESULT:
-            self._flush_reasoning()
-            self._seen_process = True
-            name = event.tool_name or "tool"
-            text = f" [dim]{event.text}[/dim]" if event.text else ""
-            self.console.print(f"[bold]Ran[/bold] [cyan]{name}[/cyan]{text}")
+            self._render_tool_result(event, rich=True)
             return
         if event.kind is ModelStreamEventKind.ERROR:
             self.console.print(f"[red]Error:[/red] {event.text}")
@@ -910,15 +974,22 @@ class TerminalRenderer(PlainTextRenderer):
         self._reasoning = ""
 
     def _render_tool_call_delta(self, event: ModelStreamEvent) -> None:
+        """复用纯文本参数聚合，并把首次活动描述输出为 Rich 样式。"""
+        key = event.tool_call_id or event.tool_name or "<pending>"
+        if event.arguments_delta:
+            self._tool_arguments[key] = self._tool_arguments.get(key, "") + event.arguments_delta
+        if event.tool_name:
+            self._tool_names[key] = event.tool_name
         if not event.tool_name:
             return
         self._flush_reasoning()
-        key = event.tool_call_id or event.tool_name
         if key in self._printed_tool_calls:
             return
         self._seen_process = True
         self._printed_tool_calls.add(key)
-        self.console.print(f"[bold]Running[/bold] [cyan]{event.tool_name}[/cyan]")
+        context = self._tool_context(event)
+        view = self._tool_renderers.select(context).render_use(context)
+        self.console.print(f"[bold]Running[/bold] [cyan]{view.text}[/cyan]")
 
 
 def build_terminal_renderer(console: Any) -> PlainTextRenderer:

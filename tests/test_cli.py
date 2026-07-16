@@ -12,6 +12,7 @@ from zzm_agent.cli_support.rendering import (
     build_terminal_renderer,
 )
 from zzm_agent.core.model_stream import ModelStreamEvent
+from zzm_agent.core.tool_results import ToolResult
 from zzm_agent.cli_support.runtime import (
     _build_working_footer,
     _build_exec_prompt,
@@ -1463,6 +1464,7 @@ def test_handle_slash_reserved_commands_report_unavailable_state(tmp_path):
 
 
 def test_plain_text_renderer_separates_process_from_final_answer():
+    """验证缺少结构化参数时保持旧工具名展示，并继续分隔执行过程与最终回答。"""
     console = DummyConsole()
     renderer = PlainTextRenderer(console)
 
@@ -1480,6 +1482,7 @@ def test_plain_text_renderer_separates_process_from_final_answer():
 
 
 def test_plain_text_renderer_buffers_chunked_reasoning_and_tool_arguments():
+    """验证分段参数不会重复打印活动行，未完成 JSON 时安全回退到工具名。"""
     console = DummyConsole()
     renderer = PlainTextRenderer(console)
 
@@ -1496,6 +1499,38 @@ def test_plain_text_renderer_buffers_chunked_reasoning_and_tool_arguments():
         "Running list_directory",
         "---",
     ]
+
+
+def test_plain_text_renderer_uses_structured_tool_result_and_dynamic_description():
+    """验证 CLI 从 ToolResult 事实渲染文件读取结果，不直接解析自然语言判断状态。"""
+    console = DummyConsole()
+    renderer = PlainTextRenderer(console)
+    result = ToolResult.from_text(
+        tool_call_id="read-1",
+        tool_name="read_file",
+        status="success",
+        content="File: app.py | Lines 1-1 of 1\n     1: print('ok')",
+    )
+
+    renderer.render_event(
+        ModelStreamEvent.tool_call_delta(
+            tool_call_id="read-1",
+            tool_name="read_file",
+            arguments_delta='{"path":"app.py","start_line":1,"end_line":1}',
+        )
+    )
+    renderer.render_event(
+        ModelStreamEvent.tool_result(
+            result.display_content["text"],
+            tool_call_id="read-1",
+            tool_name="read_file",
+            tool_result=result.to_record(),
+            arguments={"path": "app.py", "start_line": 1, "end_line": 1},
+        )
+    )
+
+    assert console.lines[0] == "Running 读取 app.py（行 1-1）"
+    assert console.lines[1].startswith("Ran read_file: File: app.py")
 
 
 def test_plain_text_renderer_keeps_working_status_for_status_events():
