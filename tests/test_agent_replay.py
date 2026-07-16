@@ -128,6 +128,7 @@ def test_duplicate_call_stop(tmp_path):
 
 
 def test_iteration_limit(tmp_path):
+    """回放验证达到工具轮次边界会生成检查点并进入 yielded 状态。"""
     registry = MockToolRegistry(
         {
             replay_key("read_file", path="a.py"): "same result",
@@ -147,8 +148,10 @@ def test_iteration_limit(tmp_path):
 
     result = loop.run("Keep reading", stream=stream)
 
-    assert "maximum tool iteration limit" in result
+    assert "SEGMENT_CHECKPOINT" in result
     assert client.call_count == 2
+    assert loop.last_turn_state is not None
+    assert loop.last_turn_state.status.value == "yielded"
     assert registry.calls == [
         ("read_file", {"path": "a.py"}),
         ("read_file", {"path": "b.py"}),

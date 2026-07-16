@@ -436,9 +436,11 @@ def test_loop_state_allows_stop_hook_after_model_response():
 
 
 def test_turn_termination_round_trips_with_provider_reason():
+    """验证 Turn 终止原因、Provider 原因和 Segment 检查点可完整序列化恢复。"""
     turn = TurnState(user_input="inspect")
     turn.start_loop()
     turn.record_provider_finish_reason("stop")
+    turn.checkpoint = {"segment": 2, "remaining_work_summary": "continue"}
     turn.block(
         "No response",
         reason="empty_model_response",
@@ -453,6 +455,10 @@ def test_turn_termination_round_trips_with_provider_reason():
     assert restored.termination.reason == "empty_model_response"
     assert restored.termination.provider_finish_reason == "stop"
     assert restored.termination.recovery_attempts == 2
+    assert restored.checkpoint == {
+        "segment": 2,
+        "remaining_work_summary": "continue",
+    }
 
 
 def test_loop_state_rejects_illegal_transition_from_idle_to_tools():

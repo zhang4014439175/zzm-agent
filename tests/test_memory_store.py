@@ -608,6 +608,7 @@ def test_build_turn_messages_injects_pinned_context_before_compressed_history(tm
 
 
 def test_compress_history_reports_strategy(tmp_path):
+    """验证历史压缩结果会报告所用策略，便于状态诊断和自动续段观察。"""
     store = MemoryStore(
         path=tmp_path / "memory.json",
         max_history=50,
@@ -627,3 +628,43 @@ def test_compress_history_reports_strategy(tmp_path):
     assert preview["applied"] is True
     assert preview["compression_strategy"] in {"light", "medium", "heavy"}
     assert "Runtime compression summary" in preview["summary"]
+def test_context_budget_explains_all_reserved_sources(tmp_path):
+    """验证上下文预算包含全部固定与动态来源，且分类之和等于总占用。"""
+    store = MemoryStore(
+        path=tmp_path / "memory.json",
+        max_history=10,
+        max_context_tokens=200,
+    )
+    store.append(
+        [
+            {"role": "user", "content": "earlier question"},
+            {"role": "assistant", "content": "earlier answer"},
+        ]
+    )
+
+    messages, context = store.build_turn_messages(
+        system_prompt="system",
+        user_input="current",
+        tool_schema_tokens=11,
+        output_reserve_tokens=23,
+        prompt_cache_strategy="provider_native",
+    )
+
+    breakdown = context["budget_breakdown"]
+    assert messages[-1]["content"] == "current"
+    assert {
+        "system_prompt",
+        "instruction_files",
+        "memory",
+        "pinned_context",
+        "history_messages",
+        "tool_result",
+        "user_input",
+        "tool_schema",
+        "reflection_prompt",
+        "output_reserve",
+    } <= set(breakdown)
+    assert breakdown["tool_schema"] == 11
+    assert breakdown["output_reserve"] == 23
+    assert context["total_tokens"] == sum(breakdown.values())
+    assert context["prompt_cache_strategy"] == "provider_native"

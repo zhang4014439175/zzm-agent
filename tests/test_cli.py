@@ -834,6 +834,7 @@ def test_model_context_limit_falls_back_to_memory_config(monkeypatch):
 
 
 def test_agent_loop_policy_uses_defaults_for_legacy_config():
+    """验证旧配置缺少新字段时仍能获得稳定的分段与 Artifact 默认策略。"""
     policy = get_agent_loop_policy({"agent": {}})
 
     assert policy == {
@@ -841,16 +842,19 @@ def test_agent_loop_policy_uses_defaults_for_legacy_config():
         "duplicate_tool_call_limit": 3,
         "max_tool_retries": 1,
         "empty_final_retries": 2,
+        "max_inline_tool_result_tokens": 2000,
     }
 
 
 def test_agent_loop_policy_reads_configured_values():
+    """验证用户配置的轮次、重试和超长工具结果阈值会被完整读取。"""
     policy = get_agent_loop_policy({
         "agent": {
             "max_tool_iterations": 8,
             "duplicate_tool_call_limit": 2,
             "max_tool_retries": 4,
             "empty_final_retries": 5,
+            "max_inline_tool_result_tokens": 900,
         }
     })
 
@@ -859,16 +863,19 @@ def test_agent_loop_policy_reads_configured_values():
         "duplicate_tool_call_limit": 2,
         "max_tool_retries": 4,
         "empty_final_retries": 5,
+        "max_inline_tool_result_tokens": 900,
     }
 
 
 def test_agent_loop_policy_clamps_values_to_at_least_one():
+    """验证非法零值会被约束到安全下限，避免运行循环策略失效。"""
     policy = get_agent_loop_policy({
         "agent": {
             "max_tool_iterations": 0,
             "duplicate_tool_call_limit": -5,
             "max_tool_retries": -1,
             "empty_final_retries": -2,
+            "max_inline_tool_result_tokens": 0,
         }
     })
 
@@ -877,6 +884,7 @@ def test_agent_loop_policy_clamps_values_to_at_least_one():
         "duplicate_tool_call_limit": 1,
         "max_tool_retries": 0,
         "empty_final_retries": 0,
+        "max_inline_tool_result_tokens": 1,
     }
 
 
@@ -1185,6 +1193,7 @@ def test_handle_slash_new_and_switch_session(tmp_path):
 
 
 def test_handle_slash_status_reports_runtime_summary(tmp_path):
+    """验证 `/status` 能展示基础会话、模型、工具、Token 和 Turn 状态。"""
     store = MemoryStore(path=tmp_path / "memory.json", max_history=50, session_id="alpha")
     console = DummyConsole()
     runtime = {
@@ -1201,6 +1210,54 @@ def test_handle_slash_status_reports_runtime_summary(tmp_path):
     assert "Status" in rendered
     assert "session: alpha" in rendered
     assert "model: demo" in rendered
+
+
+def test_status_explains_context_budget_and_sources(tmp_path):
+    """验证 `/status` 能解释上下文占用分类、压缩策略和 Artifact 来源。"""
+    store = MemoryStore(path=tmp_path / "memory.json", max_history=50, session_id="alpha")
+    console = DummyConsole()
+    loop = type(
+        "Loop",
+        (),
+        {
+            "model": "demo",
+            "cumulative_usage": TokenUsage(total_tokens=12),
+            "last_context_window": {
+                "total_tokens": 120,
+                "max_context_tokens": 1000,
+                "compression_strategy": "medium",
+                "prompt_cache_strategy": "stable_prefix",
+                "budget_breakdown": {
+                    "system_prompt": 20,
+                    "tool_schema": 30,
+                    "output_reserve": 70,
+                },
+                "context_sources": [
+                    {"source": "artifact", "artifact_id": "artifact-demo"}
+                ],
+            },
+        },
+    )()
+    runtime = {
+        "loop": loop,
+        "query_engine": DummyQueryEngine(),
+        "stream": True,
+        "config": {"memory": {"max_context_tokens": 1000}},
+    }
+
+    assert handle_slash(
+        "/status",
+        DummyRegistry(),
+        store,
+        DummyOptimizer(),
+        console,
+        runtime,
+    )
+
+    rendered = "\n".join(console.lines)
+    assert "context_used: 120/1000" in rendered
+    assert "system_prompt=20" in rendered
+    assert "context_sources: artifact-demo" in rendered
 
 
 def test_handle_slash_resume_without_id_switches_latest_other_session(tmp_path):

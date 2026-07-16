@@ -293,6 +293,12 @@ def _installed_plugin_dir() -> Path:
 
 
 def _default_config_text() -> str:
+    """生成首次初始化使用的完整 YAML 配置模板。
+
+    模板中的工具轮次是单 Segment 上限，超长工具结果阈值决定何时 Artifact 化，
+    自动续段次数则是跨 Segment 的资源保险丝；这些默认值必须与运行时解析策略
+    保持一致，避免新旧配置表现不同。
+    """
     plugin_dir = str(_installed_plugin_dir()).replace("\\", "/")
     return (
         "model:\n"
@@ -312,6 +318,8 @@ def _default_config_text() -> str:
         "  duplicate_tool_call_limit: 3\n"
         "  max_tool_retries: 1\n"
         "  empty_final_retries: 2\n"
+        "  max_inline_tool_result_tokens: 2000\n"
+        "  max_auto_continuations: 8\n"
         "  stream: true\n"
         '  tool_choice: "auto"\n'
         "  plugin_dirs:\n"
@@ -788,7 +796,12 @@ def build_registry(cfg: dict[str, Any]) -> ToolRegistry:
 
 
 def get_agent_loop_policy(cfg: dict[str, Any]) -> dict[str, int]:
-    """Return configurable AgentLoop safety policy with stable defaults."""
+    """读取并规范化 AgentLoop 的分段执行与恢复策略。
+
+    对旧配置补齐稳定默认值，并对各字段设置最小合法范围。这里的最大工具轮次
+    不代表终止整个用户任务，而是触发 yielded 检查点；超长结果阈值至少为 1，
+    防止零值导致所有工具输出被意外 Artifact 化。
+    """
     agent_cfg = cfg.get("agent", {})
     return {
         "max_tool_iterations": max(
@@ -807,11 +820,21 @@ def get_agent_loop_policy(cfg: dict[str, Any]) -> dict[str, int]:
             0,
             int(agent_cfg.get("empty_final_retries", 2)),
         ),
+        "max_inline_tool_result_tokens": max(
+            1,
+            int(agent_cfg.get("max_inline_tool_result_tokens", 2000)),
+        ),
     }
 
 
 def build_runtime(args: argparse.Namespace, cfg: dict[str, Any]) -> dict[str, Any]:
-    """Assemble the runtime objects used by the interactive CLI loop."""
+    """装配 CLI 执行所需的全部运行时对象。
+
+    该方法解析 Provider、Workspace、MemoryStore、工具目录、Hook、ChangeSet、
+    AgentLoop 和 QueryEngine，并把配置中的分段策略注入正确层级。AgentLoop 只
+    处理单段，QueryEngine 负责自动续段与快照；最终返回的依赖字典同时供交互式
+    REPL 和非交互 exec 使用。缺少 SDK 或 API Key 时会在任何模型调用前明确失败。
+    """
     try:
         from openai import OpenAI
     except ImportError as exc:
@@ -903,6 +926,9 @@ def build_runtime(args: argparse.Namespace, cfg: dict[str, Any]) -> dict[str, An
         duplicate_tool_call_limit=loop_policy["duplicate_tool_call_limit"],
         max_tool_retries=loop_policy["max_tool_retries"],
         empty_final_retries=loop_policy["empty_final_retries"],
+        max_inline_tool_result_tokens=loop_policy[
+            "max_inline_tool_result_tokens"
+        ],
         tool_choice=cfg.get("agent", {}).get("tool_choice", "auto"),
         on_tool_start=_fanout_tool_callbacks(
             observer.on_tool_start, tool_event_logger, capture_change_start

@@ -30,6 +30,8 @@ from zzm_agent.core.progress_monitor import (
     ToolObservation,
 )
 from zzm_agent.core.runtime_messages import ConversationMessageStore
+from zzm_agent.core.runtime_records import ArtifactStore
+from zzm_agent.core.segments import SegmentResult
 from zzm_agent.core.runtime_state import (
     CancellationController,
     CancellationError,
@@ -39,6 +41,7 @@ from zzm_agent.core.runtime_state import (
     PermissionScope,
     PermissionState,
     TurnState,
+    TurnStatus,
 )
 from zzm_agent.core.tool_results import ToolResult
 from zzm_agent.memory.token_counter import TokenCounter
@@ -119,35 +122,36 @@ class AgentLoop:
         hook_registry: HookRegistry | None = None,
         max_stop_hook_attempts: int = 1,
         empty_final_retries: int = 2,
+        max_inline_tool_result_tokens: int = 2000,
+        artifact_store: ArtifactStore | None = None,
         model_adapter: OpenAIChatCompletionsAdapter | None = None,
     ):
-        """
-        Initialize the AgentLoop.
-        
-        Args:
-            client: An OpenAI client instance.
-            model: The name of the model to use (e.g., 'gpt-4').
-            system_prompt: The initial system instructions for the agent.
-            registry: The tool registry containing available functions.
-            store: The memory store for persisting history.
-            max_tool_iterations: Maximum model tool-call rounds before stopping.
-            duplicate_tool_call_limit: Consecutive identical calls before stopping.
-            max_tool_retries: Automatic retries for retryable tool execution errors.
-            retry_base_delay: First automatic retry delay in seconds.
-            retry_max_delay: Maximum automatic retry delay in seconds.
-            retry_sleep: Optional sleep function used by retry backoff. Primarily
-                useful for tests that should not actually sleep.
-            tool_choice: Tool-choice policy to send when tools are present. Set
-                to None for providers that reject the field.
-            on_tool_start: Callback for structured tool start events.
-            on_tool_end: Callback for successful or denied tool completion events.
-            on_tool_error: Callback for failed tool completion events.
-            prompt_manager: Optional dynamic prompt composer for per-turn system prompts.
-            cancellation_controller: Optional controller for external cancellation.
-            hook_registry: Optional synchronous hook registry for lifecycle decisions.
-            max_stop_hook_attempts: Maximum Stop Hook retries before blocking.
-            empty_final_retries: Empty model replies to recover before blocking.
-            model_adapter: Optional adapter that normalizes provider-specific responses.
+        """初始化单个执行段使用的 Agent 运行循环。
+
+        AgentLoop 负责一次 Segment 内的模型调用、工具执行、权限检查、失败恢复、
+        Token 统计与状态迁移；跨 Segment 的自动续跑由 QueryEngine 负责。这样达到
+        ``max_tool_iterations`` 时只会安全让出，不会把整个用户任务误判为结束。
+
+        关键参数：
+            client/model: OpenAI 兼容客户端与模型名称。
+            system_prompt/registry/store: 系统指令、可用工具目录和会话存储。
+            max_tool_iterations: 单个 Segment 允许的工具轮次；达到后生成检查点。
+            duplicate_tool_call_limit: 连续重复调用的熔断阈值，用于识别无进展循环。
+            max_tool_retries: 可恢复工具错误在同一次调用中的自动重试次数。
+            retry_base_delay/retry_max_delay: 指数退避的初始与最大等待时间。
+            retry_sleep: 可替换的等待函数，测试中可避免真实休眠。
+            tool_choice: Provider 接受的工具选择策略；不兼容时可设为 ``None``。
+            on_tool_start/on_tool_end/on_tool_error: 工具生命周期事件回调。
+            prompt_manager: 按当前任务和历史动态组装系统提示词的可选组件。
+            cancellation_controller: 负责 Turn、Task 和工具调用取消传播的控制器。
+            hook_registry/max_stop_hook_attempts: 生命周期 Hook 及停止检查重试上限。
+            empty_final_retries: 模型空内容且无工具调用时的有限恢复次数。
+            max_inline_tool_result_tokens: 工具结果内联到模型上下文的最大估算值；
+                超过后保存为 Artifact，只向模型提供摘要、片段和来源引用。
+            artifact_store: Artifact 持久化位置；未提供时使用当前会话目录。
+            model_adapter: 统一不同 Provider 返回格式与能力差异的适配器。
+
+        初始化只建立依赖和运行策略，不会调用模型或修改会话历史。
         """
         self.client = client
         self.model_adapter = model_adapter or OpenAIChatCompletionsAdapter(client)
@@ -189,7 +193,13 @@ class AgentLoop:
         self.hook_registry = hook_registry or HookRegistry()
         self.max_stop_hook_attempts = max(0, max_stop_hook_attempts)
         self.empty_final_retries = max(0, empty_final_retries)
+        self.max_inline_tool_result_tokens = max(1, max_inline_tool_result_tokens)
+        history_path = getattr(self.store, "history_path", None)
+        artifact_root = history_path.parent / "artifacts" if history_path else None
+        self.artifact_store = artifact_store or ArtifactStore(root=artifact_root)
         self.last_tool_results: list[ToolResult] = []
+        self.last_segment_result: SegmentResult | None = None
+        self.last_segment_checkpoint: dict[str, Any] = {}
 
     def _build_tool_call_record(
         self,
@@ -889,6 +899,118 @@ class AgentLoop:
             "otherwise call the next required tool or clearly explain the blocker."
         )
 
+    def _compact_tool_result_for_model(
+        self,
+        *,
+        content: str,
+        tool_name: str,
+        tool_call_id: str,
+        turn_id: str,
+        session_id: str,
+    ) -> tuple[str, list[dict[str, Any]]]:
+        """将超长工具输出 Artifact 化，并返回有界的模型可见内容。
+
+        未超过 ``max_inline_tool_result_tokens`` 时原样返回且不创建 Artifact。
+        超限时保存完整文本，模型侧只获得摘要、首尾片段、大小、校验值和
+        Artifact ID；返回的第二项是 Artifact 记录，用于挂到 ToolResult、
+        TurnState 和 Segment 检查点。保存失败会向上抛出，避免模型误以为完整
+        输出已经可靠持久化。
+        """
+        estimated_tokens = self._estimate_text_tokens(content)
+        if estimated_tokens <= self.max_inline_tool_result_tokens:
+            return content, []
+
+        collapsed = " ".join(content.split())
+        summary = collapsed[:240]
+        if len(collapsed) > 240:
+            summary += "..."
+        artifact = self.artifact_store.save_text(
+            content,
+            kind="tool-result",
+            summary=f"{tool_name}: {summary}",
+            session_id=session_id,
+            turn_id=turn_id,
+            metadata={
+                "tool_name": tool_name,
+                "tool_call_id": tool_call_id,
+                "estimated_tokens": estimated_tokens,
+            },
+        )
+        excerpt_chars = max(240, min(1200, self.max_inline_tool_result_tokens * 2))
+        head = content[:excerpt_chars].strip()
+        tail = content[-excerpt_chars:].strip() if len(content) > excerpt_chars else ""
+        excerpts = f"Beginning:\n{head}"
+        if tail and tail != head:
+            excerpts += f"\n\nEnd:\n{tail}"
+        model_content = (
+            f"[Large tool result stored as Artifact {artifact.artifact_id}]\n"
+            f"Summary: {summary or '(no textual summary)'}\n"
+            f"Original size: {artifact.size_bytes} bytes; estimated tokens: "
+            f"{estimated_tokens}.\n{excerpts}\n"
+            f"Source: {artifact.artifact_id} ({artifact.checksum})."
+        )
+        return model_content, [artifact.to_record()]
+
+    def _build_segment_result(self, reply: str) -> SegmentResult:
+        """根据最近一次 TurnState 构造统一的 SegmentResult。
+
+        正常情况下状态和原因取自 TurnTermination，并附带工具计数和检查点。
+        如果执行异常到连 TurnState 或终止记录都没有建立，则返回 failed 结果，
+        让上层仍能得到明确、可观测的结束原因。
+        """
+        turn = self.last_turn_state
+        if turn is None:
+            return SegmentResult(
+                status=TurnStatus.FAILED,
+                reason="missing_turn_state",
+                reply=reply,
+            )
+        termination = turn.termination
+        status = termination.status if termination is not None else TurnStatus.FAILED
+        reason = termination.reason if termination is not None else "missing_termination"
+        loop = turn.loop
+        return SegmentResult(
+            status=status,
+            reason=reason,
+            reply=reply,
+            tool_iterations=loop.tool_iterations if loop is not None else 0,
+            tool_calls=turn.usage.tool_calls,
+            checkpoint=dict(self.last_segment_checkpoint),
+            remaining_work_summary=str(
+                self.last_segment_checkpoint.get("remaining_work_summary", "")
+            ),
+            turn=turn,
+        )
+
+    def run_segment(
+        self,
+        user_input: str,
+        stream: bool = True,
+        on_text_chunk: Callable[[str], None] | None = None,
+        on_stream_event: Callable[[ModelStreamEvent], None] | None = None,
+        runtime_instructions: list[str] | None = None,
+    ) -> SegmentResult:
+        """运行一个有界 Segment，并返回结构化执行结果。
+
+        本方法先清空上一段检查点，再调用保持字符串返回兼容性的 ``run()``。
+        成功、让出、阻塞或取消都会从 TurnState 转换为 SegmentResult；异常时也会
+        先记录最后可获得的分段结果再继续抛出，供 QueryEngine 统一处理失败事件。
+        """
+        self.last_segment_checkpoint = {}
+        try:
+            reply = self.run(
+                user_input,
+                stream=stream,
+                on_text_chunk=on_text_chunk,
+                on_stream_event=on_stream_event,
+                runtime_instructions=runtime_instructions,
+            )
+        except Exception as exc:
+            self.last_segment_result = self._build_segment_result(str(exc))
+            raise
+        self.last_segment_result = self._build_segment_result(reply)
+        return self.last_segment_result
+
     def _commit_turn_usage(self, usage: TokenUsage) -> None:
         """Persist the latest turn and cumulative model usage counters."""
         self.last_turn_usage = usage.copy()
@@ -969,7 +1091,12 @@ class AgentLoop:
         on_stream_event: Callable[[ModelStreamEvent], None] | None = None,
         runtime_instructions: list[str] | None = None,
     ) -> str:
-        """Run one turn and preserve a failed termination on uncaught errors."""
+        """执行一次 Agent Turn，并兼容旧调用方所需的字符串返回值。
+
+        实际状态机在 ``_run_turn`` 中运行。本层是异常保护边界：未捕获异常发生时
+        会补写 failed 终止状态、执行 Turn/Session 结束 Hook、提交本轮用量并结束
+        取消控制器，保证终端不会在没有原因和持久化记录的情况下静默停止。
+        """
         try:
             return self._run_turn(
                 user_input,
@@ -1019,31 +1146,68 @@ class AgentLoop:
         on_stream_event: Callable[[ModelStreamEvent], None] | None = None,
         runtime_instructions: list[str] | None = None,
     ) -> str:
+        """执行单个 Segment 的完整模型—工具状态循环。
+
+        流程依次为：组装并核算上下文、创建 Turn/Loop/取消状态、执行启动 Hook、
+        循环调用模型与工具、检测重复或无进展、处理空回复恢复，最后进入完成、
+        让出、阻塞、失败或取消之一。``runtime_instructions`` 仅对当前模型请求
+        可见，不写入持久历史；工具 Observation 和安全检查点会提交到历史中。
+
+        ``max_tool_iterations`` 与上下文上限都是 Segment 边界：已有工具进展时
+        生成 yielded 检查点交给 QueryEngine 续跑；如果固定上下文本身已无法装入
+        模型窗口，则明确 blocked。返回值保持旧接口兼容，真实状态应读取
+        ``last_turn_state`` 或通过 ``run_segment`` 获取。
         """
-        Run a single turn of the conversation.
-        
-        This method will load history, call the LLM, execute any requested
-        tools in a loop, and finally return the model's text response.
-        
-        Args:
-            user_input: The message from the user.
-            stream: Whether to request a streaming response from the model.
-            on_text_chunk: Optional callback invoked for every streamed text chunk.
-            on_stream_event: Optional callback invoked for normalized stream events.
-            runtime_instructions: Optional per-turn system instructions that are
-                visible to the model but not persisted as conversation history.
-            
-        Returns:
-            The final text response from the assistant.
-        """
-        # 1. Load runtime context: base instructions + long-term memory +
-        # compressed session history + current user input.
+        # 1. 在调用模型前统一计算固定预算，确保工具 Schema 和输出预留也计入窗口。
         system_prompt = self._build_system_prompt(user_input)
-        messages, _compression = self.store.build_turn_messages(
-            system_prompt=system_prompt,
-            user_input=user_input,
-            memory_limit=self.memory_injection_limit,
+        tools = self.registry.get_schemas()
+        tool_schema_tokens = self._estimate_text_tokens(
+            json.dumps(tools, ensure_ascii=False, sort_keys=True, default=str)
+        ) if tools else 0
+        max_context_tokens = max(
+            1,
+            int(getattr(self.store, "max_context_tokens", 32000) or 32000),
         )
+        output_reserve_tokens = max(
+            0,
+            int(
+                self.max_tokens
+                if self.max_tokens is not None
+                else min(4096, max_context_tokens // 8)
+            ),
+        )
+        prompt_cache_strategy = (
+            "provider_native"
+            if self.model_adapter.capabilities.supports_prompt_cache
+            else "stable_prefix"
+        )
+        runtime_instruction_tokens = sum(
+            self._estimate_text_tokens(instruction.strip())
+            for instruction in runtime_instructions or []
+            if instruction.strip()
+        )
+        build_turn_kwargs: dict[str, Any] = {
+            "system_prompt": system_prompt,
+            "user_input": user_input,
+            "memory_limit": self.memory_injection_limit,
+        }
+        build_turn_parameters = signature(
+            self.store.build_turn_messages
+        ).parameters
+        optional_context_kwargs = {
+            "tool_schema_tokens": tool_schema_tokens,
+            "output_reserve_tokens": output_reserve_tokens,
+            "runtime_instruction_tokens": runtime_instruction_tokens,
+            "prompt_cache_strategy": prompt_cache_strategy,
+        }
+        build_turn_kwargs.update(
+            {
+                key: value
+                for key, value in optional_context_kwargs.items()
+                if key in build_turn_parameters
+            }
+        )
+        messages, _compression = self.store.build_turn_messages(**build_turn_kwargs)
         self.last_context_window = _compression
 
         user_message = {"role": "user", "content": user_input}
@@ -1083,8 +1247,14 @@ class AgentLoop:
             status: str,
             final_response: str = "",
             error: str | None = None,
+            reason: str | None = None,
         ) -> None:
-            termination_reason = error or (
+            """以同一终止元数据执行 Turn 与 Session 结束 Hook。
+
+            ``reason`` 用于 yielded 等非错误终态，``error`` 只表示真实错误或阻塞；
+            两者分离可避免监控端把安全换段误报为失败。
+            """
+            termination_reason = reason or error or (
                 "model_completed" if status == "completed" else status
             )
             termination_metadata = {
@@ -1122,6 +1292,12 @@ class AgentLoop:
             *,
             recovery_attempts: int = 0,
         ) -> str:
+            """把当前 Turn 明确标记为阻塞，并提交可恢复的最终消息。
+
+            阻塞前回滚尚未形成完整协议链的 pending 消息，再只提交用户请求和
+            阻塞说明，防止残缺 tool_call 污染下轮上下文。随后保存用量、执行结束
+            Hook 并释放取消控制器。
+            """
             turn_state.block(
                 message,
                 reason=reason,
@@ -1137,6 +1313,11 @@ class AgentLoop:
             return message
 
         def cancel_current_turn(reason: str, partial_response: str = "") -> str:
+            """传播取消原因、丢弃未提交消息并结束当前 Turn。
+
+            取消不提交半成品工具协议，但允许把已经流出的文本作为返回值交给界面；
+            终止原因和用量仍会被持久化，保证用户能区分取消与异常失败。
+            """
             if not turn_token.is_cancelled:
                 turn_token.cancel(reason)
             turn_state.cancel(reason)
@@ -1145,6 +1326,48 @@ class AgentLoop:
             run_end_hooks(status="cancelled", final_response=partial_response, error=reason)
             self.cancellation_controller.finish_turn()
             return partial_response
+
+        def yield_current_turn(reason: str) -> str:
+            """在安全边界提交检查点，并将控制权交给 QueryEngine 自动续段。
+
+            已完成的工具调用和 Observation 会先完整提交，然后写入一个明确的
+            SEGMENT_CHECKPOINT。检查点保存原任务、计数、Artifact、上下文预算和
+            剩余工作说明；该路径状态为 yielded，不是 completed 或 failed。
+            """
+            remaining_work_summary = (
+                "Continue the same user task from the committed tool observations. "
+                "Re-check what remains, then use tools or provide the final answer."
+            )
+            checkpoint_reply = (
+                "[SEGMENT_CHECKPOINT] Execution reached a safe segment boundary. "
+                f"Reason: {reason}. {remaining_work_summary}"
+            )
+            message_store.append_pending(
+                {"role": "assistant", "content": checkpoint_reply}
+            )
+            message_store.commit(self.store.append)
+            turn_state.final_response = checkpoint_reply
+            turn_state.yield_control(reason)
+            self._commit_turn_usage(turn_usage)
+            self.last_segment_checkpoint = {
+                "turn_id": turn_state.turn_id,
+                "reason": reason,
+                "original_user_input": user_input,
+                "model_iterations": loop_state.model_iterations,
+                "tool_iterations": loop_state.tool_iterations,
+                "tool_calls": turn_usage.tool_calls,
+                "artifacts": list(turn_state.artifacts),
+                "context_window": dict(self.last_context_window),
+                "remaining_work_summary": remaining_work_summary,
+            }
+            turn_state.checkpoint = dict(self.last_segment_checkpoint)
+            run_end_hooks(
+                status="yielded",
+                final_response=checkpoint_reply,
+                reason=reason,
+            )
+            self.cancellation_controller.finish_turn()
+            return checkpoint_reply
 
         if task_token.is_cancelled:
             return cancel_current_turn(task_token.reason or "cancelled")
@@ -1172,21 +1395,24 @@ class AgentLoop:
                     reason=hook_result.reason or "hook_blocked",
                 )
         
-        # Get available tool schemas
-        tools = self.registry.get_schemas()
-        tool_schema_tokens = self._estimate_text_tokens(
-            json.dumps(tools, ensure_ascii=False, sort_keys=True, default=str)
-        ) if tools else 0
-        message_tokens = int(self.last_context_window.get("total_tokens", 0) or 0)
+        budget_breakdown = dict(
+            self.last_context_window.get("budget_breakdown", {}) or {}
+        )
+        message_tokens = max(
+            0,
+            int(self.last_context_window.get("total_tokens", 0) or 0)
+            - tool_schema_tokens
+            - output_reserve_tokens,
+        )
         self.last_context_window = {
             **self.last_context_window,
             "message_tokens": message_tokens,
             "tool_schema_tokens": tool_schema_tokens,
-            "total_tokens": message_tokens + tool_schema_tokens,
+            "output_reserve_tokens": output_reserve_tokens,
+            "budget_breakdown": budget_breakdown,
         }
 
-        # 2. Start the thinking-action loop
-        # print(messages)
+        # 2. 进入模型—工具循环；每轮开始都重新核算动态增长的消息上下文。
         tool_iterations = 0
         consecutive_signature: tuple[str, str] | None = None
         consecutive_count = 0
@@ -1198,13 +1424,39 @@ class AgentLoop:
             if task_token.is_cancelled:
                 return cancel_current_turn(task_token.reason or "cancelled")
             if tool_iterations >= self.max_tool_iterations:
-                final_reply = self._iteration_stop_message()
-                return block_current_turn(
-                    final_reply,
-                    reason=LoopTransition.ITERATION_LIMIT.value,
-                )
+                return yield_current_turn("segment_tool_iteration_limit")
 
             model_context_messages = message_store.prepare_model_context()
+            estimate_messages = getattr(
+                self.store, "estimate_messages_tokens", self._estimate_messages_tokens
+            )
+            current_message_tokens = estimate_messages(model_context_messages)
+            current_total_tokens = (
+                current_message_tokens
+                + tool_schema_tokens
+                + output_reserve_tokens
+            )
+            self.last_context_window = {
+                **self.last_context_window,
+                "message_tokens": current_message_tokens,
+                "tool_schema_tokens": tool_schema_tokens,
+                "output_reserve_tokens": output_reserve_tokens,
+                "total_tokens": current_total_tokens,
+                "remaining_tokens": max(
+                    0, max_context_tokens - current_total_tokens
+                ),
+                "over_budget": current_total_tokens > max_context_tokens,
+            }
+            if current_total_tokens > max_context_tokens:
+                if tool_iterations > 0:
+                    return yield_current_turn("segment_context_budget")
+                return block_current_turn(
+                    "Task blocked because the assembled system instructions, pinned "
+                    "facts, current request, tool schema, runtime controls, and output "
+                    "reserve exceed the model context window. Reduce enabled tools, "
+                    "instructions, task text, or model.max_tokens.",
+                    reason="context_budget_exhausted",
+                )
             if task_token.is_cancelled:
                 return cancel_current_turn(task_token.reason or "cancelled")
             before_model = self._run_hook_until_decision(
@@ -1726,26 +1978,47 @@ class AgentLoop:
                         ),
                     )
 
+                model_result_content, result_artifacts = (
+                    self._compact_tool_result_for_model(
+                        content=result_str,
+                        tool_name=name or "<unknown>",
+                        tool_call_id=tc["id"],
+                        turn_id=turn_state.turn_id,
+                        session_id=str(session_id or "default"),
+                    )
+                )
                 structured_result = ToolResult.from_text(
                     tool_call_id=tc["id"],
                     tool_name=name or "<unknown>",
                     status=tool_status,
                     content=result_str,
+                    artifacts=result_artifacts,
                     metadata={
                         "risk_level": risk_level,
                         "retryable": observation_retryable,
+                        "full_result_artifactized": bool(result_artifacts),
                     },
                 )
+                structured_result.model_content = model_result_content
                 self.last_tool_results.append(structured_result)
                 turn_state.tool_results.append(structured_result.to_record())
                 turn_state.artifacts.extend(structured_result.artifacts)
                 tool_result_msg = structured_result.to_model_message()
                 message_store.append_pending(tool_result_msg)
+                observation_content = result_str
+                if result_artifacts:
+                    artifact_record = result_artifacts[0]
+                    observation_content = (
+                        "[artifactized tool result] "
+                        f"checksum={artifact_record.get('checksum', '')} "
+                        f"size_bytes={artifact_record.get('size_bytes', 0)} "
+                        f"summary={artifact_record.get('summary', '')}"
+                    )
                 round_observations.append(
                     ToolObservation(
                         tool_name=name or "<unknown>",
                         arguments=tc.get("function", {}).get("arguments", ""),
-                        content=result_str,
+                        content=observation_content,
                         success=observation_success,
                         retryable=observation_retryable,
                     )

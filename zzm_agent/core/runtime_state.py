@@ -1167,6 +1167,7 @@ _ALLOWED_LOOP_TRANSITIONS: dict[LoopPhase, set[LoopPhase]] = {
     },
     LoopPhase.REFLECTING: {
         LoopPhase.CALLING_MODEL,
+        LoopPhase.YIELDED,
         LoopPhase.BLOCKED,
         LoopPhase.CANCELLED,
         LoopPhase.FAILED,
@@ -1508,7 +1509,12 @@ class LoopState:
 
 @dataclass
 class TurnState:
-    """Runtime state for one submitted user message."""
+    """保存一条用户消息从开始执行到终止的完整运行状态。
+
+    状态包含用量、权限、取消、工具结果、Artifact、Provider 结束原因和统一终止
+    记录。``checkpoint`` 只在安全让出时写入，供状态恢复和 QueryEngine 自动续段，
+    不应被解释为用户任务已经完成。
+    """
 
     user_input: str
     turn_id: str = field(default_factory=lambda: f"turn-{uuid4().hex[:8]}")
@@ -1529,6 +1535,7 @@ class TurnState:
     provider_finish_reason: str | None = None
     provider_finish_reason_history: list[str] = field(default_factory=list)
     termination: TurnTermination | None = None
+    checkpoint: dict[str, Any] = field(default_factory=dict)
 
     scope: ClassVar[StateScope] = StateScope.TURN
 
@@ -1626,6 +1633,12 @@ class TurnState:
             self.loop.mark_cancelled(reason)
 
     def to_record(self) -> dict[str, Any]:
+        """把 Turn 的运行事实转换为 JSON 兼容快照。
+
+        该记录包含 Segment 检查点，因此进程重启后仍能知道上段为何让出、已经
+        产生哪些 Artifact 以及剩余工作。集合会转换为稳定列表，嵌套状态通过各自
+        的 ``to_record`` 保存；本方法不改变当前 Turn。
+        """
         return {
             "turn_id": self.turn_id,
             "user_input": self.user_input,
@@ -1654,10 +1667,16 @@ class TurnState:
             "termination": (
                 self.termination.to_record() if self.termination is not None else None
             ),
+            "checkpoint": dict(self.checkpoint),
         }
 
     @classmethod
     def from_record(cls, record: dict[str, Any] | None) -> "TurnState":
+        """从持久化记录恢复 TurnState，并兼容没有检查点的旧快照。
+
+        空记录会返回可安全初始化的空 Turn；旧版本缺少 ``checkpoint`` 时使用空
+        字典。恢复只重建状态，不会重新执行模型、工具或生命周期 Hook。
+        """
         if not record:
             return cls(user_input="")
         state = cls(
@@ -1712,6 +1731,7 @@ class TurnState:
                 if isinstance(record.get("termination"), dict)
                 else None
             ),
+            checkpoint=dict(record.get("checkpoint") or {}),
         )
         return state
 

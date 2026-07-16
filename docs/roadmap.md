@@ -10,7 +10,8 @@
 - 每个任务点完成后必须新增或更新对应功能说明文档，并严格使用下方“功能说明文档生成 Prompt”；
 - 文档的第一读者是不了解本次代码实现的项目使用者，不是代码审查者；“读者不看源码也能明白功能有什么用、什么时候生效、现在能做到什么”是文档验收条件；
 - 技术细节用于开发者定位代码，必须放在通俗说明之后；不能用术语替代解释，也不能靠类名、函数名和数据结构反向说明功能；
-- 本清单是路线图进度的唯一状态来源，后文章节用于说明设计与验收要求；
+- 每次开发新增或修改的方法都必须同步补充详细中文注释；不能只翻译方法名，必须说明用途、主要输入输出、关键状态变化、边界条件、失败行为以及它在整体流程中的位置；
+- “执行进度总览”保留原 P0～P11 编号，是路线图进度的唯一状态来源；每个阶段同时列出核心任务和可选扩展，核心学习版不要求完成可选项；
 - 默认从上到下执行；如果因依赖关系调整顺序，应在任务旁补充简短说明。
 
 ### 功能说明文档生成 Prompt
@@ -56,9 +57,136 @@
 只要其中一个问题无法从文档直接得到答案，就继续改写，不能提交文档或勾选路线图任务。
 ```
 
+### 代码实现与中文注释规范
+
+该规范适用于后续所有路线图任务，是代码验收条件的一部分：
+
+1. 每个新增方法必须包含中文 docstring；每个被实质修改的方法也必须同步检查并补齐中文 docstring。
+2. 方法注释必须说明“为什么存在、接收什么、返回什么、会修改哪些状态、失败或达到边界时怎样处理”，不能只写“执行某功能”或逐字翻译方法名。
+3. 状态机、循环、自动恢复、权限、副作用、上下文压缩等复杂方法，除 docstring 外还必须在关键阶段增加中文行内注释，解释各阶段的目的和不能省略的原因。
+4. 测试方法必须用中文 docstring 说明它验证的场景、关键断言和能够防止的回归问题。
+5. 注释必须与当前实现一致。修改行为时同步修改注释；过期注释与缺少注释都视为任务尚未完成。
+6. 注释用于解释设计意图和边界，不逐行复述代码；参数名、类名和函数名不能代替中文解释。
+
+后续完成任务并勾选路线图前，应检查本次 Git 差异中的所有 Python 方法是否满足以上要求。
+
+## 0. 项目定位与范围收敛（2026-07）
+
+本路线图的目标不是把 `zzm-agent` 做成 Grok Build、Codex 或 Claude Code 的替代品，也不以功能数量、客户端数量或企业能力覆盖率作为成功标准。项目的核心目标是通过一个可运行、可测试、可解释的个人编码 Agent，深入学习并实践以下关键问题：
+
+1. 模型调用、工具调用和 Observation 如何形成可靠的 Agent 循环；
+2. 状态、消息、上下文预算、取消、权限和错误恢复如何协同；
+3. 文件、Shell 和 Git 等副作用如何被统一授权、记录、检查和撤销；
+4. 长任务如何让出、续段、验证完成并从检查点恢复；
+5. Agent Runtime 如何与 CLI、JSONL、ACP 等入口解耦；
+6. 如何使用单元测试、状态断言和 Replay 评测证明行为正确。
+
+Grok Build 提供的主要学习价值是清晰的职责边界：界面、Agent Runtime、工具执行、Workspace、协议和持久化分别演进。本项目吸收这些边界和工程原则，但不复制其完整 TUI、企业治理、插件市场、多 Agent 集群、浏览器或桌面产品矩阵。
+
+### 0.1 功能投入等级
+
+后续未完成能力统一标记为以下三种投入等级，防止学习项目重新膨胀为全功能产品计划：
+
+- **核心实现**：必须亲自完成关键模型、状态、协议和测试，不能用占位接口代替；
+- **最小实现**：只完成一条端到端路径，用于理解边界和验证架构，不追求传输、平台和 UI 的完整覆盖；
+- **可选实验**：只有出现明确学习问题或真实使用需求时才开发，不属于默认完成条件。
+
+默认策略：核心实现按顺序执行；最小实现不得扩展为平台工程；可选实验可以永久不做。
+
+### 0.2 核心学习范围
+
+| 能力 | 投入等级 | 完成边界 |
+|---|---|---|
+| ReAct、错误恢复、状态机、消息分层 | 核心实现 | 已有能力持续回归，不继续堆叠启发式规则 |
+| Token Budget、Artifact、Segment、自动续段 | 核心实现 | 长任务不会假完成，简单任务没有额外续跑 |
+| AgentLoop 职责拆分 | 核心实现 | 模型、工具、恢复、上下文不再由一个类直接控制 |
+| WorkspaceRuntime 与 EffectRecord | 核心实现 | File、Shell、Git 副作用经过统一边界并可审计 |
+| RuntimeEvent 与 ExecutionJournal | 核心实现 | CLI、JSONL、Replay 共享同一事实协议 |
+| TaskState、CompletionGate、恢复 | 核心实现 | 模型回复只是完成提议，证据决定是否完成 |
+| 异步进程、取消和顺序工具执行 | 核心实现 | 能真正终止子进程；第一版不追求工具并发 |
+| Skills 与 Tool Search | 最小实现 | 支持本地 Skill、渐进加载和按需工具暴露 |
+| MCP | 最小实现 | 只支持一个 stdio Server 的发现、调用和关闭 |
+| ACP | 最小实现 | 只实现 stdio 下的初始化、会话、提示、事件和取消 |
+| Plugin | 最小实现 | 只做本地 Manifest、启用和禁用，不做市场与在线安装 |
+| 全屏鼠标 TUI | 可选实验 | 明确保留 Grok Build 的全屏、鼠标交互终端方向；包含固定输入区、滚动时间线、工具折叠、Diff、权限弹窗、任务面板和状态栏，并保留键盘操作与纯文本降级 |
+| Worktree | 可选实验 | 只在需要研究隔离执行时实现单 Agent 最小闭环 |
+| 多 Agent / Swarm | 可选实验 | 默认不做，不属于项目完成条件 |
+| Browser / Computer Use | 可选实验 | 默认不做，优先使用外部 MCP 或现有工具 |
+| Desktop / App Server | 可选实验 | 默认不做；ACP 已能验证多入口边界 |
+| Automations / 企业治理 / Telemetry | 可选实验 | 默认不做，只保留基础日志、脱敏和本地审计 |
+
+### 0.3 收敛后的主执行路线
+
+```mermaid
+flowchart TD
+    A["P3 收尾：本地 Renderer 与全量回归"] --> B["P3.5：Runtime 与 Workspace 架构收敛"]
+    B --> C["P6 核心：异步执行与真实取消"]
+    C --> D["P4 核心：Skills / Tool Search / 最小 MCP"]
+    D --> E["P5 核心：Task / CompletionGate / 恢复"]
+    E --> F["P9 核心：最小 ACP 标准入口"]
+    F --> G["P10 核心：外部内容安全"]
+    G --> H["P11：核心学习版验收与发布"]
+    H -.按兴趣选择.-> I["P7 / P8 与各阶段可选扩展"]
+```
+
+依赖顺序固定为：先保证当前行为正确，再拆职责；先统一副作用，再接外部工具；先建立异步取消，再连接 MCP；先建立完成门禁，再增加 Planner；先用 ACP 验证运行时与入口解耦，再决定是否需要桌面端。
+
+### 0.4 当前代码拆分地图
+
+以下拆分是后续 P3.5 的正式任务，不要求在 8.6 Renderer 开发中顺手完成。
+
+| 当前模块 | 当前问题 | 目标模块 | 拆分方式 |
+|---|---|---|---|
+| `core/agent_loop.py` | 同时负责模型请求、流解析、工具协调、权限、重试、上下文和结束判定 | `model_turn.py`、`tool_coordinator.py`、`recovery_policy.py`、`context_preparation.py` | 保留 `AgentLoop` 作为单 Segment 状态编排器，逐项迁移，不重写 |
+| `core/runtime_state.py` | 应用、会话、Turn、Loop、权限和取消对象集中在单文件 | `state/application.py`、`state/conversation.py`、`state/turn.py`、`state/loop.py`、`state/permission.py`、`state/cancellation.py` | 先移动定义和导出兼容层，不在同一任务改变状态语义 |
+| `cli_support/runtime.py` | 启动装配、配置、REPL、输入循环和运行控制混合 | `cli_support/bootstrap.py`、`repl.py`、`execution.py` | CLI 只消费 QueryEngine 和 RuntimeEvent，不直接协调 AgentLoop 内部状态 |
+| `cli_support/commands.py` | Slash 命令解析、业务逻辑和展示混合 | `commands/router.py`、`commands/session.py`、`commands/git.py`、`commands/diagnostics.py` | 使用 CommandContext 注入依赖；命令返回结构化结果，由 Renderer 展示 |
+| `cli_support/rendering.py` | 输入、补全、Renderer、主题和格式化集中 | `ui/input.py`、`ui/completion.py`、`ui/renderers/`、`ui/theme.py` | 8.6 只提取本地工具 Renderer；完整目录调整放到 P3.5 |
+| `memory/store.py` | 会话、语义、情景、上下文组装和压缩协调过多 | 保留 Store 门面，拆为现有专用 Store + `context_preparation.py` | Memory 负责存取和检索，上下文选择与预算移交 ContextPreparationService |
+| `core/tool_registry.py` | 注册、Schema、插件加载、校验、执行、超时和 cleanup 混合 | `tool_catalog.py`、`tool_validator.py`、`tool_runtime.py` | Registry 逐步收敛为目录；执行统一进入 ToolCallCoordinator |
+| `plugins/file_ops.py`、`plugins/shell.py`、`cli_support/git_workflow.py` | 三套副作用入口，ChangeSet 无法覆盖 Shell/Git | `workspace/runtime.py`、`workspace/filesystem.py`、`workspace/process.py`、`workspace/git.py`、`workspace/effects.py` | 原工具改为薄适配器，所有副作用产生 EffectRecord |
+
+拆分约束：每次只迁移一个职责；保留旧 import 和公开入口；先增加 characterization test；重构提交不同时增加产品功能；定向测试、Replay 和全量测试通过后才能继续下一项。
+
+### 0.5 如何阅读后续路线
+
+“执行进度总览”继续保留原 P0～P11 编号和完整能力地图。P3.5 是唯一新增阶段，用于补上从 Grok Build 学到的 Runtime、Workspace 和事件边界。每个 P 模块中的 `[核心]`、`[核心最小版]` 项目构成默认学习路线；“可选扩展”完整记录尚未实现的产品能力，后续可以按兴趣单独添加，不影响核心学习版完成。
+
+推荐执行顺序遵守依赖而不改变编号：P3 收尾 → P3.5 架构收敛 → P6 异步核心 → P4 Skills/Tool Search/最小 MCP → P5 Task/CompletionGate → P9 最小 ACP → P10 基础安全 → P11 核心验收。P7、P8 以及各阶段可选扩展不设默认完成期限。
+
+### 0.6 从 Grok Build 学到并明确保留的可选扩展索引
+
+以下能力全部保留在路线图中。它们不是核心学习版的完成门槛，但不能因为当前不开发就从能力地图消失：
+
+| Grok Build 启发的能力 | 路线图位置 | 本项目可选学习方向 |
+|---|---|---|
+| 全屏鼠标 TUI / Pager | P6 可选扩展 G | 全屏终端、鼠标点击和滚动、固定输入区、执行时间线、工具折叠、Diff、权限弹窗、会话和后台任务面板 |
+| PTY Harness | P6 可选扩展 F | 交互式命令、ANSI、窗口 resize、持续输入、Ctrl+C 和跨平台进程树终止 |
+| Prompt Queue | P4 可选扩展 G | Agent 运行中排队追加消息、修改后续要求、插入中断，并定义消息归属和顺序 |
+| SQLite Journal | P3.5 可选扩展 A | 事务化事件、索引、恢复游标、Schema Migration 和并发读取 |
+| Hunk Tracker | P3.5 可选扩展 B | 代码块级变更来源、覆盖关系、局部 Diff 和局部撤销 |
+| Codebase Graph | P3.5 可选扩展 C | import、调用、符号和文件关系图谱及增量索引 |
+| Fast Worktree / Workspace Snapshot | P3.5 可选扩展 D、P7 12.1 | 快速隔离工作区、基线 Commit、测试、Diff、冲突检查和失败清理 |
+| File System Notify | P3.5 可选扩展 E | 配置、指令、Skill、插件和已读文件变化监听及缓存失效 |
+| MCP 多传输与治理 | P4 可选扩展 A～C | HTTP/SSE/WebSocket、多个 Server、鉴权、重连、限流、健康检查和故障隔离 |
+| Plugin Marketplace | P4 可选扩展 D～E | 插件安装、卸载、版本、依赖、升级回滚、来源校验和市场索引 |
+| Circuit Breaker | P6 可选扩展 C | Provider/MCP/网络工具的熔断、冷却、半开探测和手动恢复 |
+| Background Task / Process | P6 可选扩展 D～E | 自动化触发、后台进程、运行历史、日志、取消和恢复入口 |
+| System Power | P6 可选扩展 H | 长任务期间防休眠并在完成或崩溃后可靠释放电源锁 |
+| Sub-Agent Resolution / Agent Team | P7 12.2～12.4 | 子 Agent 选择、隔离上下文、团队依赖、冲突结论和整体收敛 |
+| Mermaid | P8 13.5 | Mermaid 转 SVG、终端降级、主题、字体和失败回退 |
+| PDF / Image Artifact | P8 13.6 | 页级提取、缩略图、按需渲染和上下文控制 |
+| Voice | P8 13.7 | 录音、转写确认、隐私、取消和高风险指令防误触 |
+| ACP | P9 14.0 | 标准客户端初始化、会话、Prompt、事件、权限和取消 |
+| Auth / Secrets | P2 可选扩展 B、P3 可选扩展 B、P9 14.6 | 浏览器/设备认证、Token 刷新、安全存储和凭据隔离 |
+| Crash Handler | P10 15.5 | 脱敏崩溃诊断、最后事件序号、状态保存和恢复说明 |
+| Tracing / Telemetry | P10 15.3、15.6 | 模型、工具、MCP、Workspace 的关联追踪、性能和成本分析 |
+| Update / Announcements / Version | P2 可选扩展 C、P11 可选扩展 D/F | 更新检查、验证、切换、回滚、版本公告和迁移提示 |
+| Hardened Release | P11 可选扩展 C～E | 多平台产物、签名、依赖与许可、调试符号、发布加固和可复现构建 |
+
 ## 执行进度总览
 
-> **当前下一任务：8.5 Token Budget、自动压缩与上下文解释。**
+> **当前下一任务：8.6 本地工具 Renderer 合集。**
 
 ### 当前能力基线
 
@@ -81,6 +209,8 @@
 - [x] 5.3 工具错误恢复增强：细分错误类型、重试策略、退避规则和恢复建议，提升模型从失败中恢复的能力
 - [x] 5.4 回放基准扩充（在 5.2、5.3 后执行）：补充权限错误、空结果循环、参数修正、反思换路和安全停止等固定评测场景
 - [x] P0 阶段验收：验证 ReAct 可靠性增强不破坏权限、安全熔断、短任务性能和现有回放基线
+- [ ] P0 可选扩展 A — Sampler 对照实验：在相同 Prompt、工具和随机种子条件下比较模型、temperature、reasoning effort 与重试策略，记录成功率、Token、延迟和行为差异
+- [ ] P0 可选扩展 B — 性能基准：为长上下文组装、流式解析、工具 Schema 生成和 Replay 建立基准，只有测出热点后才进行缓存或底层优化
 
 ### P1：Conversation Runtime 与完整状态管理
 
@@ -99,6 +229,8 @@
 - [x] 6.16 状态序列化、版本迁移与恢复协议：让 Conversation、Turn、Task 等状态可持久化、可升级并能在重启后安全恢复
 - [x] 6.17-6.20 QueryEngine、ModelAdapter、StreamEvent 与 CLI 主链路迁移：合并开发跨 Turn 编排器、模型适配层、分层流事件和 CLI 主执行路径，避免先迁移 CLI 后再重改流式与模型协议
 - [x] P1 阶段验收：确认完整状态体系可观察、可恢复，并保持现有同步 ReAct 调用兼容
+- [ ] P1 可选扩展 A — Provider 能力协商：ModelAdapter 声明工具调用、Reasoning、Prompt Cache、上下文窗口、流式 Usage 和结构化输出差异，运行时按能力降级而不是散落 Provider 判断
+- [ ] P1 可选扩展 B — Chat State 查询：在快照恢复之外支持按 Session、Turn、Tool、Artifact 和结束原因查询历史，为调试与后续 UI 提供只读视图
 
 ### P2：配置、指令文件与 CLI 产品化
 
@@ -110,6 +242,9 @@
 - [x] 7.4 非交互 `exec`、stdin 管道与 JSON 输出：支持脚本、CI、批处理、`--json` 事件流、最终结果输出文件和 shell completion
 - [x] 7.5 Git / Review / Commit / PR 工作流：合并开发 diff review、stage/unstage、commit message、branch、PR 描述和 CI 失败分析入口
 - [x] P2 阶段验收：确认终端版具备可恢复、可配置、可脚本化、可审查和可日常高频使用的产品体验
+- [ ] P2 可选扩展 A — Model Catalog：从 Provider 获取并缓存模型列表、能力、上下文窗口和价格信息，支持搜索与切换；离线或接口失败时保留上次可用配置
+- [ ] P2 可选扩展 B — 认证流程：除 API Key 外研究浏览器/设备授权、Token 刷新、退出和本地安全存储，认证状态与 Agent Runtime 分离
+- [ ] P2 可选扩展 C — 版本与公告：实现 `--version`、兼容性提示、版本化迁移公告和重要安全通知；非交互模式只能输出到结构化事件或 stderr，不污染结果
 
 ### P3：本地执行安全、沙箱与上下文治理
 
@@ -119,82 +254,130 @@
 - [x] 8.4 ChangeSet、Patch 与 `/undo`：记录受管文件变更、生成可审查 Patch、支持按变更集撤销并处理冲突
 - [x] 8.4A.1 统一终止原因与结束可观测性：区分 completed、yielded、blocked、failed、cancelled，所有结束路径必须显示并持久化原因
 - [x] 8.4A.2 空模型回复与异常完成恢复：空内容且无工具调用不得标记完成，记录 provider finish reason，有限恢复后明确阻塞
-- [ ] 8.5 Token Budget、自动压缩与上下文解释：合并开发上下文预算、超长工具结果 Artifact 化、自动 compact、prompt cache 策略和上下文来源说明
-- [ ] 8.4A.3 SegmentResult 与安全让出：把工具轮次/上下文段上限从“终止任务”改为 yielded 检查点，不把内部换段暴露为任务失败
-- [ ] 8.4A.4 QueryEngine 自动续段与基础完成门禁：压缩后自动继续同一任务，只有明确完成、阻塞、失败或取消才把控制权交回用户
-- [ ] 8.4A 阶段验收：确认长工具任务不会静默结束或因单段轮次耗尽而假完成，简单任务无额外续跑开销
+- [x] 8.5 Token Budget、自动压缩与上下文解释：合并开发上下文预算、超长工具结果 Artifact 化、自动 compact、prompt cache 策略和上下文来源说明
+- [x] 8.4A.3 SegmentResult 与安全让出：把工具轮次/上下文段上限从“终止任务”改为 yielded 检查点，不把内部换段暴露为任务失败
+- [x] 8.4A.4 QueryEngine 自动续段与基础完成门禁：压缩后自动继续同一任务，只有明确完成、阻塞、失败或取消才把控制权交回用户
+- [x] 8.4A 阶段验收：确认长工具任务不会静默结束或因单段轮次耗尽而假完成，简单任务无额外续跑开销
 - [ ] 8.6 本地工具 Renderer 合集：合并开发 FileRead、FileEdit、Search、Shell、动态活动描述和纯文本降级渲染
 - [ ] P3 阶段验收：确认本地工具执行有确定性安全边界、可撤销、可取消、可解释，长结果不会污染模型上下文，且所有任务结束原因可见
+- [ ] P3 可选扩展 A — OS 级沙箱：在应用层路径策略之外，研究 Windows Job Object、受限进程、Linux namespace/seccomp 或容器隔离；用真实逃逸测试验证文件、进程和网络边界
+- [ ] P3 可选扩展 B — Secrets Store：集中读取、引用和轮换 API Key/Token，工具只获得所需凭据句柄，敏感值不得进入 Prompt、Artifact、事件或异常文本
+- [ ] P3 可选扩展 C — Git 状态加速：研究基于 Git 对象库或增量索引读取 status/diff，比较 subprocess Git 的正确性、性能和跨平台维护成本后再决定是否替换
+
+### P3.5：Runtime、Workspace 与事件内核收敛
+
+- [ ] 8.7 `[核心]` AgentLoop 职责拆分：依次提取 ModelTurnDriver、ToolCallCoordinator、RecoveryPolicy 和 ContextPreparationService，AgentLoop 只保留单 Segment 状态编排
+- [ ] 8.8 `[核心]` RuntimeState 拆分：按 Application、Conversation、Turn、Loop、Permission 和 Cancellation 移动定义，保留兼容导出且不改变状态语义
+- [ ] 8.9 `[核心]` WorkspaceRuntime 与 EffectRecord：统一 File、Shell、Git 的授权、执行、变更记录、检查点和撤销边界
+- [ ] 8.10 `[核心]` RuntimeEvent 与 ExecutionJournal：为 CLI、JSONL、Replay 和未来协议入口提供带版本、顺序号和状态关联的统一事实记录
+- [ ] 8.11 `[核心]` Secret Redaction 与内容信任标签基础：敏感信息在日志和事件输出前脱敏，外部工具结果默认标记为不可信内容
+- [ ] P3.5 阶段验收：重构不改变既有用户行为和 Replay 结果，所有副作用经过 WorkspaceRuntime，CLI 不再依赖 AgentLoop 私有实现
+- [ ] P3.5 可选扩展 A — SQLite Journal：把追加事件、Turn/Tool/Checkpoint 索引和恢复游标写入 SQLite，练习事务、并发读取、Schema Migration 和损坏恢复；核心版继续使用 JSONL，不要求数据库化
+- [ ] P3.5 可选扩展 B — Hunk Tracker：记录每次文件编辑具体影响的代码块、来源 Tool Call、前后摘要和后续覆盖关系，用于精确 Diff、局部撤销和判断“某段代码是谁改的”
+- [ ] P3.5 可选扩展 C — Codebase Graph：从 import、调用、符号引用和文件关系建立轻量代码图谱，先支持 Python，再评估增量更新和跨语言索引；用于研究图谱检索是否比文本搜索更有效
+- [ ] P3.5 可选扩展 D — Fast Workspace Snapshot：为大仓库研究 reflink/硬链接/增量复制或 Git 对象复用，比较完整复制、Git Worktree 和增量快照的创建速度、磁盘占用与清理可靠性
+- [ ] P3.5 可选扩展 E — File Watcher：监听指令文件、配置、Skill、插件和已读代码的外部变化，精确失效缓存并发布 RuntimeEvent；需要处理事件合并、编辑器临时文件和跨平台差异
 
 ### P4：MCP、Skills 与 Plugin 分发
 
-- [ ] 9.1 MCP Client 与连接治理：支持 stdio / HTTP / SSE / WebSocket 连接、能力发现、动态工具更新、鉴权、重连、限流和错误隔离
-- [ ] 9.2 Skills 模块化与发现状态：合并开发 Skill 格式、渐进式加载、显式/隐式触发、SkillDiscoveryState、资源预算和禁用策略
-- [ ] 9.3 工具 Schema 按需装载与 Tool Search：根据任务、Skill、MCP server 和阶段延迟暴露工具，减少 schema token 浪费
-- [ ] 9.4 Plugin Manifest、安装与启停：支持插件打包 Skills、MCP 配置、资源、UI 元数据、权限声明、依赖和版本
-- [ ] 9.5 MCP / Skill / Plugin Renderer：统一展示来源、连接状态、激活原因、工具进度、权限请求和远程错误
-- [ ] P4 阶段验收：确认外部工具生态可安装、可禁用、可解释、可审计，并不会绕过核心权限和沙箱
+- [ ] 9.1 `[核心最小版]` MCP Client：先支持一个 stdio Server 的 initialize、工具发现、调用和 shutdown，并复用权限、超时、Artifact 与错误隔离
+- [ ] 9.2 `[核心]` Skills 模块化与发现状态：支持本地 Skill 格式、显式触发、渐进加载、SkillDiscoveryState、资源预算和禁用策略
+- [ ] 9.3 `[核心]` 工具 Schema 按需装载与 Tool Search：根据任务、Skill、MCP Server 和执行阶段延迟暴露工具，减少固定 Schema 成本
+- [ ] 9.4 `[核心最小版]` Plugin Manifest：支持本地插件描述、Skills/MCP 配置打包、权限声明、启用和禁用
+- [ ] 9.5 `[核心最小版]` MCP / Skill / Plugin Renderer：展示来源、连接状态、激活原因、权限请求和远程错误
+- [ ] P4 核心阶段验收：一个本地 Skill 和一个真实 stdio MCP Server 可端到端使用，且不能绕过核心权限和 Workspace 边界
+- [ ] P4 可选扩展 A — MCP 多传输：在 stdio 验收后分别增加 Streamable HTTP、SSE 和 WebSocket，统一连接状态、请求取消、流式结果、断线语义和 Transport 无关测试
+- [ ] P4 可选扩展 B — MCP 连接治理：支持多个 Server 的启动顺序、能力变化通知、自动重连、指数退避、限流、健康检查和单 Server 故障隔离，避免一个外部服务拖垮整个 Agent
+- [ ] P4 可选扩展 C — MCP 鉴权与密钥：实现 OAuth、访问令牌刷新、环境变量引用、敏感字段脱敏和按 Server 的凭据边界；凭据不得进入模型上下文、Journal 或普通日志
+- [ ] P4 可选扩展 D — Plugin 生命周期：支持本地安装、卸载、启用、禁用、版本约束、依赖检查、升级和失败回滚，并明确插件代码与配置的权限声明
+- [ ] P4 可选扩展 E — Plugin Marketplace：实现本地或远程索引、搜索、版本展示、来源校验、安装确认和更新检查；不默认执行第三方安装脚本
+- [ ] P4 可选扩展 F — Skill 智能发现：研究显式名称、任务分类、语义匹配和历史成功率等触发方式，记录为何激活、加载了哪些资源以及带来的 Token 成本
+- [ ] P4 可选扩展 G — Prompt Queue：用户可在模型或工具仍运行时排队追加消息、修改后续要求或请求中断；队列必须定义消息顺序、当前 Turn 归属和取消后的处理方式
 
 ### P5：长任务规划、工作记忆与任务恢复
 
-- [ ] 10.0 TaskRouter 与自动规划策略：按 simple、standard、planned、durable 路由任务，支持 planning_mode=auto|always|never 和显式 `/plan`
-- [ ] 10.1 TaskState 与 WorkingMemory：合并开发任务目标、步骤、发现、产物、阻塞、临时事实和压缩注入策略
-- [ ] 10.2 外层 Planner、计划 Diff 与重规划：在 AgentLoop 外部拆解任务、调度步骤、反思失败、调整计划并保留简单任务轻量路径
-- [ ] 10.2A TaskRunner、计划感知 CompletionGate 与持续执行：模型最终回复只作为完成提议，必须验证计划步骤、验收条件和证据后才能结束
-- [ ] 10.3 用户干预、暂停与恢复：支持确认、修改、跳过、重试、暂停、从检查点恢复和不可恢复原因报告
-- [ ] 10.4 PlannerRenderer 与 TaskProgressRenderer：展示目标、步骤、当前动作、计划变化、完成比例、Usage、Artifacts 和阻塞原因
-- [ ] P5 阶段验收：确认复杂任务能跨 Turn 执行和恢复，用户能看懂计划变化，简单任务不会被强制 Planner 化
+- [ ] 10.0 `[核心]` TaskRouter 与自动规划策略：区分 simple、standard、planned 和 durable，简单任务不承担 Planner 开销
+- [ ] 10.1 `[核心]` TaskState 与 WorkingMemory：记录目标、步骤、发现、证据、产物、阻塞和压缩注入来源
+- [ ] 10.2 `[核心最小版]` 外层 Planner 与重规划：只为复杂任务拆解步骤、调整计划，并保留轻量路径
+- [ ] 10.2A `[核心]` TaskRunner、CompletionProposal 与 CompletionGate：模型最终回复只是完成提议，必须验证步骤、失败、验收条件和证据
+- [ ] 10.3 `[核心]` 暂停、恢复与 Checkpoint：支持暂停、继续、重试和不可恢复原因报告
+- [ ] 10.4 `[核心最小版]` TaskProgressRenderer：展示目标、当前步骤、证据、产物和阻塞原因
+- [ ] P5 核心阶段验收：复杂任务能持续和恢复，完成状态有证据，简单任务不被强制 Planner 化
+- [ ] P5 可选扩展 A — 交互式计划管理：显示新旧计划 Diff，允许确认、修改、跳过、重排和重试步骤，并记录用户干预如何改变 CompletionGate
+- [ ] P5 可选扩展 B — 任务依赖图：步骤不再只有线性顺序，而是声明依赖、可并行条件、验收证据和阻塞传播；Renderer 展示当前可执行节点和关键路径
+- [ ] P5 可选扩展 C — 成本与进度估算：结合历史 Replay、模型调用、工具耗时和剩余步骤估算完成比例、Token 和时间，并明确估算置信度而不是显示虚假精确值
+- [ ] P5 可选扩展 D — Durable Task：任务跨进程重启继续，支持租约、恢复所有者、重复执行保护、外部状态变化检查和人工接管
+- [ ] P5 可选扩展 E — 多 Planner 策略评测：比较直接执行、规则路由、单模型规划和专用规划模型，以成功率、调用成本、重规划次数和简单任务额外开销决定是否启用
 
 ### P6：异步、并发、后台任务与自动化
 
-- [ ] 11.1 Async Agent Loop 与只读工具并发：合并开发 `async_run()`、同步兼容、低风险只读并发和顺序回填策略
-- [ ] 11.2 ToolCallScheduler、后台进程与取消传播：统一调度并发工具、后台进程、模型流、CancellationController 和资源清理
-- [ ] 11.3 Circuit Breaker 与外部依赖降级：覆盖 Provider、MCP Server、网络工具和后台服务的熔断、半开探测和手动恢复
-- [ ] 11.4 Automations、定时任务与事件触发：支持 recurring task、monitor、webhook/channel trigger、失败重试、通知和运行历史
-- [ ] 11.5 ConcurrentToolsRenderer 与 BackgroundProcessRenderer：展示并发工具、后台任务、日志 Artifact、退出码、取消和失败原因
-- [ ] 11.6 基于 prompt_toolkit 的异步交互式终端 TUI：在 async_run() 和任务调度稳定后，实现固定底部输入框、状态栏和 Esc 异步取消
-- [ ] P6 阶段验收：确认异步、并发、后台与自动化任务可观察、可取消、可恢复，且写操作不会错误并发
+- [ ] 11.1 `[核心]` Async Agent Loop：实现 `async_run()`、异步模型调用和同步兼容入口；核心版工具仍按顺序执行
+- [ ] 11.2 `[核心]` 异步子进程与取消传播：持续读取 stdout/stderr，支持超时、真实终止、子进程清理和 CancellationController 传播
+- [ ] 11.3 `[核心最小版]` ExecutionSupervisor 与后台 ProcessHandle：统一模型、工具和进程生命周期，不实现完整任务平台
+- [ ] P6 核心阶段验收：现有 CLI 行为不变，长 Shell 能被真正取消，资源与 Journal 状态完整
+- [ ] P6 可选扩展 A — 只读工具并发：ToolCallScheduler 根据只读声明、路径集合和依赖关系并发执行 search/read 等工具，结果按原 Tool Call 顺序回填；所有写操作、Shell 和 Git 默认串行
+- [ ] P6 可选扩展 B — 写操作冲突控制：对文件、Git index、branch 和 Workspace Checkpoint 建立资源锁与冲突检测，禁止两个任务同时修改同一目标后静默覆盖
+- [ ] P6 可选扩展 C — Circuit Breaker：按 Provider、MCP Server 和网络工具统计连续失败与失败率，支持 Closed/Open/Half-Open、冷却时间、半开探测和用户手动恢复
+- [ ] P6 可选扩展 D — Automations：实现一次性定时、周期任务和事件触发；记录触发来源、权限 Profile、运行历史、失败重试、错过触发处理和通知结果
+- [ ] P6 可选扩展 E — 后台任务中心：列出后台进程和 Agent Task 的状态、开始时间、日志 Artifact、退出码、资源占用、取消入口和恢复入口，程序退出前明确处理仍运行的任务
+- [ ] P6 可选扩展 F — PTY 终端执行：为需要交互式终端、ANSI 控制、窗口尺寸或持续输入的命令提供伪终端，处理 Windows/Unix 差异、resize、Ctrl+C、进程树终止和原始输出记录
+- [ ] P6 可选扩展 G — 全屏鼠标 TUI：实现占满终端窗口的交互界面，支持鼠标点击、选择、滚轮浏览和面板切换；界面包含固定输入区、可滚动执行时间线、工具详情折叠、Diff 预览、权限弹窗、会话选择、后台任务面板和上下文/Usage 状态栏，同时保留完整键盘操作以及非 TTY 纯文本降级
+- [ ] P6 可选扩展 H — 系统电源与长任务保护：长任务期间按配置阻止系统休眠，任务结束或异常退出后恢复原状态，并保证没有残留电源锁
 
 ### P7：多 Agent 协作与 Worktree 隔离
 
-- [ ] 12.1 Sub-Agent / TaskTool 与子 Agent 状态：合并开发委派协议、独立上下文、权限边界、Usage 汇总、取消传播和结构化结果
-- [ ] 12.2 Git Worktree 隔离与合并审查：支持子 Agent 独立分支/工作树、测试、Diff、冲突检查、合并前审核和失败清理
-- [ ] 12.3 Swarm / Agent Team 编排：支持多 Agent 依赖图、角色、并行/串行调度、共享事实、冲突结论处理和资源上限
-- [ ] 12.4 SubAgentRenderer 与 SwarmRenderer：展示 Agent 拓扑、任务分配、状态、成本、阻塞、证据和整体收敛
-- [ ] P7 阶段验收：确认多 Agent 可控、可核验、可取消、可清理，并能在大任务中带来可衡量收益
+- [ ] 12.1 `[可选基础]` 单 Agent Git Worktree 隔离：记录基线 Commit，创建独立 Branch/Worktree，在隔离目录修改和运行测试，生成 Diff 与证据；合并前检查用户工作区变化、冲突和失败清理
+- [ ] 12.2 `[可选进阶]` Sub-Agent / TaskTool：实现独立上下文、权限边界、Usage 汇总、取消传播和结构化结果
+- [ ] 12.3 `[可选高级]` Agent Team：限制在少量角色清晰的 Agent，定义任务依赖、并行/串行调度、共享事实来源、预算上限、失败传播和主 Agent 最终核验
+- [ ] 12.4 `[可选研究]` Swarm 与可视化 Renderer：研究动态分工、结论冲突、重复劳动检测、停止条件和整体收敛，并展示拓扑、状态、成本、证据及未解决分歧
+- [ ] P7 可选阶段验收：只有实测证明隔离或多 Agent 带来可衡量收益时才算完成；P7 不属于核心学习版发布门槛
 
 ### P8：浏览器、Computer Use、Web 测试与 CI 集成
 
-- [ ] 13.1 Browser Controller 与网页调试：支持打开页面、点击、输入、截图、DOM 检查、控制台日志和本地 Web App 冒烟测试
-- [ ] 13.2 Computer Use 高风险能力边界：支持桌面应用操作前的显式授权、录屏/截图证据、敏感区域保护和失败回退
-- [ ] 13.3 Web / CI / GitHub 集成：支持 CI 失败分析、PR 自动审查、issue/PR 触发任务、状态回写和安全凭据边界
-- [ ] 13.4 浏览器与 CI Renderer：展示页面状态、截图、测试结果、PR 评论、CI 日志和可复现证据
-- [ ] P8 阶段验收：确认 Agent 能处理真实 Web/CI 工作流，但浏览器、电脑操作和远程集成都受权限、审计和回放约束
+- [ ] 13.1 `[可选基础]` Browser Controller：通过稳定的浏览器协议完成打开页面、点击、输入、截图、DOM/可访问性树检查、控制台日志和本地 Web App 冒烟测试；每个动作记录页面和证据
+- [ ] 13.2 `[可选高风险]` Computer Use：只在 CLI、API、浏览器协议和 MCP 无法完成时启用；操作前显式授权，保护密码框等敏感区域，并保存截图证据、失败回退和审计记录
+- [ ] 13.3 `[可选进阶]` Web / CI / GitHub 集成：读取 CI 状态与日志、生成 PR Review、从 issue/PR 触发任务并回写结果；区分只读分析和会影响外部人员的写操作授权
+- [ ] 13.4 `[可选展示]` 浏览器与 CI Renderer：把页面状态、关键截图、测试结果、PR 评论、CI 日志摘要和复现步骤关联到同一 Task，而不是只展示工具原始输出
+- [ ] 13.5 `[可选可视化]` Mermaid 渲染：识别回答中的 Mermaid，转换为 SVG/终端可读降级结果，处理字体、主题、超大图和不可信图表输入；失败时保留原始源码
+- [ ] 13.6 `[可选多模态]` PDF/图片查看：把 PDF 页和图片作为 Artifact，支持元数据、页级提取、缩略图和按需渲染，避免完整二进制或 OCR 文本直接进入上下文
+- [ ] 13.7 `[可选交互]` 语音输入：语音只作为用户输入适配器，明确录音开始/结束、转写确认、隐私和取消；不得在未确认时把误识别文本直接作为高风险操作指令
+- [ ] P8 可选阶段验收：外部 MCP 已能满足需求时无需自建；P8 不属于核心学习版发布门槛
 
 ### P9：Client API、App Server 与桌面客户端
 
-- [ ] 14.1 App Server / 本地桥接协议：为 CLI、桌面和未来 Web UI 提供提交消息、取消、权限、会话、任务、Artifact 和事件订阅 API
-- [ ] 14.2 Desktop Client 边界与主工作台：桌面端只作为 QueryEngine 前端，展示会话、Turn、任务、Usage、Artifacts、恢复入口和错误状态
-- [ ] 14.3 桌面权限、取消与工具进度界面：复用 PermissionState、CancellationController、EventBus 和 RendererRegistry，不复制运行时状态机
-- [ ] 14.4 Artifact / Diff / 日志 / Replay 查看器：提供长内容、Patch、测试日志、后台任务日志和回放记录的专门视图
-- [ ] 14.5 桌面端端到端验收：覆盖 CLI 与桌面行为一致性、重启恢复、权限请求、取消、后台任务和桥接层异常
-- [ ] P9 阶段验收：确认桌面端与终端版共享同一核心运行时，UI 异常不改变 Agent 执行结果
+- [ ] 14.0 `[核心最小版]` ACP stdio Server：支持 initialize、session new/load、prompt、RuntimeEvent update、permission 和 cancel，用标准客户端验证多入口共享同一 Runtime
+- [ ] 14.1 `[可选基础]` App Server / 本地桥接协议：提供提交消息、取消、权限、会话、任务、Artifact 和事件订阅 API；定义版本协商、断线恢复、背压和本机访问控制
+- [ ] 14.2 `[可选产品]` Desktop Client 主工作台：只作为 QueryEngine 前端，不复制状态机
+- [ ] 14.3 `[可选产品]` 桌面权限、取消和工具进度界面：复用已有 Permission、Cancellation 和 Event 协议
+- [ ] 14.4 `[可选产品]` Artifact / Diff / 日志 / Replay 查看器：按来源、Turn 和 Tool Call 浏览长结果、Patch、测试日志、Checkpoint 和 Replay，并支持只读导出
+- [ ] 14.5 `[可选验收]` CLI、ACP、App Server 和桌面行为一致性测试：相同输入和权限决定应得到一致状态转换，客户端崩溃或断线不得改变 Runtime 结果
+- [ ] 14.6 `[可选认证]` 浏览器登录与本地凭据管理：实现设备/浏览器授权、Token 刷新、退出登录和凭据存储抽象；模型、插件和普通日志不得读取原始凭据
+- [ ] P9 核心阶段验收：一个 ACP Client 能完成提示、流事件、工具权限和取消；桌面端不属于核心发布门槛
 
 ### P10：企业治理、安全审计与可运维性
 
-- [ ] 15.1 Secret Redaction、外部内容隔离与 Prompt Injection 防护：把网页、MCP、日志、工具输出视为不可信输入并记录来源
-- [ ] 15.2 Governance、Managed Config 与审计日志：支持组织级策略、禁止覆盖项、权限审计、数据保留和导出
-- [ ] 15.3 Telemetry、性能指标与成本报表：记录成功率、延迟、Token、费用、工具耗时、失败原因和阶段对比
-- [ ] 15.4 安全扫描与发布门禁：集成 SAST/依赖扫描/自定义安全 review，生成可追踪发现和修复证据
-- [ ] P10 阶段验收：确认系统具备企业可控性、安全审计和长期运维能力
+- [ ] 15.1 `[核心基础]` Secret Redaction、外部内容隔离与 Prompt Injection 防护：网页、MCP、日志和工具输出默认不可信并记录来源
+- [ ] 15.2 `[可选企业]` Governance、Managed Config 与审计日志：区分管理员强制策略和用户配置，记录禁止覆盖项、权限决定、数据保留周期、审计查询和导出
+- [ ] 15.3 `[可选运维]` Telemetry、性能指标与成本报表：在用户可关闭和隐私脱敏前提下，统计成功率、延迟、Token、费用、工具耗时、恢复次数和失败趋势，并区分本地指标与远程上传
+- [ ] 15.4 `[可选发布]` SAST、依赖扫描、自定义安全 Review 和发布门禁：对源码、依赖、发布产物和密钥泄露进行检查，保留发现、处理决定和修复证据
+- [ ] 15.5 `[可选稳定性]` Crash Handler：捕获未处理异常、保存脱敏诊断信息、当前状态和最后事件序号，重启时说明是否可恢复；不得上传源代码、Prompt 或密钥
+- [ ] 15.6 `[可选性能]` Tracing 与性能剖析：为模型、工具、MCP、Workspace 和渲染建立关联 Span，定位延迟和资源热点；只有发现真实性能问题时才增加采样器或专用内存分配器研究
+- [ ] P10 核心阶段验收：核心版只要求敏感信息不进入日志、外部内容不能提升为可信指令；企业治理不属于发布门槛
 
 ### P11：最终产品验收与发布
 
-- [ ] 16.1 端到端基准与真实任务套件：覆盖代码理解、修改、测试、PR、Web 调试、长任务、多 Agent、恢复和桌面操作
-- [ ] 16.2 兼容性与迁移验证：覆盖 Windows、WSL、macOS/Linux、不同 shell、旧会话、旧配置和旧记忆数据
-- [ ] 16.3 用户文档、示例项目与故障排查：补齐终端版、桌面版、插件、MCP、权限、安全和自动化文档
-- [ ] 16.4 发布检查清单：确认安装、升级、回滚、隐私、安全、性能、可观测性和支持流程
-- [ ] P11 阶段验收：确认 zzm-agent 达到可长期日常使用的终端版和桌面版最终产品标准
+- [ ] 16.1 `[核心]` 核心端到端基准：代码理解、修改、测试、长任务、恢复、权限、取消、ACP 和最小 MCP
+- [ ] 16.2 `[核心最小版]` 兼容性与迁移：覆盖当前主要 Windows 环境、旧会话、旧配置和旧记忆；其他平台按实际条件验证
+- [ ] 16.3 `[核心]` 学习总结、用户文档、示例和故障排查：解释架构取舍、失败案例、当前边界和扩展入口
+- [ ] 16.4 `[核心]` 个人学习版发布检查：安装、升级、回滚、隐私、安全、测试和已知限制
+- [ ] P11 核心阶段验收：发布可长期自用的终端 Agent，不要求桌面、多 Agent、Browser、Automations 或企业能力完成
+- [ ] P11 可选扩展 A — 完整兼容矩阵：在 Windows、WSL、macOS、Linux 和不同 Shell 上验证路径、权限、PTY、信号、编码、安装、升级和恢复，并明确未支持组合
+- [ ] P11 可选扩展 B — 完整真实任务套件：覆盖桌面、多 Agent、Browser、CI、Automations、外部 MCP 故障和跨进程恢复，以成功率、人工接管次数、成本和耗时评估收益
+- [ ] P11 可选扩展 C — 多平台发布产物：构建独立可执行文件或平台安装包，校验版本、签名、依赖、调试符号和可复现构建；源码安装继续作为基础降级路径
+- [ ] P11 可选扩展 D — 自动更新：区分检查、下载、验证、切换和回滚步骤，支持稳定/预览通道；更新失败不得破坏当前可运行版本
+- [ ] P11 可选扩展 E — 发布加固：研究最小权限、依赖裁剪、二进制签名、漏洞响应、第三方许可清单和安全发布 Profile，并保留可调试所需的符号与诊断信息
+- [ ] P11 可选扩展 F — 公告与变更日志：启动时按版本展示重要迁移、安全公告和功能变化，记录已读状态但不干扰非交互执行
+- [ ] P11 可选扩展 G — 隐私与支持流程：说明本地数据、日志、Telemetry、凭据和崩溃报告边界，提供诊断导出、数据删除、漏洞报告和已知问题入口
 
 ---
 
@@ -1348,12 +1531,16 @@ tool call -> 参数解析 -> schema 校验 -> 风险分级 -> 权限确认 -> �
 - 重复调用、连续失败、权限拒绝和取消继续作为安全信号，但必须区分可恢复让出与不可恢复停止；
 - 同步 `run()` 保持兼容，新的分段协议供 QueryEngine 和后续异步入口使用。
 
+完成记录：已增加 `SegmentResult`、可持久化检查点、工具轮次与上下文安全让出；重复循环、失败、权限和取消仍保持原安全语义。功能说明见 `docs/8.4A.3-segment-result-safe-yield.md`。
+
 #### 8.4A.4 QueryEngine 自动续段与基础完成门禁
 
 - QueryEngine 消费 `SegmentResult`；收到 yielded 时调用 8.5 压缩能力，保存事实来源并自动继续同一用户任务；
 - 空回复、单段轮次耗尽、上下文压缩和一次工具批次完成都不能单独成为任务完成条件；
 - 简单问答和明确的小修改仍走轻量路径，不产生额外 Planner 调用；
 - 当前基础门禁负责协议完整性和显式阻塞；基于计划步骤与验收证据的完整完成判定由 10.2A 实现。
+
+完成记录：QueryEngine 已能压缩并自动消费 yielded 段，拒绝空完成结果，简单任务保持单次模型调用，并用可配置保险丝把无界续段转为明确阻塞。功能说明见 `docs/8.4A.4-query-engine-auto-continuation.md`。
 
 验收要求：
 
@@ -1363,9 +1550,13 @@ tool call -> 参数解析 -> schema 校验 -> 风险分级 -> 权限确认 -> �
 - 相同调用死循环、连续失败、用户取消和权限边界保持有效；
 - Replay 固定覆盖正常完成、空回复恢复、provider 截断、yielded 续段、明确阻塞和安全停止。
 
+完成记录：新增 `tests/test_84a_acceptance.py`，覆盖超长工具结果 Artifact 化、检查点、压缩、自动续段、Provider 截断恢复和重复循环阻塞；完整回归 `348 passed, 2 skipped`。功能说明见 `docs/8.4A-stage-acceptance.md`。
+
 ### 8.5 Token Budget、自动压缩与上下文解释
 
 预算分区至少包括 system prompt、指令文件、记忆、pinned context、历史消息、tool schema、tool result、reflection prompt 和 output reserve。大结果进入 Artifact，模型只接收摘要、关键片段和引用。自动 compact 必须保留事实来源。
+
+完成记录：已实现结构化预算分区、输出预留、超长工具结果 Artifact 化、来源链接、自动压缩、Prompt Cache 策略说明和 `/status` 上下文解释。功能说明见 `docs/8.5-token-budget-auto-compact.md`。
 
 ### 8.6 本地工具 Renderer 合集
 
@@ -1729,4 +1920,4 @@ P11 是最终路线的收口，不新增大架构，只验证终端版和桌面�
 - 安全边界和已知限制已经记录；
 - 可观测性能够解释执行过程和失败原因。
 
-路线图中的后置能力均为正式计划的一部分。阶段顺序用于控制架构风险和实施依赖，不表示后续能力可以被永久搁置或删除。
+P0～P11 的完整能力地图都保留在“执行进度总览”。标记为 `[核心]`、`[核心最小版]` 的任务构成默认学习路线；标记为“可选扩展”“可选基础”“可选进阶”或“可选研究”的任务可以永久不实现，但始终保留在对应 P 模块下，作为差距清单和后续学习入口。

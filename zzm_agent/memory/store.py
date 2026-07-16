@@ -1,9 +1,11 @@
 from __future__ import annotations
 
 import json
+import re
 from pathlib import Path
 from typing import Any
 
+from zzm_agent.core.context_budget import ContextBudget, ContextBudgetEntry
 from zzm_agent.core.observability import UsageState
 from zzm_agent.core.runtime_state import MemoryLoadState
 from zzm_agent.memory.episodic_store import EpisodicStore
@@ -362,35 +364,187 @@ class MemoryStore:
         system_prompt: str,
         user_input: str,
         memory_limit: int | None = None,
+        *,
+        tool_schema_tokens: int = 0,
+        output_reserve_tokens: int = 0,
+        runtime_instruction_tokens: int = 0,
+        prompt_cache_strategy: str = "stable_prefix",
     ) -> tuple[list[dict[str, Any]], dict[str, Any]]:
-        """Assemble one model turn, compressing older history when needed."""
+        """组装一次模型请求，并返回消息列表与可解释的上下文预算。
+
+        组装顺序为系统提示词、项目指令、检索记忆、PinnedContext、压缩后的历史和
+        当前用户输入。计算历史可用空间时会预先扣除工具 Schema、运行时指令与
+        模型输出预留，避免“消息看似未超限，但发送时加上工具定义后超限”。
+
+        返回的第二项包含压缩结果、各来源 Token 明细、Prompt Cache 策略以及
+        指令文件、记忆、压缩历史和 Artifact 等来源记录。Token 数均为本地估算，
+        最终账单仍以 Provider usage 为准；当历史预算为零时会尽量保留由
+        PinnedContext 提取的关键事实。
+        """
+        # 1. 先装入不可随意删除的固定上下文和跨压缩关键事实。
         history = self.load_history()
-        messages: list[dict[str, Any]] = [{"role": "system", "content": system_prompt}]
+        system_messages = [{"role": "system", "content": system_prompt}]
+        messages: list[dict[str, Any]] = list(system_messages)
         memory_messages = self.build_memory_messages(query=user_input, limit=memory_limit)
         memory_load_state = self.memory_load_state
-        messages.extend(
-            self.build_instruction_messages(memory_load_state=memory_load_state)
+        instruction_messages = self.build_instruction_messages(
+            memory_load_state=memory_load_state
         )
+        messages.extend(instruction_messages)
         messages.extend(memory_messages)
         pinned = PinnedContext.from_turn(user_input=user_input, history=history)
         pinned_message = pinned.to_message()
         if pinned_message is not None:
             messages.append(pinned_message)
 
+        # 2. 从总窗口扣除固定消息、工具定义、运行时控制和输出空间，余额留给历史。
         reserved_messages = messages + [{"role": "user", "content": user_input}]
         reserved_tokens = self.estimate_messages_tokens(reserved_messages)
-        history_budget = max(self.max_context_tokens - reserved_tokens, 0)
+        history_budget = max(
+            self.max_context_tokens
+            - reserved_tokens
+            - max(0, int(tool_schema_tokens))
+            - max(0, int(output_reserve_tokens))
+            - max(0, int(runtime_instruction_tokens)),
+            0,
+        )
         compression = self.compress_history(history=history, budget_tokens=history_budget)
         messages.extend(compression["messages"])
-        messages.append({"role": "user", "content": user_input})
+        user_message = {"role": "user", "content": user_input}
+        messages.append(user_message)
+
+        # 3. 把压缩后的消息拆分类别，并建立使用者可查询的来源清单。
+        compressed_history = list(compression["messages"])
+        tool_result_messages = [
+            message for message in compressed_history if message.get("role") == "tool"
+        ]
+        history_messages = [
+            message for message in compressed_history if message.get("role") != "tool"
+        ]
+        sources = [
+            {
+                "source": source.source_type,
+                "path": source.path,
+                "version": source.version,
+            }
+            for source in memory_load_state.sources
+            if source.path
+        ]
+        if memory_messages:
+            sources.append(
+                {
+                    "source": "retrieved_memory",
+                    "count": len(memory_messages),
+                }
+            )
+        if pinned_message is not None:
+            sources.append({"source": "pinned_context", "preserved": True})
+        if compression.get("applied"):
+            sources.append(
+                {
+                    "source": "compressed_history",
+                    "raw_count": compression.get("raw_count", 0),
+                    "kept_recent_count": compression.get("kept_recent_count", 0),
+                    "strategy": compression.get("compression_strategy", "none"),
+                }
+            )
+        artifact_ids = sorted(
+            {
+                artifact_id
+                for message in compressed_history
+                for artifact_id in re.findall(
+                    r"\bArtifact\s+(artifact-[A-Za-z0-9]+)\b",
+                    str(message.get("content") or ""),
+                )
+            }
+        )
+        sources.extend(
+            {"source": "artifact", "artifact_id": artifact_id}
+            for artifact_id in artifact_ids
+        )
+        # 4. 用统一数据模型生成预算事实，供 AgentLoop、快照和 CLI 共同消费。
+        budget = ContextBudget(
+            max_context_tokens=self.max_context_tokens,
+            entries=(
+                ContextBudgetEntry(
+                    "system_prompt",
+                    self.estimate_messages_tokens(system_messages),
+                    "base system prompt",
+                ),
+                ContextBudgetEntry(
+                    "instruction_files",
+                    self.estimate_messages_tokens(instruction_messages),
+                    f"{len(instruction_messages)} instruction message(s)",
+                ),
+                ContextBudgetEntry(
+                    "memory",
+                    self.estimate_messages_tokens(memory_messages),
+                    f"{len(memory_messages)} retrieved memory message(s)",
+                ),
+                ContextBudgetEntry(
+                    "pinned_context",
+                    self.estimate_messages_tokens([pinned_message])
+                    if pinned_message is not None
+                    else 0,
+                    "facts preserved across compression",
+                ),
+                ContextBudgetEntry(
+                    "history_messages",
+                    self.estimate_messages_tokens(history_messages),
+                    f"{len(history_messages)} compressed/recent message(s)",
+                ),
+                ContextBudgetEntry(
+                    "tool_result",
+                    self.estimate_messages_tokens(tool_result_messages),
+                    f"{len(tool_result_messages)} tool result message(s)",
+                ),
+                ContextBudgetEntry(
+                    "user_input",
+                    self.estimate_messages_tokens([user_message]),
+                    "current request or internal continuation",
+                ),
+                ContextBudgetEntry(
+                    "tool_schema",
+                    max(0, int(tool_schema_tokens)),
+                    "available tool definitions",
+                ),
+                ContextBudgetEntry(
+                    "reflection_prompt",
+                    max(0, int(runtime_instruction_tokens)),
+                    "runtime-only language, reflection, and continuation controls",
+                ),
+                ContextBudgetEntry(
+                    "output_reserve",
+                    max(0, int(output_reserve_tokens)),
+                    "reserved model output capacity",
+                ),
+            ),
+            compression_applied=bool(compression.get("applied")),
+            compression_strategy=str(
+                compression.get("compression_strategy", "none")
+            ),
+            prompt_cache_strategy=prompt_cache_strategy,
+            sources=tuple(sources),
+        )
 
         return messages, {
             **compression,
             "reserved_tokens": reserved_tokens,
             "max_context_tokens": self.max_context_tokens,
-            "total_tokens": self.estimate_messages_tokens(messages),
+            "total_tokens": budget.total_tokens,
             "pinned_context": pinned_message["content"] if pinned_message else "",
             "memory_load_state": memory_load_state.to_record(),
+            "budget": budget.to_record(),
+            "budget_breakdown": {
+                entry.source: entry.tokens for entry in budget.entries
+            },
+            "context_sources": list(budget.sources),
+            "prompt_cache_strategy": budget.prompt_cache_strategy,
+            "output_reserve_tokens": max(0, int(output_reserve_tokens)),
+            "runtime_instruction_tokens": max(
+                0, int(runtime_instruction_tokens)
+            ),
+            "tool_schema_tokens": max(0, int(tool_schema_tokens)),
         }
 
     def _record_memory_file_version(

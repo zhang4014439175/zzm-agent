@@ -2,7 +2,11 @@ from types import SimpleNamespace
 from unittest.mock import MagicMock
 
 from zzm_agent.core.agent_loop import AgentLoop
-from zzm_agent.core.model_adapter import OpenAIChatCompletionsAdapter
+from zzm_agent.core.hooks import HookRegistry, HookResult, HookType
+from zzm_agent.core.model_adapter import (
+    ModelCapabilities,
+    OpenAIChatCompletionsAdapter,
+)
 from zzm_agent.core.model_stream import ModelStreamEventKind
 from zzm_agent.core.query_engine import QueryEngine
 from zzm_agent.core.state_serialization import StateSnapshotStore
@@ -136,6 +140,7 @@ def test_agent_loop_emits_tool_call_delta_events_for_native_stream(tmp_path):
 
     @registry.tool(description="echo")
     def echo(text: str) -> str:
+        """返回可预测结果，用于验证一次让出后的自动续段。"""
         return f"ECHO:{text}"
 
     store = MemoryStore(path=tmp_path / "memory.json", max_history=10)
@@ -253,6 +258,192 @@ def test_query_engine_persists_and_emits_empty_response_block(tmp_path):
     assert envelope.metadata["reason"] == "turn.blocked"
     assert result.events[-1].kind is ModelStreamEventKind.TERMINATION
     assert result.events[-1].metadata["reason"] == "empty_model_response"
+
+
+def test_query_engine_auto_continues_yielded_segment(tmp_path):
+    """验证内部 Segment 让出后会自动续跑，并且最终只发出一次完成终止事件。"""
+    registry = ToolRegistry()
+
+    @registry.tool(description="echo")
+    def echo(text: str) -> str:
+        """持续返回相同结果，用于制造达到自动续段保险丝的场景。"""
+        return f"ECHO:{text}"
+
+    store = MemoryStore(path=tmp_path / "memory.json", max_history=20, session_id="s1")
+    loop = AgentLoop(
+        client=MagicMock(),
+        model="test-model",
+        system_prompt="sys",
+        registry=registry,
+        store=store,
+        max_tool_iterations=1,
+    )
+    tool_call = SimpleNamespace(
+        id="call_1",
+        type="function",
+        function=SimpleNamespace(name="echo", arguments='{"text":"world"}'),
+    )
+    loop.client.chat.completions.create.side_effect = [
+        make_response(tool_calls=[tool_call], finish_reason="tool_calls"),
+        make_response(content="all done", finish_reason="stop"),
+    ]
+    engine = QueryEngine(
+        agent_loop=loop,
+        config={"agent": {"max_auto_continuations": 3}},
+    )
+
+    result = engine.submit_message("complete the task", stream=False)
+
+    assert result.reply == "all done"
+    assert [segment.status.value for segment in result.segments] == [
+        "yielded",
+        "completed",
+    ]
+    assert loop.client.chat.completions.create.call_count == 2
+    assert any(
+        event.kind is ModelStreamEventKind.STATUS
+        and event.text == "segment.yielded"
+        for event in result.events
+    )
+    termination_events = [
+        event
+        for event in result.events
+        if event.kind is ModelStreamEventKind.TERMINATION
+    ]
+    assert len(termination_events) == 1
+    assert termination_events[0].metadata["status"] == "completed"
+    second_messages = loop.client.chat.completions.create.call_args_list[1].kwargs[
+        "messages"
+    ]
+    assert any(
+        "CONTINUE_TASK_FROM_CHECKPOINT" in str(message.get("content") or "")
+        for message in second_messages
+    )
+
+
+def test_query_engine_blocks_when_auto_continuation_fuse_is_exhausted(tmp_path):
+    """验证连续让出达到保险丝上限时明确阻塞，并保留完整分段状态序列。"""
+    registry = ToolRegistry()
+
+    @registry.tool(description="echo")
+    def echo(text: str) -> str:
+        return f"ECHO:{text}"
+
+    store = MemoryStore(path=tmp_path / "memory.json", max_history=30, session_id="s1")
+    loop = AgentLoop(
+        client=MagicMock(),
+        model="test-model",
+        system_prompt="sys",
+        registry=registry,
+        store=store,
+        max_tool_iterations=1,
+    )
+    tool_call = SimpleNamespace(
+        id="call_repeat",
+        type="function",
+        function=SimpleNamespace(name="echo", arguments='{"text":"again"}'),
+    )
+    loop.client.chat.completions.create.return_value = make_response(
+        tool_calls=[tool_call],
+        finish_reason="tool_calls",
+    )
+    engine = QueryEngine(
+        agent_loop=loop,
+        config={"agent": {"max_auto_continuations": 2}},
+    )
+
+    result = engine.submit_message("keep working", stream=False)
+
+    assert result.turn is not None
+    assert result.turn.status.value == "blocked"
+    assert result.turn.termination is not None
+    assert result.turn.termination.reason == "auto_continuation_limit"
+    assert "已连续自动续段 2 次" in result.reply
+    assert [segment.status.value for segment in result.segments] == [
+        "yielded",
+        "yielded",
+        "blocked",
+    ]
+
+
+def test_query_engine_simple_reply_has_no_continuation_overhead(tmp_path):
+    """验证简单回复只调用模型一次，不因自动续段功能增加额外执行开销。"""
+    registry = ToolRegistry()
+    store = MemoryStore(path=tmp_path / "memory.json", max_history=10, session_id="s1")
+    loop = AgentLoop(
+        client=MagicMock(),
+        model="test-model",
+        system_prompt="sys",
+        registry=registry,
+        store=store,
+    )
+    loop.client.chat.completions.create.return_value = make_response(
+        content="simple",
+        finish_reason="stop",
+    )
+    engine = QueryEngine(agent_loop=loop)
+
+    result = engine.submit_message("hi", stream=False)
+
+    assert result.reply == "simple"
+    assert len(result.segments) == 1
+    assert result.segments[0].status.value == "completed"
+    assert loop.client.chat.completions.create.call_count == 1
+    assert not any(event.text == "segment.yielded" for event in result.events)
+
+
+def test_context_budget_reports_provider_prompt_cache_strategy(tmp_path):
+    """验证支持原生 Prompt Cache 的 Provider 会在预算诊断中报告对应策略。"""
+    registry = ToolRegistry()
+    store = MemoryStore(path=tmp_path / "memory.json", max_history=10)
+    client = MagicMock()
+    client.chat.completions.create.return_value = make_response(content="ok")
+    adapter = OpenAIChatCompletionsAdapter(
+        client,
+        capabilities=ModelCapabilities(supports_prompt_cache=True),
+    )
+    loop = AgentLoop(
+        client=client,
+        model="test-model",
+        system_prompt="sys",
+        registry=registry,
+        store=store,
+        model_adapter=adapter,
+    )
+
+    assert loop.run("hi", stream=False) == "ok"
+    assert loop.last_context_window["prompt_cache_strategy"] == "provider_native"
+    assert loop.last_context_window["budget"]["prompt_cache_strategy"] == "provider_native"
+
+
+def test_query_engine_completion_gate_rejects_empty_completed_reply(tmp_path):
+    """验证完成门禁拒绝空最终答复，并把伪完成转换为带原因的阻塞状态。"""
+    hooks = HookRegistry()
+    hooks.register(
+        HookType.STOP,
+        lambda _context: HookResult.modify_response(""),
+    )
+    registry = ToolRegistry()
+    store = MemoryStore(path=tmp_path / "memory.json", max_history=10, session_id="s1")
+    loop = AgentLoop(
+        client=MagicMock(),
+        model="test-model",
+        system_prompt="sys",
+        registry=registry,
+        store=store,
+        hook_registry=hooks,
+    )
+    loop.client.chat.completions.create.return_value = make_response(content="draft")
+    engine = QueryEngine(agent_loop=loop)
+
+    result = engine.submit_message("answer", stream=False)
+
+    assert result.turn is not None
+    assert result.turn.status.value == "blocked"
+    assert result.turn.termination is not None
+    assert result.turn.termination.reason == "completion_gate_empty_reply"
+    assert "完成协议不完整" in result.reply
+    assert result.segments[-1].status.value == "blocked"
 
 
 def test_query_engine_injects_response_language_instruction(tmp_path):

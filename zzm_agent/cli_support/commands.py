@@ -961,6 +961,12 @@ def _handle_status(
     store: MemoryStore,
     runtime: dict[str, Any] | None,
 ) -> None:
+    """汇总并展示当前会话、模型、工具和上下文诊断状态。
+
+    除基础运行信息外，如果 AgentLoop 已完成至少一次上下文组装，还会展示总占用、
+    压缩方式、Prompt Cache 策略、预算分类和来源。该命令只读取运行时状态，不会
+    触发模型调用、压缩历史或修改会话。
+    """
     runtime = runtime or {}
     loop = runtime.get("loop")
     query_engine = runtime.get("query_engine")
@@ -970,6 +976,7 @@ def _handle_status(
     model_cfg = cfg.get("model", {}) if isinstance(cfg, dict) else {}
     memory_cfg = cfg.get("memory", {}) if isinstance(cfg, dict) else {}
     usage = getattr(loop, "cumulative_usage", None)
+    context_window = getattr(loop, "last_context_window", {}) or {}
 
     rows = [
         ("session", str(getattr(store, "session_id", ""))),
@@ -982,6 +989,52 @@ def _handle_status(
     ]
     if usage is not None:
         rows.append(("session_tokens", str(getattr(usage, "total_tokens", 0))))
+    # 上下文详情只有在执行过模型请求后才存在，首次启动时保持输出简洁。
+    if context_window:
+        rows.extend(
+            [
+                (
+                    "context_used",
+                    f"{context_window.get('total_tokens', 0)}/"
+                    f"{context_window.get('max_context_tokens', 0)}",
+                ),
+                (
+                    "context_compression",
+                    str(context_window.get("compression_strategy", "none")),
+                ),
+                (
+                    "prompt_cache",
+                    str(context_window.get("prompt_cache_strategy", "stable_prefix")),
+                ),
+            ]
+        )
+        breakdown = context_window.get("budget_breakdown", {}) or {}
+        if breakdown:
+            rows.append(
+                (
+                    "context_budget",
+                    ", ".join(
+                        f"{name}={tokens}"
+                        for name, tokens in breakdown.items()
+                    ),
+                )
+            )
+        sources = context_window.get("context_sources", []) or []
+        if sources:
+            rows.append(
+                (
+                    "context_sources",
+                    ", ".join(
+                        str(
+                            source.get("path")
+                            or source.get("artifact_id")
+                            or source.get("source")
+                        )
+                        for source in sources
+                        if isinstance(source, dict)
+                    ),
+                )
+            )
     _print_key_value_rows(console, "Status", rows)
 
 

@@ -322,6 +322,7 @@ def test_agent_loop_estimates_token_usage_when_provider_omits_usage(registry, st
 
 
 def test_agent_loop_exposes_context_window_metadata(registry, store):
+    """验证上下文元数据把输出预留计入总预算，防止诊断值少算固定开销。"""
     loop = AgentLoop(
         client=MagicMock(),
         model="test-model",
@@ -341,6 +342,7 @@ def test_agent_loop_exposes_context_window_metadata(registry, store):
         loop.last_context_window["total_tokens"]
         == loop.last_context_window["message_tokens"]
         + loop.last_context_window["tool_schema_tokens"]
+        + loop.last_context_window["output_reserve_tokens"]
     )
 
 
@@ -695,6 +697,7 @@ def test_tool_event_logger_writes_jsonl(registry, store, tmp_path):
 
 
 def test_agent_loop_stops_at_max_tool_iterations(registry, store):
+    """验证单段工具轮次耗尽时安全让出并记录原因，而不是把任务标记完成。"""
     tool_call = MagicMock()
     tool_call.id = "call_1"
     tool_call.function.name = "echo"
@@ -712,9 +715,87 @@ def test_agent_loop_stops_at_max_tool_iterations(registry, store):
 
     result = loop.run("repeat", stream=False)
 
-    assert "maximum tool iteration limit" in result
+    assert "SEGMENT_CHECKPOINT" in result
     assert loop.client.chat.completions.create.call_count == 1
     assert store.load_history()[-1]["content"] == result
+    assert loop.last_turn_state is not None
+    assert loop.last_turn_state.status.value == "yielded"
+    assert loop.last_turn_state.termination is not None
+    assert loop.last_turn_state.termination.reason == "segment_tool_iteration_limit"
+
+
+def test_run_segment_returns_checkpoint_for_tool_iteration_boundary(registry, store):
+    """验证 run_segment 返回可自动续跑的 yielded 状态及完整检查点计数。"""
+    tool_call = MagicMock()
+    tool_call.id = "call_segment"
+    tool_call.function.name = "echo"
+    tool_call.function.arguments = json.dumps({"text": "again"})
+    loop = AgentLoop(
+        client=MagicMock(),
+        model="test-model",
+        system_prompt="sys",
+        registry=registry,
+        store=store,
+        max_tool_iterations=1,
+    )
+    loop.client.chat.completions.create.return_value = make_response(
+        tool_calls=[tool_call]
+    )
+
+    segment = loop.run_segment("repeat", stream=False)
+
+    assert segment.status.value == "yielded"
+    assert segment.reason == "segment_tool_iteration_limit"
+    assert segment.should_continue is True
+    assert segment.tool_iterations == 1
+    assert segment.tool_calls == 1
+    assert segment.checkpoint["remaining_work_summary"]
+    assert segment.checkpoint["context_window"]["budget_breakdown"]
+
+
+def test_large_tool_result_is_artifactized_before_model_follow_up(tmp_path):
+    """验证超长工具结果保存全文 Artifact，后续模型只接收有界摘要和来源。"""
+    registry = ToolRegistry()
+    full_output = "important-line\n" * 300
+
+    @registry.tool(description="large output")
+    def large_output() -> str:
+        """返回足以触发 Artifact 化的固定长文本。"""
+        return full_output
+
+    store = MemoryStore(path=tmp_path / "memory.json", max_history=10)
+    tool_call = MagicMock()
+    tool_call.id = "call_large"
+    tool_call.function.name = "large_output"
+    tool_call.function.arguments = "{}"
+    loop = AgentLoop(
+        client=MagicMock(),
+        model="test-model",
+        system_prompt="sys",
+        registry=registry,
+        store=store,
+        max_inline_tool_result_tokens=20,
+    )
+    loop.client.chat.completions.create.side_effect = [
+        make_response(tool_calls=[tool_call]),
+        make_response(content="done"),
+    ]
+
+    assert loop.run("collect", stream=False) == "done"
+
+    follow_up_messages = loop.client.chat.completions.create.call_args_list[1].kwargs[
+        "messages"
+    ]
+    tool_message = next(
+        message for message in follow_up_messages if message.get("role") == "tool"
+    )
+    assert "Large tool result stored as Artifact" in tool_message["content"]
+    assert tool_message["content"] != full_output
+    assert loop.last_tool_results[0].artifacts
+    artifact_id = loop.last_tool_results[0].artifacts[0]["artifact_id"]
+    assert loop.artifact_store.read_text(artifact_id) == full_output
+    assert loop.last_turn_state is not None
+    assert loop.last_turn_state.artifacts[0]["artifact_id"] == artifact_id
 
 
 def test_agent_loop_stops_repeated_identical_tool_calls(registry, store):
@@ -837,6 +918,7 @@ def test_agent_loop_stops_when_no_progress_repeats_after_reflection(tmp_path):
 
 
 def test_reflection_does_not_reset_max_tool_iterations(tmp_path):
+    """验证反思换路不会重置单段工具计数，从而绕过安全让出边界。"""
     registry = ToolRegistry()
 
     @registry.tool(description="search with no results")
@@ -868,9 +950,11 @@ def test_reflection_does_not_reset_max_tool_iterations(tmp_path):
 
     result = loop.run("find it", stream=False)
 
-    assert "maximum tool iteration limit" in result
+    assert "SEGMENT_CHECKPOINT" in result
     assert loop.client.chat.completions.create.call_count == 3
     assert loop.last_reflection_count == 1
+    assert loop.last_turn_state is not None
+    assert loop.last_turn_state.status.value == "yielded"
 
 
 def test_tool_exception_is_returned_as_structured_error(tmp_path):
@@ -1408,10 +1492,11 @@ def test_memory_injection_includes_semantic_and_episodic_context(registry, tmp_p
 
 
 def test_agent_loop_injects_runtime_compression_summary_when_history_is_large(registry, tmp_path):
+    """验证历史超预算时会压缩上下文，并把压缩摘要作为运行时信息注入。"""
     store = MemoryStore(
         path=tmp_path / "memory.json",
         max_history=20,
-        max_context_tokens=45,
+        max_context_tokens=120,
         compression_keep_recent=1,
     )
     store.append(
