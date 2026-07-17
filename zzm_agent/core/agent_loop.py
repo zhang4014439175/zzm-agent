@@ -1,7 +1,5 @@
 import json
 import re
-from dataclasses import dataclass
-from inspect import Parameter, signature
 from time import perf_counter, sleep
 from typing import TYPE_CHECKING, Any, Callable
 
@@ -14,6 +12,8 @@ from zzm_agent.core.hooks import (
     HookType,
 )
 from zzm_agent.core.model_adapter import OpenAIChatCompletionsAdapter
+from zzm_agent.core.context_preparation import ContextPreparationService
+from zzm_agent.core.model_turn import ModelTurnDriver
 from zzm_agent.core.model_stream import ModelStreamEvent
 from zzm_agent.core.observability import (
     TokenUsage,
@@ -29,6 +29,7 @@ from zzm_agent.core.progress_monitor import (
     ProgressSignal,
     ToolObservation,
 )
+from zzm_agent.core.recovery_policy import RecoveryPolicy
 from zzm_agent.core.runtime_messages import ConversationMessageStore
 from zzm_agent.core.runtime_records import ArtifactStore
 from zzm_agent.core.segments import SegmentResult
@@ -38,12 +39,12 @@ from zzm_agent.core.runtime_state import (
     CancellationToken,
     LoopState,
     LoopTransition,
-    PermissionScope,
     PermissionState,
     TurnState,
     TurnStatus,
 )
 from zzm_agent.core.tool_results import ToolResult
+from zzm_agent.core.tool_coordinator import ToolCallCoordinator, ToolExecutionOutcome
 from zzm_agent.memory.token_counter import TokenCounter
 
 if TYPE_CHECKING:
@@ -52,16 +53,6 @@ if TYPE_CHECKING:
     from zzm_agent.core.tool_registry import ToolRegistry
     from zzm_agent.memory.store import MemoryStore
     from zzm_agent.prompt.manager import PromptManager
-
-
-@dataclass
-class _ToolExecutionOutcome:
-    """Internal result of one registry tool invocation."""
-
-    content: str
-    success: bool
-    attempts: int = 1
-    error: ToolError | None = None
 
 
 _TEXT_TOOL_CALL_PATTERN = re.compile(
@@ -155,6 +146,18 @@ class AgentLoop:
         """
         self.client = client
         self.model_adapter = model_adapter or OpenAIChatCompletionsAdapter(client)
+        self.model_turn_driver = ModelTurnDriver(
+            adapter=self.model_adapter,
+            build_request=lambda messages, tools, stream: self._chat_completion_kwargs(
+                messages, tools, stream
+            ),
+            retry_without_tool_choice=self._retry_without_tool_choice,
+            provider_rejects_streaming=self._provider_rejects_streaming,
+            usage_from_sdk=self._usage_from_sdk_object,
+            extract_text_tool_calls=self._extract_text_tool_calls,
+            text_tool_call_start=self._text_tool_call_start,
+            build_tool_call_record=self._build_tool_call_record,
+        )
         self.model = model
         self.system_prompt = system_prompt
         self.registry = registry
@@ -200,6 +203,30 @@ class AgentLoop:
         self.last_tool_results: list[ToolResult] = []
         self.last_segment_result: SegmentResult | None = None
         self.last_segment_checkpoint: dict[str, Any] = {}
+        self.recovery_policy = RecoveryPolicy(
+            max_tool_iterations=self.max_tool_iterations,
+            retry_base_delay=self.retry_base_delay,
+            retry_max_delay=self.retry_max_delay,
+        )
+        self.tool_call_coordinator = ToolCallCoordinator(
+            registry=self.registry,
+            permission_state=self.permission_state,
+            confirm_tool=self.confirm_tool,
+            auto_approve=self.auto_approve,
+            max_tool_retries=self.max_tool_retries,
+            retry_sleep=self.retry_sleep,
+            recovery_policy=self.recovery_policy,
+        )
+        self.context_preparation_service = ContextPreparationService(
+            store=self.store,
+            registry=self.registry,
+            system_prompt=self.system_prompt,
+            prompt_manager=self.prompt_manager,
+            token_counter=self._estimate_text_tokens,
+            memory_injection_limit=self.memory_injection_limit,
+            max_output_tokens=self.max_tokens,
+            supports_prompt_cache=self.model_adapter.capabilities.supports_prompt_cache,
+        )
 
     def _build_tool_call_record(
         self,
@@ -506,26 +533,8 @@ class AgentLoop:
         messages: list[dict[str, Any]],
         tools: list[dict[str, Any]],
     ) -> tuple[str, list[dict[str, Any]], bool, TokenUsage, str | None]:
-        kwargs = self._chat_completion_kwargs(messages, tools, stream=False)
-
-        try:
-            response = self.model_adapter.create_completion(kwargs)
-        except Exception as exc:
-            response = self._retry_without_tool_choice(exc, kwargs)
-        normalized = self.model_adapter.normalize_response(response)
-        content = normalized.content
-        tool_calls = normalized.tool_calls
-        if not tool_calls:
-            tool_calls = self._extract_text_tool_calls(content)
-            if tool_calls:
-                content = ""
-        return (
-            content,
-            tool_calls,
-            False,
-            self._usage_from_sdk_object(normalized.raw_usage),
-            normalized.finish_reason,
-        )
+        """通过 ModelTurnDriver 执行非流式请求，并保留旧私有入口兼容。"""
+        return self.model_turn_driver.complete_once(messages, tools)
 
     def _stream_once(
         self,
@@ -534,128 +543,17 @@ class AgentLoop:
         on_text_chunk: Callable[[str], None] | None,
         on_stream_event: Callable[[ModelStreamEvent], None] | None = None,
     ) -> tuple[str, list[dict[str, Any]], bool, TokenUsage, str | None]:
-        kwargs = self._chat_completion_kwargs(messages, tools, stream=True)
-
-        text_parts: list[str] = []
-        emitted_text_length = 0
-        usage = TokenUsage()
-        finish_reason: str | None = None
-        # Streamed tool calls are incremental: the model can emit the same call
-        # over multiple chunks, so we rebuild each call by its stable index.
-        tool_call_map: dict[int, dict[str, Any]] = {}
-
-        try:
-            try:
-                response = self.model_adapter.create_completion(kwargs)
-            except Exception as exc:
-                try:
-                    response = self._retry_without_tool_choice(exc, kwargs)
-                except Exception as retry_exc:
-                    if self._provider_rejects_streaming(retry_exc):
-                        return self._complete_once(messages=messages, tools=tools)
-                    raise
-            for chunk in self.model_adapter.iter_stream_chunks(response):
-                if chunk.finish_reason is not None:
-                    finish_reason = str(chunk.finish_reason)
-                chunk_usage = self._usage_from_sdk_object(chunk.raw_usage)
-                if chunk_usage.has_tokens():
-                    usage.add(chunk_usage)
-                    if on_stream_event is not None:
-                        on_stream_event(
-                            ModelStreamEvent.usage_delta(chunk_usage.to_record())
-                        )
-
-                if chunk.reasoning_summary and on_stream_event is not None:
-                    on_stream_event(
-                        ModelStreamEvent.reasoning_summary(chunk.reasoning_summary)
-                    )
-
-                content = chunk.content_delta
-                if content:
-                    # Preserve the full assistant reply locally and optionally
-                    # push each fragment to the caller for real-time rendering.
-                    text_parts.append(content)
-                    if on_text_chunk is not None or on_stream_event is not None:
-                        full_text = "".join(text_parts)
-                        tool_call_start = self._text_tool_call_start(full_text, tools)
-                        if tool_call_start >= 0:
-                            if emitted_text_length < tool_call_start:
-                                visible_text = full_text[emitted_text_length:tool_call_start]
-                                if on_text_chunk is not None:
-                                    on_text_chunk(visible_text)
-                                if on_stream_event is not None and visible_text:
-                                    on_stream_event(ModelStreamEvent.content_delta(visible_text))
-                                emitted_text_length = tool_call_start
-                        else:
-                            visible_text = full_text[emitted_text_length:]
-                            if on_text_chunk is not None:
-                                on_text_chunk(visible_text)
-                            if on_stream_event is not None and visible_text:
-                                on_stream_event(ModelStreamEvent.content_delta(visible_text))
-                            emitted_text_length = len(full_text)
-
-                for tc_delta in chunk.tool_call_deltas:
-                    index = tc_delta.index
-                    # Create the accumulator the first time this tool-call slot appears.
-                    record = tool_call_map.setdefault(
-                        index,
-                        self._build_tool_call_record("", "", ""),
-                    )
-
-                    if tc_delta.tool_call_id:
-                        # The id may show up after earlier fragments, so keep refreshing it.
-                        record["id"] = tc_delta.tool_call_id
-
-                    # Function metadata can arrive piece by piece; concatenate the
-                    # fragments until we have the full callable name and JSON args.
-                    if tc_delta.name_delta:
-                        record["function"]["name"] += tc_delta.name_delta
-                    if tc_delta.arguments_delta:
-                        record["function"]["arguments"] += tc_delta.arguments_delta
-                    if on_stream_event is not None:
-                        on_stream_event(
-                            ModelStreamEvent.tool_call_delta(
-                                tool_call_id=record.get("id") or None,
-                                tool_name=tc_delta.name_delta or None,
-                                arguments_delta=tc_delta.arguments_delta,
-                                index=index,
-                            )
-                        )
-        except (KeyboardInterrupt, GeneratorExit):
-            # Let the caller keep any text already shown to the user, but signal
-            # that this turn was interrupted so partial tool state is discarded.
-            return "".join(text_parts), [], True, usage, finish_reason
-        except Exception:
-            if text_parts:
-                # If the transport dies mid-stream after visible output, treat it
-                # like an interrupted response instead of raising after partial render.
-                return "".join(text_parts), [], True, usage, finish_reason
-            raise
-
-        # Tool calls must be replayed in their original order for downstream execution.
-        tool_calls = [tool_call_map[i] for i in sorted(tool_call_map)]
-        content = "".join(text_parts)
-        if not tool_calls:
-            tool_calls = self._extract_text_tool_calls(content)
-            if tool_calls:
-                return "", tool_calls, False, usage, finish_reason
-        if (on_text_chunk is not None or on_stream_event is not None) and emitted_text_length < len(content):
-            visible_text = content[emitted_text_length:]
-            if on_text_chunk is not None:
-                on_text_chunk(visible_text)
-            if on_stream_event is not None and visible_text:
-                on_stream_event(ModelStreamEvent.content_delta(visible_text))
-        if on_stream_event is not None:
-            on_stream_event(ModelStreamEvent.final_message(content))
-        return content, tool_calls, False, usage, finish_reason
+        """通过 ModelTurnDriver 消费流式响应，并保留旧私有入口兼容。"""
+        return self.model_turn_driver.stream_once(
+            messages,
+            tools,
+            on_text_chunk,
+            on_stream_event,
+        )
 
     def _requires_tool_confirmation(self, risk_level: str) -> bool:
         """Return whether a tool call needs interactive approval."""
-        if self.auto_approve:
-            return False
-        if risk_level in {"medium", "high"}:
-            return True
-        return False
+        return self.tool_call_coordinator.requires_confirmation(risk_level)
 
     def _is_tool_execution_approved(
         self,
@@ -664,12 +562,7 @@ class AgentLoop:
         risk_level: str | None = None,
     ) -> bool:
         """Check whether a requested tool call is allowed to execute."""
-        risk_level = risk_level or self.registry.get_tool_meta(name).get("risk_level", "low")
-        if not self._requires_tool_confirmation(risk_level):
-            return True
-        if self.confirm_tool is None:
-            return False
-        return bool(self.confirm_tool(name, arguments, risk_level))
+        return self.tool_call_coordinator.is_approved(name, arguments, risk_level)
 
     def _record_permission_request(
         self,
@@ -681,17 +574,13 @@ class AgentLoop:
         turn_state: TurnState,
     ) -> str:
         """Create a PermissionState request and mirror legacy turn fields."""
-        request = self.permission_state.request_permission(
-            tool_name=name,
+        return self.tool_call_coordinator.record_permission_request(
+            name=name,
             arguments=arguments,
             risk_level=risk_level,
             tool_call_id=tool_call_id,
-            scope=PermissionScope.ONCE,
-            turn_id=turn_state.turn_id,
+            turn_state=turn_state,
         )
-        turn_state.permissions.pending_requests[request.request_id] = request
-        turn_state.permission_requests.append(request.to_record())
-        return request.request_id
 
     def _record_permission_approval(
         self,
@@ -701,13 +590,9 @@ class AgentLoop:
         reason: str = "user approved tool execution",
     ) -> None:
         """Record a one-shot approval for the active tool request."""
-        decision = self.permission_state.approve_request(
-            request_id,
-            scope=PermissionScope.ONCE,
-            reason=reason,
+        self.tool_call_coordinator.record_permission_approval(
+            request_id, turn_state=turn_state, reason=reason
         )
-        turn_state.permissions.decisions.append(decision)
-        turn_state.permissions.pending_requests.pop(request_id, None)
 
     def _record_permission_denial(
         self,
@@ -717,11 +602,9 @@ class AgentLoop:
         reason: str,
     ) -> None:
         """Record a denied permission request in both new and legacy state."""
-        decision = self.permission_state.deny_request(request_id, reason=reason)
-        turn_state.permissions.decisions.append(decision)
-        turn_state.permissions.denials.append(decision)
-        turn_state.permissions.pending_requests.pop(request_id, None)
-        turn_state.permission_denials.append(decision.to_record())
+        self.tool_call_coordinator.record_permission_denial(
+            request_id, turn_state=turn_state, reason=reason
+        )
 
     def _tool_call_signature(self, tool_call: dict[str, Any]) -> tuple[str, str]:
         """Return a stable signature used to detect repeated tool calls."""
@@ -738,39 +621,19 @@ class AgentLoop:
 
     def _repetition_stop_message(self, signature: tuple[str, str]) -> str:
         """Build the final response when the model repeats the same tool blindly."""
-        name, arguments = signature
-        return (
-            "Stopped tool execution because the model repeatedly requested the "
-            f"same tool call: {name}({arguments}). Please adjust the approach "
-            "or provide more specific input."
-        )
+        return self.recovery_policy.repetition_stop_message(signature)
 
     def _iteration_stop_message(self) -> str:
         """Build the final response when the tool loop reaches its safety limit."""
-        return (
-            "Stopped tool execution because the maximum tool iteration limit "
-            f"({self.max_tool_iterations}) was reached. Please narrow the task "
-            "or continue with a more specific instruction."
-        )
+        return self.recovery_policy.iteration_stop_message()
 
     def _format_retried_error(self, error: ToolError, attempts: int) -> str:
         """Annotate the final retryable error with retry context."""
-        error.attempts = attempts
-        if attempts <= 1:
-            error.recovery_hint = f"{error.recovery_hint} {error.retry_summary()}"
-            return error.to_json()
-        retries = attempts - 1
-        error.recovery_hint = (
-            f"{error.recovery_hint} {error.retry_summary()} "
-            f"Automatic retry exhausted after {retries} retry attempt(s)."
-        )
-        return error.to_json()
+        return self.recovery_policy.format_retried_error(error, attempts)
 
     def _retry_delay_for_error(self, error: ToolError, retry_index: int) -> float:
         """Return the bounded delay before the next automatic retry."""
-        if error.retry_after_seconds is not None:
-            return min(self.retry_max_delay, max(0.0, error.retry_after_seconds))
-        return min(self.retry_max_delay, self.retry_base_delay * (2 ** retry_index))
+        return self.recovery_policy.retry_delay(error, retry_index)
 
     def _execute_tool_with_retries(
         self,
@@ -778,60 +641,10 @@ class AgentLoop:
         args: dict[str, Any],
         *,
         cancellation_token: CancellationToken | None = None,
-    ) -> _ToolExecutionOutcome:
+    ) -> ToolExecutionOutcome:
         """Execute a tool with bounded retries for structured retryable errors."""
-        attempts = 0
-        last_error: ToolError | None = None
-        max_attempts = self.max_tool_retries + 1
-
-        while attempts < max_attempts:
-            if cancellation_token is not None:
-                cancellation_token.raise_if_cancelled()
-            attempts += 1
-            try:
-                return _ToolExecutionOutcome(
-                    content=str(
-                        self._call_registry_tool(name, args, cancellation_token)
-                    ),
-                    success=True,
-                    attempts=attempts,
-                )
-            except Exception as exc:
-                last_error = tool_error_from_exception(exc)
-                if not last_error.retryable or attempts >= max_attempts:
-                    return _ToolExecutionOutcome(
-                        content=self._format_retried_error(last_error, attempts),
-                        success=False,
-                        attempts=attempts,
-                        error=last_error,
-                    )
-                delay = self._retry_delay_for_error(last_error, attempts - 1)
-                if delay > 0:
-                    if cancellation_token is not None:
-                        cancellation_token.raise_if_cancelled()
-                    self.retry_sleep(delay)
-                    if cancellation_token is not None:
-                        cancellation_token.raise_if_cancelled()
-
-        # This is defensive; the loop always returns on success or final error.
-        if last_error is None:
-            last_error = ToolError(
-                error_type="ToolExecutionError",
-                message="Tool execution failed without an exception payload.",
-                recovery_hint="Inspect tool execution logs before retrying.",
-                retryable=False,
-            )
-            return _ToolExecutionOutcome(
-                content=last_error.to_json(),
-                success=False,
-                attempts=attempts,
-                error=last_error,
-            )
-        return _ToolExecutionOutcome(
-            content=self._format_retried_error(last_error, attempts),
-            success=False,
-            attempts=attempts,
-            error=last_error,
+        return self.tool_call_coordinator.execute_with_retries(
+            name, args, cancellation_token=cancellation_token
         )
 
     def _call_registry_tool(
@@ -841,26 +654,9 @@ class AgentLoop:
         cancellation_token: CancellationToken | None,
     ) -> Any:
         """Call registries with native cancellation when they support it."""
-        call = self.registry.call
-        try:
-            parameters = signature(call).parameters.values()
-            supports_cancellation = any(
-                parameter.name == "cancellation_token"
-                or parameter.kind is Parameter.VAR_KEYWORD
-                for parameter in parameters
-            )
-        except (TypeError, ValueError):
-            supports_cancellation = False
-
-        if supports_cancellation:
-            return call(name, args, cancellation_token=cancellation_token)
-
-        if cancellation_token is not None:
-            cancellation_token.raise_if_cancelled()
-        result = call(name, args)
-        if cancellation_token is not None:
-            cancellation_token.raise_if_cancelled()
-        return result
+        return self.tool_call_coordinator.call_registry(
+            name, args, cancellation_token=cancellation_token
+        )
 
     def _emit_tool_event(
         self,
@@ -1024,10 +820,7 @@ class AgentLoop:
 
     def _build_system_prompt(self, user_input: str) -> str:
         """Return the static or dynamically assembled system prompt for this turn."""
-        if self.prompt_manager is None:
-            return self.system_prompt
-        history = self.store.load_history()
-        return self.prompt_manager.build(user_input=user_input, history=history)
+        return self.context_preparation_service.build_system_prompt(user_input)
 
     def _no_progress_stop_message(
         self,
@@ -1036,31 +829,13 @@ class AgentLoop:
         after_reflection: bool = False,
     ) -> str:
         """Build the final response when completed tool rounds make no progress."""
-        reflection_context = " after reflection" if after_reflection else ""
-        return (
-            f"Stopped tool execution because no progress was detected{reflection_context} "
-            f"({signal.reason}) after {signal.round_count} tool round(s). "
-            f"{signal.detail}"
+        return self.recovery_policy.no_progress_stop_message(
+            signal, after_reflection=after_reflection
         )
 
     def _reflection_prompt(self, signal: ProgressSignal) -> str:
         """Build a bounded runtime-only prompt that asks the model to change approach."""
-        return (
-            "[REFLECTION_REQUIRED]\n"
-            "The recent tool execution is not making progress.\n"
-            f"Reason: {signal.reason}\n"
-            f"Observed tool rounds: {signal.round_count}\n"
-            f"Details: {signal.detail}\n\n"
-            "Before taking another action:\n"
-            "1. Briefly reassess why the previous approach failed.\n"
-            "2. Do not repeat the same tool call or an equivalent call that yields "
-            "the same observation.\n"
-            "3. Choose a materially different tool, arguments, or strategy.\n"
-            "4. If progress requires missing user input, permission, credentials, "
-            "or an unavailable external condition, stop using tools and report the "
-            "blocker clearly.\n"
-            "This is the only reflection retry available for this turn."
-        )
+        return self.recovery_policy.reflection_prompt(signal)
 
     def _request_reflection(
         self,
@@ -1158,69 +933,17 @@ class AgentLoop:
         模型窗口，则明确 blocked。返回值保持旧接口兼容，真实状态应读取
         ``last_turn_state`` 或通过 ``run_segment`` 获取。
         """
-        # 1. 在调用模型前统一计算固定预算，确保工具 Schema 和输出预留也计入窗口。
-        system_prompt = self._build_system_prompt(user_input)
-        tools = self.registry.get_schemas()
-        tool_schema_tokens = self._estimate_text_tokens(
-            json.dumps(tools, ensure_ascii=False, sort_keys=True, default=str)
-        ) if tools else 0
-        max_context_tokens = max(
-            1,
-            int(getattr(self.store, "max_context_tokens", 32000) or 32000),
+        # 1. 在调用模型前统一组装上下文、预算与运行时指令。
+        prepared_context = self.context_preparation_service.prepare(
+            user_input, runtime_instructions
         )
-        output_reserve_tokens = max(
-            0,
-            int(
-                self.max_tokens
-                if self.max_tokens is not None
-                else min(4096, max_context_tokens // 8)
-            ),
-        )
-        prompt_cache_strategy = (
-            "provider_native"
-            if self.model_adapter.capabilities.supports_prompt_cache
-            else "stable_prefix"
-        )
-        runtime_instruction_tokens = sum(
-            self._estimate_text_tokens(instruction.strip())
-            for instruction in runtime_instructions or []
-            if instruction.strip()
-        )
-        build_turn_kwargs: dict[str, Any] = {
-            "system_prompt": system_prompt,
-            "user_input": user_input,
-            "memory_limit": self.memory_injection_limit,
-        }
-        build_turn_parameters = signature(
-            self.store.build_turn_messages
-        ).parameters
-        optional_context_kwargs = {
-            "tool_schema_tokens": tool_schema_tokens,
-            "output_reserve_tokens": output_reserve_tokens,
-            "runtime_instruction_tokens": runtime_instruction_tokens,
-            "prompt_cache_strategy": prompt_cache_strategy,
-        }
-        build_turn_kwargs.update(
-            {
-                key: value
-                for key, value in optional_context_kwargs.items()
-                if key in build_turn_parameters
-            }
-        )
-        messages, _compression = self.store.build_turn_messages(**build_turn_kwargs)
-        self.last_context_window = _compression
-
+        tools = prepared_context.tools
+        max_context_tokens = prepared_context.max_context_tokens
+        tool_schema_tokens = prepared_context.tool_schema_tokens
+        output_reserve_tokens = prepared_context.output_reserve_tokens
+        self.last_context_window = prepared_context.compression
+        message_store = prepared_context.message_store
         user_message = {"role": "user", "content": user_input}
-        message_store = ConversationMessageStore.begin_turn(
-            persisted_messages=self.store.load_history(),
-            model_context_messages=messages,
-            user_message=user_message,
-        )
-        for instruction in runtime_instructions or []:
-            if instruction.strip():
-                message_store.append_runtime_only(
-                    {"role": "system", "content": instruction.strip()}
-                )
         self.last_message_store = message_store
         turn_usage = TokenUsage()
         turn_state = TurnState(user_input=user_input)

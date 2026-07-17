@@ -135,18 +135,18 @@ flowchart TD
 
 以下拆分是后续 P3.5 的正式任务，不要求在 8.6 Renderer 开发中顺手完成。
 
-| 当前模块 | 当前问题 | 目标模块 | 拆分方式 |
-|---|---|---|---|
-| `core/agent_loop.py` | 同时负责模型请求、流解析、工具协调、权限、重试、上下文和结束判定 | `model_turn.py`、`tool_coordinator.py`、`recovery_policy.py`、`context_preparation.py` | 保留 `AgentLoop` 作为单 Segment 状态编排器，逐项迁移，不重写 |
-| `core/runtime_state.py` | 应用、会话、Turn、Loop、权限和取消对象集中在单文件 | `state/application.py`、`state/conversation.py`、`state/turn.py`、`state/loop.py`、`state/permission.py`、`state/cancellation.py` | 先移动定义和导出兼容层，不在同一任务改变状态语义 |
-| `cli_support/runtime.py` | 启动装配、配置、REPL、输入循环和运行控制混合 | `cli_support/bootstrap.py`、`repl.py`、`execution.py` | CLI 只消费 QueryEngine 和 RuntimeEvent，不直接协调 AgentLoop 内部状态 |
-| `cli_support/commands.py` | Slash 命令解析、业务逻辑和展示混合 | `commands/router.py`、`commands/session.py`、`commands/git.py`、`commands/diagnostics.py` | 使用 CommandContext 注入依赖；命令返回结构化结果，由 Renderer 展示 |
-| `cli_support/rendering.py` | 输入、补全、Renderer、主题和格式化集中 | `ui/input.py`、`ui/completion.py`、`ui/renderers/`、`ui/theme.py` | 8.6 只提取本地工具 Renderer；完整目录调整放到 P3.5 |
-| `memory/store.py` | 会话、语义、情景、上下文组装和压缩协调过多 | 保留 Store 门面，拆为现有专用 Store + `context_preparation.py` | Memory 负责存取和检索，上下文选择与预算移交 ContextPreparationService |
-| `core/tool_registry.py` | 注册、Schema、插件加载、校验、执行、超时和 cleanup 混合 | `tool_catalog.py`、`tool_validator.py`、`tool_runtime.py` | Registry 逐步收敛为目录；执行统一进入 ToolCallCoordinator |
-| `plugins/file_ops.py`、`plugins/shell.py`、`cli_support/git_workflow.py` | 三套副作用入口，ChangeSet 无法覆盖 Shell/Git | `workspace/runtime.py`、`workspace/filesystem.py`、`workspace/process.py`、`workspace/git.py`、`workspace/effects.py` | 原工具改为薄适配器，所有副作用产生 EffectRecord |
+| 当前模块 | 当前问题 | 目标模块 | 对应执行任务 | 拆分方式 |
+|---|---|---|---|---|
+| `core/agent_loop.py` | 同时负责模型请求、流解析、工具协调、权限、重试、上下文和结束判定 | `model_turn.py`、`tool_coordinator.py`、`recovery_policy.py`、`context_preparation.py` | 8.7 | 保留 `AgentLoop` 作为单 Segment 状态编排器，在 8.7 内一次完成全部职责迁移 |
+| `core/runtime_state.py` | 应用、会话、Turn、Loop、权限和取消对象集中在单文件 | `state/application.py`、`state/conversation.py`、`state/turn.py`、`state/loop.py`、`state/permission.py`、`state/cancellation.py` | 8.8 | 移动定义并提供导出兼容层，不改变状态语义 |
+| `cli_support/runtime.py` | 启动装配、配置、REPL、输入循环和运行控制混合 | `cli_support/bootstrap.py`、`repl.py`、`execution.py` | 8.10A | CLI 只消费 QueryEngine 和 RuntimeEvent，不直接协调 AgentLoop 内部状态 |
+| `cli_support/commands.py` | Slash 命令解析、业务逻辑和展示混合 | `commands/router.py`、`commands/session.py`、`commands/git.py`、`commands/diagnostics.py` | 8.10B | 使用 CommandContext 注入依赖；命令返回结构化结果，由 Renderer 展示 |
+| `cli_support/rendering.py` | 输入、补全、Renderer、主题和格式化集中 | `ui/input.py`、`ui/completion.py`、`ui/renderers/`、`ui/theme.py` | 8.10C | 8.6 只提取本地工具 Renderer；8.10C 完成目录调整 |
+| `memory/store.py` | 会话、语义、情景、上下文组装和压缩协调过多 | 保留 Store 门面，拆为现有专用 Store + `context_preparation.py` | 8.7 | Memory 负责存取和检索，上下文选择与预算移交 ContextPreparationService |
+| `core/tool_registry.py` | 注册、Schema、插件加载、校验、执行、超时和 cleanup 混合 | `tool_catalog.py`、`tool_validator.py`、`tool_runtime.py` | 8.7（执行边界）；后续按插件任务继续收敛 | 工具执行统一进入 ToolCallCoordinator，目录化不混入 8.7 |
+| `plugins/file_ops.py`、`plugins/shell.py`、`cli_support/git_workflow.py` | 三套副作用入口，ChangeSet 无法覆盖 Shell/Git | `workspace/runtime.py`、`workspace/filesystem.py`、`workspace/process.py`、`workspace/git.py`、`workspace/effects.py` | 8.9 | 原工具改为薄适配器，所有副作用产生 EffectRecord |
 
-拆分约束：每次只迁移一个职责；保留旧 import 和公开入口；先增加 characterization test；重构提交不同时增加产品功能；定向测试、Replay 和全量测试通过后才能继续下一项。
+拆分约束：以“执行进度总览”的单个复选框为一次开发任务边界；一个任务内列出的全部模块必须一次完成并统一验收。保留旧 import 和公开入口；先增加 characterization test；重构提交不同时增加产品功能；定向测试、Replay 和全量测试通过后才能勾选该任务。
 
 ### 0.5 如何阅读后续路线
 
@@ -186,7 +186,7 @@ flowchart TD
 
 ## 执行进度总览
 
-> **当前下一任务：8.7 `[核心]` AgentLoop 职责拆分。**
+> **当前下一任务：8.8 `[核心]` RuntimeState 拆分。**
 
 ### 当前能力基线
 
@@ -266,10 +266,14 @@ flowchart TD
 
 ### P3.5：Runtime、Workspace 与事件内核收敛
 
-- [ ] 8.7 `[核心]` AgentLoop 职责拆分：依次提取 ModelTurnDriver、ToolCallCoordinator、RecoveryPolicy 和 ContextPreparationService，AgentLoop 只保留单 Segment 状态编排
+- [x] 8.7 `[核心]` AgentLoop 职责拆分：提取 ModelTurnDriver、ToolCallCoordinator、RecoveryPolicy 和 ContextPreparationService，AgentLoop 只保留单 Segment 状态编排
+  - 完成：四个职责组件已全部提取并接入，原兼容入口、权限、Replay、流事件与上下文行为保持不变；全量测试通过。说明见 `docs/8.7-agent-loop-responsibility-split.md`。
 - [ ] 8.8 `[核心]` RuntimeState 拆分：按 Application、Conversation、Turn、Loop、Permission 和 Cancellation 移动定义，保留兼容导出且不改变状态语义
 - [ ] 8.9 `[核心]` WorkspaceRuntime 与 EffectRecord：统一 File、Shell、Git 的授权、执行、变更记录、检查点和撤销边界
 - [ ] 8.10 `[核心]` RuntimeEvent 与 ExecutionJournal：为 CLI、JSONL、Replay 和未来协议入口提供带版本、顺序号和状态关联的统一事实记录
+- [ ] 8.10A `[核心]` CLI Runtime 拆分：把 `cli_support/runtime.py` 拆为 bootstrap、REPL 与 execution，CLI 只依赖 QueryEngine 和 RuntimeEvent
+- [ ] 8.10B `[核心]` Slash Command 拆分：把 `cli_support/commands.py` 拆为 router、session、git 与 diagnostics，并以 CommandContext 注入依赖
+- [ ] 8.10C `[核心]` UI 与 Renderer 目录拆分：把 `cli_support/rendering.py` 的输入、补全、Renderer 和主题迁入 `ui/` 分层目录
 - [ ] 8.11 `[核心]` Secret Redaction 与内容信任标签基础：敏感信息在日志和事件输出前脱敏，外部工具结果默认标记为不可信内容
 - [ ] P3.5 阶段验收：重构不改变既有用户行为和 Replay 结果，所有副作用经过 WorkspaceRuntime，CLI 不再依赖 AgentLoop 私有实现
 - [ ] P3.5 可选扩展 A — SQLite Journal：把追加事件、Turn/Tool/Checkpoint 索引和恢复游标写入 SQLite，练习事务、并发读取、Schema Migration 和损坏恢复；核心版继续使用 JSONL，不要求数据库化
