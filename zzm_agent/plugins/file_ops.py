@@ -3,9 +3,12 @@ from pathlib import Path
 from zzm_agent.core.state.support import FileStateCache
 from zzm_agent.core.sandbox import get_sandbox_profile
 from zzm_agent.core.tool_registry import tool
+from zzm_agent.workspace.filesystem import WorkspaceFilesystem
+from zzm_agent.workspace.runtime import WorkspaceRuntime
 
 
 _FILE_STATE_CACHE = FileStateCache()
+_WORKSPACE_RUNTIMES: dict[str, WorkspaceRuntime] = {}
 
 
 def get_file_state_cache() -> FileStateCache:
@@ -15,8 +18,23 @@ def get_file_state_cache() -> FileStateCache:
 
 def reset_file_state_cache() -> None:
     """Clear cached file state. Primarily useful for tests and session resets."""
-    global _FILE_STATE_CACHE
+    global _FILE_STATE_CACHE, _WORKSPACE_RUNTIMES
     _FILE_STATE_CACHE = FileStateCache()
+    _WORKSPACE_RUNTIMES = {}
+
+
+def get_workspace_runtime(path: Path | None = None) -> WorkspaceRuntime:
+    """返回文件工具使用的工作区副作用边界。"""
+    profile = get_sandbox_profile()
+    target = (path or profile.workspace_roots[0]).resolve(strict=False)
+    root = next(
+        (item for item in profile.workspace_roots if target.is_relative_to(item)),
+        profile.workspace_roots[0],
+    )
+    key = str(root)
+    if key not in _WORKSPACE_RUNTIMES:
+        _WORKSPACE_RUNTIMES[key] = WorkspaceRuntime(root)
+    return _WORKSPACE_RUNTIMES[key]
 
 
 def _resolve_workspace_path(path: str, *, access: str = "read") -> Path:
@@ -174,7 +192,11 @@ def file_edit(path: str, target: str, replacement: str, replace_all: str = "fals
             count = 1
             new_content = content.replace(target, replacement, 1)
 
-        p.write_text(new_content, encoding="utf-8")
+        WorkspaceFilesystem(get_workspace_runtime(p)).mutate(
+            p,
+            "edit",
+            lambda: p.write_text(new_content, encoding="utf-8"),
+        )
         size_bytes, mtime_ns = _file_stat_payload(p)
         get_file_state_cache().update_after_write(
             normalized_path=str(p),
@@ -213,11 +235,11 @@ def write_file(path: str, content: str) -> str:
     try:
         p = _resolve_workspace_path(path, access="write")
 
-        # Automatically create missing parent directories
-        p.parent.mkdir(parents=True, exist_ok=True)
+        def write() -> int:
+            p.parent.mkdir(parents=True, exist_ok=True)
+            return p.write_text(content, encoding="utf-8")
 
-        # Write content with UTF-8 encoding
-        p.write_text(content, encoding="utf-8")
+        WorkspaceFilesystem(get_workspace_runtime(p)).mutate(p, "write", write)
         size_bytes, mtime_ns = _file_stat_payload(p)
         get_file_state_cache().update_after_write(
             normalized_path=str(p),
@@ -248,10 +270,12 @@ def file_append(path: str, content: str) -> str:
     """
     try:
         p = _resolve_workspace_path(path, access="write")
-        p.parent.mkdir(parents=True, exist_ok=True)
+        def append() -> None:
+            p.parent.mkdir(parents=True, exist_ok=True)
+            with p.open("a", encoding="utf-8") as handle:
+                handle.write(content)
 
-        with p.open("a", encoding="utf-8") as f:
-            f.write(content)
+        WorkspaceFilesystem(get_workspace_runtime(p)).mutate(p, "append", append)
         new_content = p.read_text(encoding="utf-8", errors="replace")
         size_bytes, mtime_ns = _file_stat_payload(p)
         get_file_state_cache().update_after_write(

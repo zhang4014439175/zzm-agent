@@ -5,6 +5,9 @@ from dataclasses import dataclass
 from pathlib import Path
 from typing import Callable, Sequence
 
+from zzm_agent.workspace.git import WorkspaceGit
+from zzm_agent.workspace.runtime import WorkspaceRuntime
+
 
 class GitWorkflowError(RuntimeError):
     """Raised when a Git workflow command cannot be completed safely."""
@@ -21,9 +24,17 @@ class GitSnapshot:
 class GitWorkflow:
     """Small, auditable Git service used by slash commands."""
 
-    def __init__(self, workspace: Path | str) -> None:
+    def __init__(
+        self,
+        workspace: Path | str,
+        *,
+        workspace_runtime: WorkspaceRuntime | None = None,
+    ) -> None:
         self.workspace = Path(workspace).resolve()
+        self.workspace_runtime = workspace_runtime or WorkspaceRuntime(self.workspace)
+        self.effects = WorkspaceGit(self.workspace_runtime)
         self._undo: tuple[str, tuple[str, ...]] | None = None
+        self._undo_effect_id: str | None = None
 
     def snapshot(self) -> GitSnapshot:
         return GitSnapshot(
@@ -37,15 +48,29 @@ class GitWorkflow:
         clean = self._validate_paths(paths)
         if not confirm(f"Stage with git add -- {self._display(clean)}?"):
             raise GitWorkflowError("Git stage was not approved.")
-        self._run("add", "--", *clean)
+        undo_args = ("--staged", "--", *clean)
+        self.effects.mutate(
+            "stage",
+            self._display(clean),
+            lambda: self._run("add", "--", *clean),
+            undo=lambda: self._run("restore", *undo_args),
+        )
         self._undo = ("restore", ("--staged", "--", *clean))
+        self._undo_effect_id = self.workspace_runtime.effects[-1].effect_id
 
     def unstage(self, paths: Sequence[str], *, confirm: Callable[[str], bool]) -> None:
         clean = self._validate_paths(paths)
         if not confirm(f"Unstage with git restore --staged -- {self._display(clean)}?"):
             raise GitWorkflowError("Git unstage was not approved.")
-        self._run("restore", "--staged", "--", *clean)
+        undo_args = ("--", *clean)
+        self.effects.mutate(
+            "unstage",
+            self._display(clean),
+            lambda: self._run("restore", "--staged", "--", *clean),
+            undo=lambda: self._run("add", *undo_args),
+        )
         self._undo = ("add", ("--", *clean))
+        self._undo_effect_id = self.workspace_runtime.effects[-1].effect_id
 
     def undo_last_index_change(self, *, confirm: Callable[[str], bool]) -> str:
         if self._undo is None:
@@ -54,8 +79,11 @@ class GitWorkflow:
         rendered = "git " + " ".join((command, *args))
         if not confirm(f"Undo the last index change with {rendered}?"):
             raise GitWorkflowError("Git undo was not approved.")
-        self._run(command, *args)
+        result = self.workspace_runtime.undo(self._undo_effect_id)
+        if not result.undone:
+            raise GitWorkflowError(result.message)
         self._undo = None
+        self._undo_effect_id = None
         return rendered
 
     def _validate_paths(self, paths: Sequence[str]) -> tuple[str, ...]:

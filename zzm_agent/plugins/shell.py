@@ -5,6 +5,11 @@ import sys
 from pathlib import Path
 
 from zzm_agent.core.tool_registry import tool
+from zzm_agent.workspace.process import WorkspaceProcess
+from zzm_agent.workspace.runtime import WorkspaceRuntime
+
+
+_WORKSPACE_RUNTIMES: dict[str, WorkspaceRuntime] = {}
 
 
 def _workspace_root() -> Path:
@@ -12,6 +17,15 @@ def _workspace_root() -> Path:
     if root:
         return Path(root).expanduser().resolve()
     return Path.cwd().resolve()
+
+
+def get_workspace_runtime() -> WorkspaceRuntime:
+    """返回 Shell 工具使用的工作区副作用边界。"""
+    root = _workspace_root()
+    key = str(root)
+    if key not in _WORKSPACE_RUNTIMES:
+        _WORKSPACE_RUNTIMES[key] = WorkspaceRuntime(root)
+    return _WORKSPACE_RUNTIMES[key]
 
 
 @tool(
@@ -54,13 +68,17 @@ def run_shell(command: str, timeout: int = 30, cwd: str = "") -> str:
         # Clamp timeout to [1, 300] seconds
         timeout_sec = max(1, min(300, timeout))
 
-        result = subprocess.run(
-            argv,
-            shell=use_shell,
-            capture_output=True,
-            text=False,
-            timeout=timeout_sec,
-            cwd=work_dir,
+        result = WorkspaceProcess(get_workspace_runtime()).execute(
+            command,
+            lambda: subprocess.run(
+                argv,
+                shell=use_shell,
+                capture_output=True,
+                text=False,
+                timeout=timeout_sec,
+                cwd=work_dir,
+            ),
+            cwd=str(work_dir),
         )
 
         # Decode stdout and stderr with 'replace' to avoid surrogate characters

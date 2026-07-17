@@ -186,7 +186,7 @@ flowchart TD
 
 ## 执行进度总览
 
-> **当前下一任务：8.9 `[核心]` WorkspaceRuntime 与 EffectRecord。**
+> **当前下一任务：8.10 `[核心]` RuntimeEvent 与 ExecutionJournal。**
 
 ### 当前能力基线
 
@@ -270,7 +270,8 @@ flowchart TD
   - 完成：四个职责组件已全部提取并接入，原兼容入口、权限、Replay、流事件与上下文行为保持不变；全量测试通过。说明见 `docs/8.7-agent-loop-responsibility-split.md`。
 - [x] 8.8 `[核心]` RuntimeState 拆分：按 Application、Conversation、Turn、Loop、Permission 和 Cancellation 移动定义，保留兼容导出且不改变状态语义
   - 完成：六类核心状态已迁移到 `core/state/` 独立模块，File/Memory 辅助状态移入 support，旧 `core.runtime_state` 缩减为兼容导出门面；序列化、生命周期和 Replay 行为保持不变，全量测试通过。说明见 `docs/8.8-runtime-state-split.md`。
-- [ ] 8.9 `[核心]` WorkspaceRuntime 与 EffectRecord：统一 File、Shell、Git 的授权、执行、变更记录、检查点和撤销边界
+- [x] 8.9 `[核心]` WorkspaceRuntime 与 EffectRecord：统一 File、Shell、Git 的授权、执行、变更记录、检查点和撤销边界
+  - 完成：File、Shell、Git 已接入 WorkspaceRuntime，统一生成 EffectRecord；文件操作支持持久化检查点、跨进程恢复、冲突感知撤销，Git 索引操作通过同一 Effect 撤销。说明见 `docs/8.9-workspace-runtime-effects.md`。
 - [ ] 8.10 `[核心]` RuntimeEvent 与 ExecutionJournal：为 CLI、JSONL、Replay 和未来协议入口提供带版本、顺序号和状态关联的统一事实记录
 - [ ] 8.10A `[核心]` CLI Runtime 拆分：把 `cli_support/runtime.py` 拆为 bootstrap、REPL 与 execution，CLI 只依赖 QueryEngine 和 RuntimeEvent
 - [ ] 8.10B `[核心]` Slash Command 拆分：把 `cli_support/commands.py` 拆为 router、session、git 与 diagnostics，并以 CommandContext 注入依赖
