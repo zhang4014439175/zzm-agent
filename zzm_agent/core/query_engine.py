@@ -10,7 +10,7 @@ from zzm_agent.core.language_policy import (
     resolve_response_language,
 )
 from zzm_agent.core.model_stream import ModelStreamEvent, ModelStreamEventKind
-from zzm_agent.core.runtime_state import (
+from zzm_agent.core.state import (
     ApplicationState,
     ConversationState,
     TurnState,

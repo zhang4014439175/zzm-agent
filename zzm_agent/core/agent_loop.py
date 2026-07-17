@@ -33,7 +33,7 @@ from zzm_agent.core.recovery_policy import RecoveryPolicy
 from zzm_agent.core.runtime_messages import ConversationMessageStore
 from zzm_agent.core.runtime_records import ArtifactStore
 from zzm_agent.core.segments import SegmentResult
-from zzm_agent.core.runtime_state import (
+from zzm_agent.core.state import (
     CancellationController,
     CancellationError,
     CancellationToken,

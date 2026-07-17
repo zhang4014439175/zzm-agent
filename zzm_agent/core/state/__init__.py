@@ -1,34 +1,34 @@
-"""兼容状态导出门面。
+"""按生命周期职责拆分的运行时状态对象。"""
 
-状态定义已按职责迁移到 :mod:`zzm_agent.core.state`。现有调用方可以继续从
-本模块导入原名称，序列化结构和运行语义保持不变。
-"""
-
-from zzm_agent.core.state import (
-    ApplicationState,
+from zzm_agent.core.state.application import ApplicationState
+from zzm_agent.core.state.cancellation import (
     CancellationController,
     CancellationError,
     CancellationToken,
-    ConversationState,
-    FileReadRange,
-    FileState,
-    FileStateCache,
+)
+from zzm_agent.core.state.conversation import ConversationState
+from zzm_agent.core.state.loop import (
     LoopPhase,
     LoopState,
     LoopTransition,
     LoopTransitionError,
-    MemoryLoadState,
-    MemorySourceRecord,
+)
+from zzm_agent.core.state.permission import (
     PermissionDecision,
     PermissionRequest,
     PermissionScope,
     PermissionState,
     PermissionStatus,
-    TurnState,
-    TurnStatus,
-    TurnTermination,
     summarize_permission_arguments,
 )
+from zzm_agent.core.state.support import (
+    FileReadRange,
+    FileState,
+    FileStateCache,
+    MemoryLoadState,
+    MemorySourceRecord,
+)
+from zzm_agent.core.state.turn import TurnState, TurnStatus, TurnTermination
 
 __all__ = [
     "ApplicationState",

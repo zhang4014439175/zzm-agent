@@ -3,7 +3,7 @@ from __future__ import annotations
 from dataclasses import dataclass, field
 from typing import Any
 
-from zzm_agent.core.runtime_state import TurnState, TurnStatus
+from zzm_agent.core.state.turn import TurnState, TurnStatus
 
 
 @dataclass(frozen=True)

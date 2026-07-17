@@ -1,6 +1,6 @@
 from pathlib import Path
 
-from zzm_agent.core.runtime_state import FileStateCache
+from zzm_agent.core.state.support import FileStateCache
 from zzm_agent.core.sandbox import get_sandbox_profile
 from zzm_agent.core.tool_registry import tool
 

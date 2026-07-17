@@ -6,7 +6,7 @@ from typing import Any, Callable
 
 from zzm_agent.core.errors import ToolError, tool_error_from_exception
 from zzm_agent.core.recovery_policy import RecoveryPolicy
-from zzm_agent.core.runtime_state import (
+from zzm_agent.core.state import (
     CancellationToken,
     PermissionScope,
     PermissionState,
@@ -169,7 +169,7 @@ class ToolCallCoordinator:
                     attempts=attempts,
                 )
             except Exception as exc:
-                from zzm_agent.core.runtime_state import CancellationError
+                from zzm_agent.core.state.cancellation import CancellationError
 
                 if isinstance(exc, CancellationError):
                     raise

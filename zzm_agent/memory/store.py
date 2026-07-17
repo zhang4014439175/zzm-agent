@@ -7,7 +7,7 @@ from typing import Any
 
 from zzm_agent.core.context_budget import ContextBudget, ContextBudgetEntry
 from zzm_agent.core.observability import UsageState
-from zzm_agent.core.runtime_state import MemoryLoadState
+from zzm_agent.core.state.support import MemoryLoadState
 from zzm_agent.memory.episodic_store import EpisodicStore
 from zzm_agent.memory.history_store import HistoryStore
 from zzm_agent.memory.instructions import InstructionManager
