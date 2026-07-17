@@ -19,6 +19,8 @@ from zzm_agent.core.state import (
 from zzm_agent.core.segments import SegmentResult
 from zzm_agent.core.state_serialization import StateSnapshotStore
 from zzm_agent.memory.pinned_context import PinnedContext
+from zzm_agent.runtime.events import RuntimeEvent
+from zzm_agent.runtime.journal import ExecutionJournal
 
 
 StreamEventCallback = Callable[[ModelStreamEvent], None]
@@ -35,6 +37,7 @@ class QueryResult:
 
     reply: str
     events: list[ModelStreamEvent] = field(default_factory=list)
+    runtime_events: list[RuntimeEvent] = field(default_factory=list)
     turn: TurnState | None = None
     response_language: ResponseLanguageDecision | None = None
     segments: tuple[SegmentResult, ...] = ()
@@ -51,6 +54,7 @@ class QueryEngine:
         application_state: ApplicationState | None = None,
         conversation_state: ConversationState | None = None,
         snapshot_store: StateSnapshotStore[ConversationState] | None = None,
+        execution_journal: ExecutionJournal | None = None,
     ) -> None:
         """绑定执行循环、会话状态、配置和可选快照存储。
 
@@ -68,6 +72,7 @@ class QueryEngine:
             session_id=session_id
         )
         self.snapshot_store = snapshot_store
+        self.execution_journal = execution_journal or ExecutionJournal()
         self.application_state.active_session_id = self.conversation_state.session_id
         self.application_state.conversations[self.conversation_state.session_id] = (
             self.conversation_state
@@ -76,6 +81,7 @@ class QueryEngine:
             self.agent_loop.artifact_store = self.conversation_state.artifacts
         else:
             self.conversation_state.artifacts = self.agent_loop.artifact_store
+        self.conversation_state.events.journal = self.execution_journal
 
     @classmethod
     def with_snapshot_path(
@@ -118,10 +124,24 @@ class QueryEngine:
         静默停止或无限消耗。最终返回全部事件、分段记录和终态。
         """
         events: list[ModelStreamEvent] = []
+        runtime_events: list[RuntimeEvent] = []
 
         def emit(event: ModelStreamEvent) -> None:
             """同时记录规范化事件并转发给当前客户端回调。"""
             events.append(event)
+            active_turn = self.conversation_state.active_turn
+            turn_id = active_turn.turn_id if active_turn is not None else None
+            runtime_event = self.conversation_state.events.publish(
+                f"stream.{event.kind.value}",
+                event.to_record(),
+                source="query_engine",
+                session_id=self.conversation_state.session_id,
+                turn_id=turn_id,
+                state_scope="turn" if turn_id is not None else "conversation",
+                state_id=turn_id or self.conversation_state.session_id,
+                correlation_id=turn_id,
+            )
+            runtime_events.append(runtime_event)
             if on_stream_event is not None:
                 on_stream_event(event)
 
@@ -349,6 +369,7 @@ class QueryEngine:
         return QueryResult(
             reply=reply,
             events=events,
+            runtime_events=runtime_events,
             turn=self.conversation_state.active_turn,
             response_language=language_decision,
             segments=tuple(segments),

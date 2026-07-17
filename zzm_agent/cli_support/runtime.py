@@ -988,7 +988,8 @@ def _write_exec_output_file(path: str | Path, text: str) -> None:
     output_path.write_text(text, encoding="utf-8")
 
 
-def _json_event_line(event: ModelStreamEvent) -> str:
+def _json_event_line(event: Any) -> str:
+    """把模型兼容事件或统一 RuntimeEvent 编码为单行 JSON 事实。"""
     return json.dumps(
         {"type": "event", **event.to_record()},
         ensure_ascii=False,
@@ -1018,7 +1019,13 @@ def run_exec(
     stdout: Any | None = None,
     stderr: Any | None = None,
 ) -> int:
-    """Run one non-interactive task for scripts, CI and shell pipelines."""
+    """执行一次供脚本、CI 或管道使用的非交互任务。
+
+    方法组合命令行和 stdin 输入，调用共享 QueryEngine，并按 ``--json`` 决定
+    输出统一 RuntimeEvent 事实或纯最终文本。真实 QueryEngine 返回版本化事件时
+    优先使用该记录；旧测试替身只提供 ModelStreamEvent 时保留兼容降级。异常写入
+    结构化错误或 stderr，返回非零退出码；输出文件只在任务成功后写入。
+    """
     import sys
 
     stdout = stdout or sys.stdout
@@ -1037,12 +1044,8 @@ def run_exec(
     events: list[ModelStreamEvent] = []
 
     def on_stream_event(event: ModelStreamEvent) -> None:
+        """缓存兼容流事件；真实 QueryEngine 返回后优先输出统一运行事实。"""
         events.append(event)
-        if json_output:
-            stdout.write(_json_event_line(event) + "\n")
-            flush = getattr(stdout, "flush", None)
-            if callable(flush):
-                flush()
 
     try:
         result = query_engine.submit_message(
@@ -1066,6 +1069,13 @@ def run_exec(
         return 1
 
     reply = result.reply
+    if json_output:
+        factual_events = getattr(result, "runtime_events", None) or events
+        for event in factual_events:
+            stdout.write(_json_event_line(event) + "\n")
+        flush = getattr(stdout, "flush", None)
+        if callable(flush):
+            flush()
     output_path = getattr(args, "output_path", None)
     if output_path:
         _write_exec_output_file(output_path, reply)
