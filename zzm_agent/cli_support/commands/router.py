@@ -16,6 +16,7 @@ from zzm_agent.cli_support.rendering import (
     render_notification,
 )
 from zzm_agent.cli_support.git_workflow import GitWorkflow, GitWorkflowError
+from zzm_agent.cli_support.commands.context import CommandContext
 
 
 def handle_slash(
@@ -40,6 +41,14 @@ def handle_slash(
     Returns:
         ``True`` when the command was recognized and handled, otherwise ``False``.
     """
+    context = CommandContext(
+        registry=registry,
+        store=store,
+        optimizer=optimizer,
+        console=console,
+        runtime=runtime,
+    )
+    registry, store, optimizer, console, runtime = context.dependencies()
     command = cmd.strip()
 
     if command == "/status":

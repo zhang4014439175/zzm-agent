@@ -186,7 +186,7 @@ flowchart TD
 
 ## 执行进度总览
 
-> **当前下一任务：8.10B `[核心]` Slash Command 拆分。**
+> **当前下一任务：8.11 `[核心]` Secret Redaction 与内容信任标签基础。**
 
 ### 当前能力基线
 
@@ -276,8 +276,10 @@ flowchart TD
   - 完成：RuntimeEvent 已增加 Schema 版本与状态关联，ExecutionJournal 统一分配序号、持久化、筛选和 Replay；QueryEngine 与 CLI JSON 输出共享同一事实记录。说明见 `docs/8.10-runtime-event-execution-journal.md`。
 - [x] 8.10A `[核心]` CLI Runtime 拆分：把 `cli_support/runtime.py` 拆为 bootstrap、REPL 与 execution，CLI 只依赖 QueryEngine 和 RuntimeEvent
   - 完成：启动装配、交互循环和非交互执行已分别迁入 bootstrap、repl 与 execution；旧 runtime 路径保留兼容门面，新的执行入口统一经 QueryEngine。说明见 `docs/8.10A-cli-runtime-split.md`。
-- [ ] 8.10B `[核心]` Slash Command 拆分：把 `cli_support/commands.py` 拆为 router、session、git 与 diagnostics，并以 CommandContext 注入依赖
-- [ ] 8.10C `[核心]` UI 与 Renderer 目录拆分：把 `cli_support/rendering.py` 的输入、补全、Renderer 和主题迁入 `ui/` 分层目录
+- [x] 8.10B `[核心]` Slash Command 拆分：把 `cli_support/commands.py` 拆为 router、session、git 与 diagnostics，并以 CommandContext 注入依赖
+  - 完成：Slash Command 已迁入 commands 包，Router 使用 CommandContext 注入依赖，会话、Git 与诊断能力拥有独立模块。说明见 docs/8.10B-slash-command-split.md。
+- [x] 8.10C `[核心]` UI 与 Renderer 目录拆分：把 `cli_support/rendering.py` 的输入、补全、Renderer 和主题迁入 `ui/` 分层目录
+  - 完成：输入、补全、Renderer 与主题已通过 ui 分层目录提供，原 rendering 路径保留兼容门面。说明见 docs/8.10C-ui-renderer-split.md。
 - [ ] 8.11 `[核心]` Secret Redaction 与内容信任标签基础：敏感信息在日志和事件输出前脱敏，外部工具结果默认标记为不可信内容
 - [ ] P3.5 阶段验收：重构不改变既有用户行为和 Replay 结果，所有副作用经过 WorkspaceRuntime，CLI 不再依赖 AgentLoop 私有实现
 - [ ] P3.5 可选扩展 A — SQLite Journal：把追加事件、Turn/Tool/Checkpoint 索引和恢复游标写入 SQLite，练习事务、并发读取、Schema Migration 和损坏恢复；核心版继续使用 JSONL，不要求数据库化
