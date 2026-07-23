@@ -6,6 +6,7 @@ from enum import Enum
 from typing import Any, Protocol
 
 from zzm_agent.core.runtime_records import EventBus
+from zzm_agent.security.content import ContentTrust, redact_secrets, trust_metadata
 
 
 def _utc_now_iso() -> str:
@@ -72,6 +73,8 @@ class ToolResult:
     artifacts: list[dict[str, Any]] = field(default_factory=list)
     metadata: dict[str, Any] = field(default_factory=dict)
     display_mode: DisplayMode | str = DisplayMode.INLINE
+    content_trust: ContentTrust | str = ContentTrust.UNTRUSTED
+    content_source: str = "tool"
 
     @classmethod
     def from_text(
@@ -103,19 +106,24 @@ class ToolResult:
                 "user_expandable": display_policy.user_expandable,
             },
             artifacts=list(artifacts or []),
-            metadata=dict(metadata or {}),
+            metadata={
+                **dict(metadata or {}),
+                **trust_metadata(source=tool_name, trust=ContentTrust.UNTRUSTED),
+            },
             display_mode=mode,
+            content_trust=ContentTrust.UNTRUSTED,
+            content_source=tool_name,
         )
 
     def to_model_message(self) -> dict[str, str]:
         return {
             "role": "tool",
             "tool_call_id": self.tool_call_id,
-            "content": self.model_content,
+            "content": str(redact_secrets(self.model_content)),
         }
 
     def to_record(self) -> dict[str, Any]:
-        return {
+        return redact_secrets({
             "tool_call_id": self.tool_call_id,
             "tool_name": self.tool_name,
             "status": self.status,
@@ -128,7 +136,13 @@ class ToolResult:
                 if isinstance(self.display_mode, DisplayMode)
                 else str(self.display_mode)
             ),
-        }
+            "content_trust": (
+                self.content_trust.value
+                if isinstance(self.content_trust, ContentTrust)
+                else str(self.content_trust)
+            ),
+            "content_source": self.content_source,
+        })
 
     @classmethod
     def from_record(cls, record: dict[str, Any]) -> "ToolResult":
@@ -141,6 +155,10 @@ class ToolResult:
             artifacts=list(record.get("artifacts") or []),
             metadata=dict(record.get("metadata") or {}),
             display_mode=DisplayMode(record.get("display_mode", DisplayMode.INLINE.value)),
+            content_trust=ContentTrust(
+                record.get("content_trust", ContentTrust.UNTRUSTED.value)
+            ),
+            content_source=str(record.get("content_source") or record.get("tool_name") or "tool"),
         )
 
 

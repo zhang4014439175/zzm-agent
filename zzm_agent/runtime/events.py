@@ -6,6 +6,8 @@ from datetime import datetime, timezone
 from typing import TYPE_CHECKING, Any, Callable
 from uuid import uuid4
 
+from zzm_agent.security.content import redact_secrets
+
 if TYPE_CHECKING:
     from zzm_agent.runtime.journal import ExecutionJournal
 
@@ -64,7 +66,7 @@ class RuntimeEvent:
             "state_id": self.state_id,
             "correlation_id": self.correlation_id,
             "parent_event_id": self.parent_event_id,
-            "payload": _json_ready(self.payload),
+            "payload": redact_secrets(_json_ready(self.payload)),
         }
 
     @classmethod

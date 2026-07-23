@@ -8,6 +8,7 @@ from pathlib import Path
 from typing import Any, Callable
 
 from zzm_agent.constants import EVENT_TOOL_END, EVENT_TOOL_ERROR, EVENT_TOOL_START
+from zzm_agent.security.content import redact_secrets
 
 
 ToolEventCallback = Callable[["ToolEvent"], None]
@@ -38,15 +39,15 @@ def summarize_arguments(
     max_length: int = 160,
 ) -> dict[str, Any]:
     """Summarize tool arguments without logging very large payloads verbatim."""
-    return {
+    return redact_secrets({
         str(key): _summarize_value(value, max_length=max_length)
         for key, value in sorted(arguments.items())
-    }
+    })
 
 
 def preview_text(value: Any, max_length: int = 240) -> str:
     """Return a single-line preview for tool results and errors."""
-    text = str(value).replace("\r\n", "\n").replace("\n", "\\n")
+    text = str(redact_secrets(value)).replace("\r\n", "\n").replace("\n", "\\n")
     if len(text) <= max_length:
         return text
     return f"{text[:max_length]}... ({len(text)} chars)"
@@ -128,7 +129,7 @@ class TokenUsage:
 
     def to_record(self) -> dict[str, Any]:
         """Serialize usage for persisted state and debug records."""
-        return asdict(self)
+        return redact_secrets(asdict(self))
 
     @classmethod
     def from_record(cls, record: dict[str, Any] | None) -> "TokenUsage":
