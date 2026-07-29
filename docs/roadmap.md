@@ -186,7 +186,7 @@ flowchart TD
 
 ## 执行进度总览
 
-> **当前下一任务：P3.5 阶段验收。**
+> **当前下一任务：9.1 `[核心最小版]` MCP Client。**
 
 ### 当前能力基线
 
@@ -282,7 +282,8 @@ flowchart TD
   - 完成：输入、补全、Renderer 与主题已通过 ui 分层目录提供，原 rendering 路径保留兼容门面。说明见 docs/8.10C-ui-renderer-split.md。
 - [x] 8.11 `[核心]` Secret Redaction 与内容信任标签基础：敏感信息在日志和事件输出前脱敏，外部工具结果默认标记为不可信内容
   - 完成：RuntimeEvent、ToolEvent 与 ToolResult 已接入统一递归脱敏器，工具结果默认记录来源并标记为 untrusted。说明见 docs/8.11-secret-redaction-content-trust.md。
-- [ ] P3.5 阶段验收：重构不改变既有用户行为和 Replay 结果，所有副作用经过 WorkspaceRuntime，CLI 不再依赖 AgentLoop 私有实现
+- [x] P3.5 阶段验收：重构不改变既有用户行为和 Replay 结果，所有副作用经过 WorkspaceRuntime，CLI 不再依赖 AgentLoop 私有实现
+  - 完成：Replay、Workspace 副作用、CLI 依赖和兼容门面已形成可重复验收证据。说明见 docs/p3.5-architecture-acceptance.md。
 - [ ] P3.5 可选扩展 A — SQLite Journal：把追加事件、Turn/Tool/Checkpoint 索引和恢复游标写入 SQLite，练习事务、并发读取、Schema Migration 和损坏恢复；核心版继续使用 JSONL，不要求数据库化
 - [ ] P3.5 可选扩展 B — Hunk Tracker：记录每次文件编辑具体影响的代码块、来源 Tool Call、前后摘要和后续覆盖关系，用于精确 Diff、局部撤销和判断“某段代码是谁改的”
 - [ ] P3.5 可选扩展 C — Codebase Graph：从 import、调用、符号引用和文件关系建立轻量代码图谱，先支持 Python，再评估增量更新和跨语言索引；用于研究图谱检索是否比文本搜索更有效
