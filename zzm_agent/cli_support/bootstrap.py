@@ -18,6 +18,7 @@ from zzm_agent.core.model_metadata import resolve_model_context_limit
 from zzm_agent.core.observability import ToolEvent, ToolEventCallback, ToolEventLogger
 from zzm_agent.core.query_engine import QueryEngine
 from zzm_agent.core.tool_registry import ToolRegistry, set_active_registry
+from zzm_agent.core.mcp_client import MCPError, StdioMCPClient
 from zzm_agent.evolution.optimizer import EvolutionOptimizer
 from zzm_agent.memory.io import StorageCorruptionError
 from zzm_agent.memory.store import MemoryStore
@@ -602,8 +603,38 @@ def build_registry(cfg: dict[str, Any]) -> ToolRegistry:
         plugin_config=cfg.get("plugins", {}),
     )
     registry.load_configured_plugins()
+    _load_mcp_servers(registry, cfg)
 
     return registry
+
+
+def _load_mcp_servers(registry: ToolRegistry, cfg: dict[str, Any]) -> None:
+    """加载配置中的最小 stdio MCP 服务，并把失败隔离为诊断信息。
+
+    每项只接受服务名、命令数组和可选超时。连接成功后工具由注册表统一管理；
+    单个服务启动或协议失败不会阻止本地插件与其他服务继续可用，错误留在
+    ``registry.mcp_errors`` 供命令层展示。HTTP 等传输不在本阶段解析。
+    """
+    mcp_cfg = cfg.get("mcp", {})
+    servers = mcp_cfg.get("servers", []) if isinstance(mcp_cfg, dict) else []
+    for raw in servers if isinstance(servers, list) else []:
+        if not isinstance(raw, dict) or raw.get("enabled", True) is False:
+            continue
+        name = raw.get("name")
+        command = raw.get("command")
+        if not isinstance(name, str) or not isinstance(command, list) or not all(isinstance(x, str) for x in command):
+            registry.mcp_errors.append("Invalid MCP server configuration")
+            continue
+        try:
+            timeout_seconds = float(raw.get("timeout_seconds", 15))
+            if timeout_seconds <= 0:
+                raise ValueError("timeout_seconds must be positive")
+            client = StdioMCPClient(name, command, timeout_seconds=timeout_seconds)
+            client.connect(registry)
+        except (MCPError, TypeError, ValueError) as exc:
+            registry.mcp_errors.append(f"MCP server {name}: {exc}")
+        else:
+            registry.mcp_clients.append(client)
 
 
 def get_agent_loop_policy(cfg: dict[str, Any]) -> dict[str, int]:
@@ -826,6 +857,7 @@ def main(argv: list[str] | None = None) -> int:
             pass
 
     args: argparse.Namespace | None = None
+    runtime: dict[str, Any] | None = None
     try:
         args = parse_args(argv)
         if getattr(args, "command", "repl") == "completion":
@@ -863,3 +895,8 @@ def main(argv: list[str] | None = None) -> int:
         else:
             console.print("[red]Unexpected error occurred. Re-run with --debug for traceback.[/red]")
         return 1
+    finally:
+        if runtime is not None:
+            registry = runtime.get("registry")
+            if registry is not None:
+                registry.shutdown_mcp_clients()

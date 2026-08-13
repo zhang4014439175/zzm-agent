@@ -1,5 +1,5 @@
 #!/usr/bin/env python3
-"""Thin CLI entrypoint that re-exports the internal runtime helpers."""
+"""Thin CLI entrypoint for the bootstrap module."""
 
 from __future__ import annotations
 
@@ -17,7 +17,7 @@ if hasattr(sys.stderr, "reconfigure"):
     except Exception:
         pass
 
-from zzm_agent.cli_support.runtime import (
+from zzm_agent.cli_support.bootstrap import (
     main,
 )
 

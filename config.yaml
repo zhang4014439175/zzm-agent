@@ -30,6 +30,10 @@ agent:
   plugin_dirs:
     - "zzm_agent/plugins"
 
+# 最小 MCP 接入：每项用本地命令启动一个 stdio 服务；未配置时不会启动外部服务。
+mcp:
+  servers: []
+
 ui:
   # auto 会优先跟随本轮显式要求、输入语言、会话语言和系统 locale。
   response_language: "auto"

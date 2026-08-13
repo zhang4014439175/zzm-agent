@@ -8,7 +8,8 @@ from pathlib import Path
 from zzm_agent.cli_support.commands import handle_slash
 from zzm_agent.cli_support.git_workflow import GitWorkflow
 from zzm_agent.cli_support.rendering import PlainTextRenderer
-from zzm_agent.cli_support.runtime import parse_args, run_exec
+from zzm_agent.cli_support.bootstrap import parse_args
+from zzm_agent.cli_support.execution import run_exec
 from zzm_agent.core.config import ConfigManager, ConfigScope, ConfigSource
 from zzm_agent.core.model_stream import ModelStreamEvent
 from zzm_agent.core.runtime_records import ArtifactStore

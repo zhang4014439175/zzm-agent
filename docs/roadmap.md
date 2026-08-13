@@ -186,7 +186,7 @@ flowchart TD
 
 ## 执行进度总览
 
-> **当前下一任务：9.1 `[核心最小版]` MCP Client。**
+> **当前下一任务：9.2 `[核心]` Skills 模块化与发现状态。**
 
 ### 当前能力基线
 
@@ -292,7 +292,7 @@ flowchart TD
 
 ### P4：MCP、Skills 与 Plugin 分发
 
-- [ ] 9.1 `[核心最小版]` MCP Client：先支持一个 stdio Server 的 initialize、工具发现、调用和 shutdown，并复用权限、超时、Artifact 与错误隔离
+- [x] 9.1 `[核心最小版]` MCP Client：先支持一个 stdio Server 的 initialize、工具发现、调用和 shutdown，并复用权限、超时、Artifact 与错误隔离
 - [ ] 9.2 `[核心]` Skills 模块化与发现状态：支持本地 Skill 格式、显式触发、渐进加载、SkillDiscoveryState、资源预算和禁用策略
 - [ ] 9.3 `[核心]` 工具 Schema 按需装载与 Tool Search：根据任务、Skill、MCP Server 和执行阶段延迟暴露工具，减少固定 Schema 成本
 - [ ] 9.4 `[核心最小版]` Plugin Manifest：支持本地插件描述、Skills/MCP 配置打包、权限声明、启用和禁用

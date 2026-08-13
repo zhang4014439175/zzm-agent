@@ -13,25 +13,26 @@ from zzm_agent.cli_support.rendering import (
 )
 from zzm_agent.core.model_stream import ModelStreamEvent
 from zzm_agent.core.tool_results import ToolResult
-from zzm_agent.cli_support.runtime import (
-    _build_working_footer,
-    _build_exec_prompt,
+from zzm_agent.cli_support.bootstrap import (
     build_tool_confirmation_callback,
     build_noninteractive_confirmation_callback,
     _ask_tool_approval_choice,
     _config_bool,
-    _format_repl_exception,
-    _format_repl_exception_with_runtime,
     _resolve_plugin_dirs,
     create_first_run_config,
     ensure_model_credentials,
     render_completion_script,
-    run_exec,
-    _start_working_status,
-    _stop_working_status,
     get_agent_loop_policy,
     load_config,
     parse_args,
+)
+from zzm_agent.cli_support.execution import _build_exec_prompt, run_exec
+from zzm_agent.cli_support.repl import (
+    _build_working_footer,
+    _format_repl_exception,
+    format_runtime_exception as _format_repl_exception_with_runtime,
+    _start_working_status,
+    _stop_working_status,
     run_repl,
 )
 from zzm_agent.core.model_metadata import resolve_model_context_limit
@@ -347,7 +348,7 @@ def test_ensure_model_credentials_prompts_and_writes_env(tmp_path, monkeypatch):
     monkeypatch.delenv("ZZM_AGENT_API_KEY", raising=False)
     monkeypatch.delenv("OPENAI_API_KEY", raising=False)
     monkeypatch.setattr(
-        "zzm_agent.cli_support.runtime.prompt_for_model_config",
+        "zzm_agent.cli_support.bootstrap.prompt_for_model_config",
         lambda **kwargs: {
             "base_url": kwargs.get("base_url", "https://models.example/v1"),
             "model_name": kwargs.get("model_name", "demo-model"),
@@ -422,15 +423,14 @@ def test_working_status_resets_elapsed_for_each_new_request(monkeypatch):
 
     times = iter([10.0, 20.0])
     console = FakeConsole()
-    monkeypatch.setattr("zzm_agent.cli_support.runtime.time.monotonic", lambda: next(times))
     monkeypatch.setattr("rich.live.Live", FakeLive)
 
-    assert _start_working_status(console) is True
+    assert _start_working_status(console, monotonic_fn=lambda: next(times)) is True
     first_status = console._zzm_working_status
     assert first_status.started_at == 10.0
     assert _stop_working_status(console) is True
 
-    assert _start_working_status(console) is True
+    assert _start_working_status(console, monotonic_fn=lambda: next(times)) is True
     second_status = console._zzm_working_status
 
     assert second_status is not first_status
@@ -452,10 +452,9 @@ def test_working_status_resume_can_keep_elapsed_timer(monkeypatch):
             return None
 
     console = FakeConsole()
-    monkeypatch.setattr("zzm_agent.cli_support.runtime.time.monotonic", lambda: 10.0)
     monkeypatch.setattr("rich.live.Live", FakeLive)
 
-    assert _start_working_status(console) is True
+    assert _start_working_status(console, monotonic_fn=lambda: 10.0) is True
     first_status = console._zzm_working_status
     assert _stop_working_status(console) is True
     assert _start_working_status(console, reset_elapsed=False) is True
@@ -686,6 +685,10 @@ def test_run_repl_prints_traceback_in_debug_mode(monkeypatch):
         def run(self, user_input, stream=True, on_text_chunk=None):
             raise ValueError("boom")
 
+    class FakeQueryEngine:
+        def submit_message(self, *args, **kwargs):
+            raise ValueError("boom")
+
     class FakeStore:
         session_id = "session-1"
 
@@ -703,12 +706,12 @@ def test_run_repl_prints_traceback_in_debug_mode(monkeypatch):
         "store": FakeStore(),
         "optimizer": FakeOptimizer(),
         "loop": FakeLoop(),
+        "query_engine": FakeQueryEngine(),
         "observer": None,
         "stream": False,
         "debug": True,
     }
 
-    monkeypatch.setattr("zzm_agent.cli_support.runtime.build_prompt_session", lambda **kwargs: FakePromptSession())
     monkeypatch.setattr("zzm_agent.cli_support.rendering.render_welcome", lambda *args, **kwargs: None)
     inputs = iter(["hello", KeyboardInterrupt()])
 
@@ -718,9 +721,11 @@ def test_run_repl_prints_traceback_in_debug_mode(monkeypatch):
             raise value
         return value
 
-    monkeypatch.setattr("zzm_agent.cli_support.runtime.read_repl_input", fake_read_repl_input)
-
-    result = run_repl(runtime)
+    result = run_repl(
+        runtime,
+        build_prompt_session_fn=lambda **kwargs: FakePromptSession(),
+        read_repl_input_fn=fake_read_repl_input,
+    )
 
     assert result == 0
     assert fake_console.exception_called is True

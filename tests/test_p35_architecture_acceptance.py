@@ -3,7 +3,7 @@ from __future__ import annotations
 import ast
 from pathlib import Path
 
-from zzm_agent.cli_support import bootstrap, execution, repl, runtime
+from zzm_agent.cli_support import bootstrap, execution, repl
 
 
 ROOT = Path(__file__).resolve().parents[1]
@@ -29,7 +29,6 @@ def test_cli_execution_boundaries_do_not_import_agent_loop() -> None:
         "zzm_agent/cli_support/repl.py"
     )
     assert bootstrap.build_runtime.__module__ == "zzm_agent.cli_support.bootstrap"
-    assert runtime.run_exec is execution.run_exec
     assert repl.run_repl.__module__ == "zzm_agent.cli_support.repl"
 
 
@@ -52,4 +51,3 @@ def test_runtime_event_and_state_compatibility_facades_remain_available() -> Non
 
     assert EventBus is SplitEventBus
     assert RuntimeEvent is SplitRuntimeEvent
-

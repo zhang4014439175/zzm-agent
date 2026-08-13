@@ -82,6 +82,24 @@ class ToolRegistry:
         self._plugin_instances: list[BasePlugin] = []
         self._registration_context_stack: list[_RegistrationContext] = []
         self._cleanup_callbacks: dict[str, list[Callable[..., None]]] = {}
+        # 外部 MCP 连接由启动层附着在这里；注册表拥有它们，调用方可在退出时统一关闭。
+        self.mcp_clients: list[Any] = []
+        self.mcp_errors: list[str] = []
+
+    def shutdown_mcp_clients(self) -> None:
+        """按连接建立的反序关闭全部 MCP 服务并清空生命周期所有权。
+
+        本方法没有输入和返回值，供 CLI 的 ``finally`` 路径调用。单个服务清理
+        失败不会阻止其余服务关闭，也不会覆盖主流程结果；失败会追加到诊断列表。
+        重复调用只处理仍由 Registry 持有的连接。
+        """
+        for client in reversed(self.mcp_clients):
+            try:
+                client.close()
+            except Exception:
+                # 清理不能覆盖已经完成的主流程；连接错误保留供 /mcp 等诊断入口展示。
+                self.mcp_errors.append("MCP shutdown failed")
+        self.mcp_clients.clear()
 
     def tool(
         self,
@@ -224,6 +242,48 @@ class ToolRegistry:
             A list of tool schemas compatible with LLM function calling.
         """
         return [v["schema"] for v in self.tools.values()]
+
+    def register_external_tool(
+        self,
+        *,
+        name: str,
+        description: str,
+        parameters: dict[str, Any],
+        handler: Callable[..., Any],
+        risk_level: str = "medium",
+        group: str = "MCP",
+        timeout_seconds: float | None = None,
+    ) -> None:
+        """注册由外部服务实现的工具，并仍让它走统一的校验与执行入口。
+
+        外部服务已经提供 JSON Schema，不能再从 Python 函数签名推断；本方法保留
+        该 Schema，同时把调用包装为普通注册工具。这样参数校验、取消检查、超时
+        记录和调用方的权限策略仍以同一份工具元数据为准。重复名称会失败，避免
+        外部服务悄悄覆盖本地工具。
+        """
+        if name in self.tools:
+            raise ValueError(f"Tool already registered: {name}")
+        normalized_risk = risk_level.strip().lower()
+        if normalized_risk not in _VALID_RISK_LEVELS:
+            raise ValueError(f"Unsupported risk level: {risk_level}")
+        schema_parameters = dict(parameters)
+        schema_parameters.setdefault("type", "object")
+        schema_parameters.setdefault("properties", {})
+        schema_parameters.setdefault("additionalProperties", False)
+        self.tools[name] = {
+            "fn": handler,
+            "schema": {"type": "function", "function": {
+                "name": name, "description": description, "parameters": schema_parameters,
+            }},
+            "description": description,
+            "risk_level": normalized_risk,
+            "plugin_name": "",
+            "plugin_version": "",
+            "namespace": "",
+            "group": group,
+            "examples": [],
+            "timeout_seconds": max(0.001, float(timeout_seconds)) if timeout_seconds is not None else None,
+        }
 
     def call(
         self,

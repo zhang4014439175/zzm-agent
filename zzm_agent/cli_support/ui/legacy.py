@@ -368,8 +368,8 @@ def render_error_card(console: Any, exc: Exception, runtime: dict[str, Any] | No
         return
 
     # Extract clean error message
-    from zzm_agent.cli_support.runtime import _format_repl_exception_with_runtime
-    clean_msg = _format_repl_exception_with_runtime(exc, runtime)
+    from zzm_agent.cli_support.repl import format_runtime_exception
+    clean_msg = format_runtime_exception(exc, runtime)
     lower_msg = clean_msg.lower()
 
     # Determine diagnosis and solutions

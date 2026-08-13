@@ -108,7 +108,7 @@ def handle_slash(
         return True
 
     if command == "/mcp":
-        _handle_placeholder_registry(console, runtime, key="mcp_connections", label="MCP")
+        _handle_mcp(console, registry, runtime)
         return True
 
     if command == "/sessions":
@@ -1344,6 +1344,26 @@ def _handle_placeholder_registry(
         return
     console.print(f"[cyan]{label}[/cyan]")
     console.print(str(state))
+
+
+def _handle_mcp(console: Any, registry: ToolRegistry, runtime: dict[str, Any] | None) -> None:
+    """只读展示 MCP 连接、发现工具和启动错误。
+
+    输出来自 Registry 当前持有的连接，不发起网络或工具调用，也不改变连接状态。
+    没有连接和错误时沿用兼容占位提示；混合成功与失败时会同时展示，便于用户
+    判断某个服务失败是否影响了其他服务。
+    """
+    clients = getattr(registry, "mcp_clients", [])
+    errors = getattr(registry, "mcp_errors", [])
+    if not clients and not errors:
+        _handle_placeholder_registry(console, runtime, key="mcp_connections", label="MCP")
+        return
+    console.print("[cyan]MCP connections[/cyan]")
+    for client in clients:
+        connection = client.connection
+        console.print(f"[green]Connected[/green] {connection.name}: {', '.join(connection.tools) or 'no tools'}")
+    for error in errors:
+        console.print(f"[yellow]MCP error:[/yellow] {error}")
 
 
 def _runtime_permissions(runtime: dict[str, Any] | None) -> Any | None:

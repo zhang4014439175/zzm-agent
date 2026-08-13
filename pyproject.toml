@@ -19,7 +19,7 @@ dev = ["pytest>=8.0", "pytest-mock>=3.14"]
 context = ["tiktoken>=0.7.0"]
 
 [project.scripts]
-zzm-agent = "zzm_agent.cli_support.runtime:main"
+zzm-agent = "zzm_agent.cli_support.bootstrap:main"
 
 [tool.setuptools.packages.find]
 where = ["."]

@@ -298,7 +298,7 @@ def _history_has_tool_json(
 
 def _run_llm(case: dict[str, Any], workspace: Path, config: dict[str, Any]) -> bool:
     from openai import OpenAI
-    from zzm_agent.cli_support.runtime import build_registry, get_agent_loop_policy
+    from zzm_agent.cli_support.bootstrap import build_registry, get_agent_loop_policy
     
     api_key = config["model"].get("api_key") or os.environ.get("ZZM_AGENT_API_KEY") or os.environ.get("OPENAI_API_KEY")
     client = OpenAI(base_url=config["model"]["base_url"], api_key=api_key)

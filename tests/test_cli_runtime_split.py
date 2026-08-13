@@ -3,7 +3,7 @@ from __future__ import annotations
 import ast
 from pathlib import Path
 
-from zzm_agent.cli_support import bootstrap, execution, repl, runtime
+from zzm_agent.cli_support import bootstrap, execution, repl
 
 
 ROOT = Path(__file__).resolve().parents[1]
@@ -34,9 +34,4 @@ def test_execution_and_repl_do_not_coordinate_agent_loop_directly() -> None:
         ROOT / "zzm_agent" / "cli_support" / "execution.py"
     )
 
-
-def test_legacy_runtime_module_remains_a_compatibility_facade() -> None:
-    assert runtime.parse_args is bootstrap.parse_args
-    assert runtime.run_exec is execution.run_exec
-    assert runtime.build_runtime is bootstrap.build_runtime
 
