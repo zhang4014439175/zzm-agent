@@ -6,6 +6,7 @@ from inspect import signature
 from typing import Any, Callable
 
 from zzm_agent.core.runtime_messages import ConversationMessageStore
+from zzm_agent.skills import SkillDiscoveryState
 
 
 @dataclass
@@ -18,6 +19,7 @@ class PreparedContext:
     max_context_tokens: int
     tool_schema_tokens: int
     output_reserve_tokens: int
+    skill_state: SkillDiscoveryState | None = None
 
 
 class ContextPreparationService:
@@ -34,8 +36,9 @@ class ContextPreparationService:
         memory_injection_limit: int,
         max_output_tokens: int | None,
         supports_prompt_cache: bool,
+        skill_manager: Any | None = None,
     ) -> None:
-        """保存上下文来源和预算依赖；所有对象仍由原运行时持有并负责生命周期。"""
+        """保存上下文来源和预算依赖；Skill 管理器缺失时保持旧上下文行为。"""
         self.store = store
         self.registry = registry
         self.system_prompt = system_prompt
@@ -44,6 +47,7 @@ class ContextPreparationService:
         self.memory_injection_limit = memory_injection_limit
         self.max_output_tokens = max_output_tokens
         self.supports_prompt_cache = supports_prompt_cache
+        self.skill_manager = skill_manager
 
     def build_system_prompt(self, user_input: str) -> str:
         """按原优先级构建系统提示；没有 PromptManager 时返回静态提示。"""
@@ -65,6 +69,16 @@ class ContextPreparationService:
         接受新增预算参数，会根据函数签名自动省略，保证迁移期兼容。
         """
         system_prompt = self.build_system_prompt(user_input)
+        skill_messages = (
+            self.skill_manager.build_messages(user_input)
+            if self.skill_manager is not None
+            else []
+        )
+        skill_state = self.skill_manager.state if self.skill_manager is not None else None
+        skill_tokens = sum(
+            self.token_counter(str(message.get("content") or ""))
+            for message in skill_messages
+        )
         tools = self.registry.get_schemas()
         tool_schema_tokens = self.token_counter(
             json.dumps(tools, ensure_ascii=False, sort_keys=True, default=str)
@@ -94,7 +108,8 @@ class ContextPreparationService:
         optional = {
             "tool_schema_tokens": tool_schema_tokens,
             "output_reserve_tokens": output_reserve_tokens,
-            "runtime_instruction_tokens": runtime_instruction_tokens,
+            # Skill 会在存储层组装后插入，因此先从历史预算扣除其成本。
+            "runtime_instruction_tokens": runtime_instruction_tokens + skill_tokens,
             "prompt_cache_strategy": (
                 "provider_native" if self.supports_prompt_cache else "stable_prefix"
             ),
@@ -102,6 +117,18 @@ class ContextPreparationService:
         parameters = signature(self.store.build_turn_messages).parameters
         kwargs.update({key: value for key, value in optional.items() if key in parameters})
         messages, compression = self.store.build_turn_messages(**kwargs)
+        if skill_messages:
+            messages[max(0, len(messages) - 1):max(0, len(messages) - 1)] = skill_messages
+            compression.setdefault("budget_breakdown", {})["skills"] = skill_tokens
+            compression.setdefault("context_sources", []).extend(
+                {
+                    "source": "skill",
+                    "name": name,
+                    "reason": skill_state.activation_reasons.get(name, ""),
+                }
+                for name in sorted(skill_state.activated)
+            )
+            compression["skill_discovery_state"] = skill_state.to_record()
         message_store = ConversationMessageStore.begin_turn(
             persisted_messages=self.store.load_history(),
             model_context_messages=messages,
@@ -119,4 +146,5 @@ class ContextPreparationService:
             max_context_tokens=max_context_tokens,
             tool_schema_tokens=tool_schema_tokens,
             output_reserve_tokens=output_reserve_tokens,
+            skill_state=skill_state,
         )

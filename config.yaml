@@ -3,6 +3,9 @@ model:
   base_url: "${LLM_BASE_URL}"
   api_key: "${LLM_API_KEY}"
   model_name: "${LLM_MODEL_NAME}"
+  # OpenRouter 用这两个请求头把新调用归属到 zzm-agent，而不是显示 Unknown。
+  openrouter_referer: "${OPENROUTER_APP_URL:-https://github.com/zhang4014439175/zzm-agent}"
+  openrouter_title: "${OPENROUTER_APP_NAME:-zzm-agent}"
   temperature: 0.7
   max_tokens: 4096
   # Optional explicit model context window. If omitted, OpenRouter models are
@@ -53,6 +56,16 @@ memory:
   # 每个指令文件的最大加载字符数上限，超出部分将被自动截断以节省模型 Token 消耗
   instruction_max_chars: 8000
   auto_memory_enabled: true
+
+# 本地 Skill 在发现时只读取 SKILL.md 头部，命中当前任务后才加载正文和声明资源。
+skills:
+  directories:
+    - ".zzm_agent/skills"
+    - "~/.zzm_agent/skills"
+  disabled: []
+  pinned: []
+  max_skill_tokens: 2000
+  max_resource_tokens: 1000
 
 evolution:
   enabled: false

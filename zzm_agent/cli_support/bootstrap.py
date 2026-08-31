@@ -16,6 +16,7 @@ from zzm_agent.core.change_set import ChangeSetStore
 from zzm_agent.core.config import ConfigManager
 from zzm_agent.core.model_metadata import resolve_model_context_limit
 from zzm_agent.core.observability import ToolEvent, ToolEventCallback, ToolEventLogger
+from zzm_agent.core.provider_headers import build_provider_default_headers
 from zzm_agent.core.query_engine import QueryEngine
 from zzm_agent.core.tool_registry import ToolRegistry, set_active_registry
 from zzm_agent.core.mcp_client import MCPError, StdioMCPClient
@@ -23,6 +24,7 @@ from zzm_agent.evolution.optimizer import EvolutionOptimizer
 from zzm_agent.memory.io import StorageCorruptionError
 from zzm_agent.memory.store import MemoryStore
 from zzm_agent.prompt.manager import PromptManager
+from zzm_agent.skills import SkillManager
 
 CONFIG_PATH = Path("config.yaml")
 DEFAULT_BASE_URL = "https://api.openai.com/v1"
@@ -117,6 +119,8 @@ def _default_config_text() -> str:
         f'  base_url: "${{LLM_BASE_URL:-{DEFAULT_BASE_URL}}}"\n'
         '  api_key: "${LLM_API_KEY}"\n'
         f'  model_name: "${{LLM_MODEL_NAME:-{DEFAULT_MODEL_NAME}}}"\n'
+        '  openrouter_referer: "${OPENROUTER_APP_URL:-https://github.com/zhang4014439175/zzm-agent}"\n'
+        '  openrouter_title: "${OPENROUTER_APP_NAME:-zzm-agent}"\n'
         "  temperature: 0.7\n"
         "  max_tokens: 4096\n"
         "  context_window_tokens:\n"
@@ -152,6 +156,13 @@ def _default_config_text() -> str:
         '    - "ZZM.md"\n'
         "  instruction_max_chars: 8000\n"
         "  auto_memory_enabled: true\n"
+        "\n"
+        "skills:\n"
+        '  directories: [".zzm_agent/skills", "~/.zzm_agent/skills"]\n'
+        "  disabled: []\n"
+        "  pinned: []\n"
+        "  max_skill_tokens: 2000\n"
+        "  max_resource_tokens: 1000\n"
         "\n"
         "evolution:\n"
         "  enabled: false\n"
@@ -697,6 +708,7 @@ def build_runtime(args: argparse.Namespace, cfg: dict[str, Any]) -> dict[str, An
     client = OpenAI(
         base_url=cfg["model"]["base_url"],
         api_key=api_key,
+        default_headers=build_provider_default_headers(cfg["model"]),
     )
     registry = build_registry(cfg)
     context_limit = resolve_model_context_limit(cfg)
@@ -747,6 +759,24 @@ def build_runtime(args: argparse.Namespace, cfg: dict[str, Any]) -> dict[str, An
         workspace_root=workspace_root,
         registry=registry,
     )
+    skills_cfg = cfg.get("skills", {})
+    config_dir = Path(cfg.get("_config_dir") or workspace_root)
+    skill_directories: list[Path] = []
+    for raw_path in skills_cfg.get(
+        "directories", [".zzm_agent/skills", "~/.zzm_agent/skills"]
+    ):
+        skill_path = Path(str(raw_path)).expanduser()
+        if not skill_path.is_absolute():
+            skill_path = config_dir / skill_path
+        skill_directories.append(skill_path.resolve())
+    skill_manager = SkillManager(
+        skill_directories,
+        disabled={str(item) for item in skills_cfg.get("disabled", [])},
+        pinned={str(item) for item in skills_cfg.get("pinned", [])},
+        max_skill_tokens=skills_cfg.get("max_skill_tokens", 2000),
+        max_resource_tokens=skills_cfg.get("max_resource_tokens", 1000),
+        token_counter=store.estimate_text_tokens,
+    )
     loop = AgentLoop(
         client=client,
         model=cfg["model"]["model_name"],
@@ -787,6 +817,7 @@ def build_runtime(args: argparse.Namespace, cfg: dict[str, Any]) -> dict[str, An
             observer.on_tool_error, tool_event_logger, change_sets.capture_end
         ),
         prompt_manager=prompt_manager,
+        skill_manager=skill_manager,
     )
     snapshot_path = workspace_root / ZZM_AGENT_DIR / "state" / f"{store.session_id}.json"
     query_engine = QueryEngine.with_snapshot_path(
@@ -805,6 +836,7 @@ def build_runtime(args: argparse.Namespace, cfg: dict[str, Any]) -> dict[str, An
         "loop": loop,
         "query_engine": query_engine,
         "prompt_manager": prompt_manager,
+        "skills": skill_manager,
         "observer": observer,
         "change_sets": change_sets,
         "model_context_limit_source": context_limit.source,

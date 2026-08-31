@@ -10,6 +10,7 @@ from typing import Any
 
 from zzm_agent.core.agent_loop import AgentLoop
 from zzm_agent.core.errors import ToolError
+from zzm_agent.core.provider_headers import build_provider_default_headers
 from zzm_agent.memory.store import MemoryStore
 from zzm_agent.eval.replay import MockToolRegistry, ReplayLLM, ReplayTurn, ReplayToolCall
 
@@ -301,7 +302,11 @@ def _run_llm(case: dict[str, Any], workspace: Path, config: dict[str, Any]) -> b
     from zzm_agent.cli_support.bootstrap import build_registry, get_agent_loop_policy
     
     api_key = config["model"].get("api_key") or os.environ.get("ZZM_AGENT_API_KEY") or os.environ.get("OPENAI_API_KEY")
-    client = OpenAI(base_url=config["model"]["base_url"], api_key=api_key)
+    client = OpenAI(
+        base_url=config["model"]["base_url"],
+        api_key=api_key,
+        default_headers=build_provider_default_headers(config["model"]),
+    )
     
     original_workspace = os.environ.get("ZZM_AGENT_WORKSPACE_ROOT")
     os.environ["ZZM_AGENT_WORKSPACE_ROOT"] = str(workspace)

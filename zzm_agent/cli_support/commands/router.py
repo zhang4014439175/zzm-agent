@@ -104,7 +104,7 @@ def handle_slash(
         return True
 
     if command == "/skills":
-        _handle_placeholder_registry(console, runtime, key="skills", label="Skills")
+        _handle_skills(console, runtime)
         return True
 
     if command == "/mcp":
@@ -1344,6 +1344,41 @@ def _handle_placeholder_registry(
         return
     console.print(f"[cyan]{label}[/cyan]")
     console.print(str(state))
+
+
+def _handle_skills(console: Any, runtime: dict[str, Any] | None) -> None:
+    """只读展示本地 Skill 目录和最近一次发现状态，不触发正文或资源加载。
+
+    命令会刷新轻量元数据目录，因此新加入的 ``SKILL.md`` 可立即出现；正文仍只
+    在普通任务匹配后读取。没有运行时管理器时保留旧占位提示以兼容嵌入方。
+    """
+    manager = (runtime or {}).get("skills") if runtime else None
+    if manager is None:
+        _handle_placeholder_registry(console, runtime, key="skills", label="Skills")
+        return
+    previous = manager.state
+    manager.discover()
+    state = previous if previous.activated or previous.rejected else manager.state
+    console.print("[cyan]Skills[/cyan]")
+    if not manager.catalog:
+        console.print("No local Skills discovered.")
+    for definition in sorted(manager.catalog.values(), key=lambda item: item.name):
+        status = "disabled" if (
+            definition.name.casefold() in manager.disabled or not definition.enabled
+        ) else "available"
+        console.print(f"- {definition.name} ({status}): {definition.description}")
+    if state.activated:
+        console.print("Activated: " + ", ".join(sorted(state.activated)))
+    if state.rejected:
+        console.print(
+            "Rejected: "
+            + ", ".join(
+                f"{name}={reason}" for name, reason in sorted(state.rejected.items())
+            )
+        )
+    console.print(
+        f"Loaded resources: {len(state.loaded_resources)}; token cost: {state.token_cost}"
+    )
 
 
 def _handle_mcp(console: Any, registry: ToolRegistry, runtime: dict[str, Any] | None) -> None:

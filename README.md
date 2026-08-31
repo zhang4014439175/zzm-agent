@@ -103,6 +103,9 @@ model:
   base_url: "${LLM_BASE_URL:-https://api.openai.com/v1}"
   api_key: "${LLM_API_KEY}"
   model_name: "${LLM_MODEL_NAME:-gpt-4o-mini}"
+  # OpenRouter uses these values to attribute new requests to this application.
+  openrouter_referer: "${OPENROUTER_APP_URL:-https://github.com/zhang4014439175/zzm-agent}"
+  openrouter_title: "${OPENROUTER_APP_NAME:-zzm-agent}"
   temperature: 0.7
   max_tokens: 4096
 

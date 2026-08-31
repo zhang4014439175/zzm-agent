@@ -109,6 +109,7 @@ class AgentLoop:
         on_tool_end: ToolEventCallback | None = None,
         on_tool_error: ToolEventCallback | None = None,
         prompt_manager: "PromptManager | None" = None,
+        skill_manager: Any | None = None,
         cancellation_controller: CancellationController | None = None,
         hook_registry: HookRegistry | None = None,
         max_stop_hook_attempts: int = 1,
@@ -134,6 +135,7 @@ class AgentLoop:
             tool_choice: Provider 接受的工具选择策略；不兼容时可设为 ``None``。
             on_tool_start/on_tool_end/on_tool_error: 工具生命周期事件回调。
             prompt_manager: 按当前任务和历史动态组装系统提示词的可选组件。
+            skill_manager: 按请求发现并渐进加载本地 Skill 的可选组件。
             cancellation_controller: 负责 Turn、Task 和工具调用取消传播的控制器。
             hook_registry/max_stop_hook_attempts: 生命周期 Hook 及停止检查重试上限。
             empty_final_retries: 模型空内容且无工具调用时的有限恢复次数。
@@ -180,6 +182,7 @@ class AgentLoop:
         self.on_tool_end = on_tool_end
         self.on_tool_error = on_tool_error
         self.prompt_manager = prompt_manager
+        self.skill_manager = skill_manager
         self.last_turn_usage = TokenUsage()
         self.cumulative_usage = TokenUsage()
         self.usage_state = UsageState()
@@ -226,6 +229,7 @@ class AgentLoop:
             memory_injection_limit=self.memory_injection_limit,
             max_output_tokens=self.max_tokens,
             supports_prompt_cache=self.model_adapter.capabilities.supports_prompt_cache,
+            skill_manager=self.skill_manager,
         )
 
     def _build_tool_call_record(
@@ -947,6 +951,11 @@ class AgentLoop:
         self.last_message_store = message_store
         turn_usage = TokenUsage()
         turn_state = TurnState(user_input=user_input)
+        if prepared_context.skill_state is not None:
+            turn_state.discovered_skills.update(prepared_context.skill_state.discovered)
+            turn_state.skill_discovery_state = (
+                prepared_context.skill_state.to_record()
+            )
         turn_state.start()
         loop_state = turn_state.start_loop()
         self.last_turn_state = turn_state

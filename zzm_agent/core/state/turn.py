@@ -77,6 +77,7 @@ class TurnState:
     usage: TokenUsage = field(default_factory=TokenUsage)
     usage_state: UsageState = field(default_factory=UsageState)
     discovered_skills: set[str] = field(default_factory=set)
+    skill_discovery_state: dict[str, Any] = field(default_factory=dict)
     loaded_memory_paths: set[str] = field(default_factory=set)
     permission_requests: list[dict[str, Any]] = field(default_factory=list)
     permission_denials: list[dict[str, Any]] = field(default_factory=list)
@@ -201,6 +202,7 @@ class TurnState:
             "usage": self.usage.to_record(),
             "usage_state": self.usage_state.to_record(),
             "discovered_skills": sorted(self.discovered_skills),
+            "skill_discovery_state": dict(self.skill_discovery_state),
             "loaded_memory_paths": sorted(self.loaded_memory_paths),
             "permission_requests": list(self.permission_requests),
             "permission_denials": list(self.permission_denials),
@@ -241,6 +243,7 @@ class TurnState:
             usage=TokenUsage.from_record(record.get("usage")),
             usage_state=UsageState.from_record(record.get("usage_state")),
             discovered_skills=set(record.get("discovered_skills", [])),
+            skill_discovery_state=dict(record.get("skill_discovery_state", {})),
             loaded_memory_paths=set(record.get("loaded_memory_paths", [])),
             permission_requests=[
                 dict(item)
@@ -289,4 +292,3 @@ class TurnState:
             checkpoint=dict(record.get("checkpoint") or {}),
         )
         return state
-
