@@ -294,7 +294,7 @@ flowchart TD
 
 - [x] 9.1 `[核心最小版]` MCP Client：先支持一个 stdio Server 的 initialize、工具发现、调用和 shutdown，并复用权限、超时、Artifact 与错误隔离
 - [x] 9.2 `[核心]` Skills 模块化与发现状态：支持本地 Skill 格式、显式触发、渐进加载、SkillDiscoveryState、资源预算和禁用策略
-- [ ] 9.3 `[核心]` 工具 Schema 按需装载与 Tool Search：根据任务、Skill、MCP Server 和执行阶段延迟暴露工具，减少固定 Schema 成本
+- [ ] 9.3 `[核心]` 工具 Schema 按需装载与 Tool Search：根据任务、Skill、MCP Server 和执行阶段延迟暴露工具，减少固定 Schema 成本；MCP 工具使用独立的 `@mcp:` 前缀模糊搜索，不混入 `$Skill` 菜单
 - [ ] 9.4 `[核心最小版]` Plugin Manifest：支持本地插件描述、Skills/MCP 配置打包、权限声明、启用和禁用
 - [ ] 9.5 `[核心最小版]` MCP / Skill / Plugin Renderer：展示来源、连接状态、激活原因、权限请求和远程错误
 - [ ] P4 核心阶段验收：一个本地 Skill 和一个真实 stdio MCP Server 可端到端使用，且不能绕过核心权限和 Workspace 边界
@@ -1601,7 +1601,7 @@ Skill 是任务知识包，包含触发描述、步骤、资源、示例、允�
 
 ### 9.3 工具 Schema 按需装载与 Tool Search
 
-根据任务、Skill、MCP server、阶段和用户显式选择延迟暴露工具，避免每轮塞入全部 schema。大型 MCP server 支持工具搜索和按需启用。
+根据任务、Skill、MCP server、阶段和用户显式选择延迟暴露工具，避免每轮塞入全部 schema。大型 MCP server 支持工具搜索和按需启用。会话输入中的 `$` 只模糊搜索 Skills；MCP 工具在本阶段使用独立的 `@mcp:` 前缀搜索，候选项必须展示 Server 来源，选中后只按需暴露对应工具，不直接绕过权限执行。
 
 ### 9.4 Plugin Manifest、安装与启停
 

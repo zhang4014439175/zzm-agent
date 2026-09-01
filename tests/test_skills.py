@@ -5,6 +5,7 @@ from pathlib import Path
 from zzm_agent.core.context_preparation import ContextPreparationService
 from zzm_agent.core.state.turn import TurnState
 from zzm_agent.cli_support.commands.router import handle_slash
+from zzm_agent.cli_support.ui.completion import SlashCommandCompleter
 from zzm_agent.skills import SkillManager
 
 
@@ -216,3 +217,72 @@ def test_skills_command_lists_metadata_without_loading_body(tmp_path: Path) -> N
     assert "review (available): Review Python changes" in rendered
     assert "Loaded resources: 0" in rendered
     assert manager.state.loaded_resources == []
+
+
+def test_dollar_completion_fuzzy_searches_available_skills(tmp_path: Path) -> None:
+    """验证会话框中的美元前缀使用子序列模糊匹配，并展示 Skill 说明。"""
+    pytest = __import__("pytest")
+    document_module = pytest.importorskip("prompt_toolkit.document")
+    completion_module = pytest.importorskip("prompt_toolkit.completion")
+    _write_skill(tmp_path, "python-review", description="Review Python changes")
+    _write_skill(tmp_path, "release-notes", description="Prepare release notes")
+    manager = SkillManager([tmp_path])
+    completer = SlashCommandCompleter({"/help": "Show help"}, manager)
+
+    completions = list(
+        completer.get_completions(
+            document_module.Document("请使用 $pr"),
+            completion_module.CompleteEvent(),
+        )
+    )
+
+    assert [completion.text for completion in completions] == ["$python-review"]
+    assert completions[0].start_position == -3
+    assert completions[0].display_meta_text == "Skill · Review Python changes"
+
+
+def test_dollar_completion_lists_all_skills_but_excludes_disabled(tmp_path: Path) -> None:
+    """验证单独输入美元符号列出全部可用项，但不能选中配置或包内禁用项。"""
+    pytest = __import__("pytest")
+    document_module = pytest.importorskip("prompt_toolkit.document")
+    completion_module = pytest.importorskip("prompt_toolkit.completion")
+    _write_skill(tmp_path, "review")
+    _write_skill(tmp_path, "config-disabled")
+    _write_skill(tmp_path, "manifest-disabled", enabled=False)
+    manager = SkillManager([tmp_path], disabled={"config-disabled"})
+    completer = SlashCommandCompleter({}, manager)
+
+    completions = list(
+        completer.get_completions(
+            document_module.Document("$"),
+            completion_module.CompleteEvent(),
+        )
+    )
+
+    assert [completion.text for completion in completions] == ["$review"]
+
+
+def test_dollar_completion_does_not_mix_mcp_or_environment_syntax(tmp_path: Path) -> None:
+    """验证美元菜单只来自 Skill 目录，并避免在环境变量表达式中继续弹出。"""
+    pytest = __import__("pytest")
+    document_module = pytest.importorskip("prompt_toolkit.document")
+    completion_module = pytest.importorskip("prompt_toolkit.completion")
+    _write_skill(tmp_path, "review")
+    manager = SkillManager([tmp_path])
+    completer = SlashCommandCompleter({"/mcp": "MCP status"}, manager)
+
+    mcp_like = list(
+        completer.get_completions(
+            document_module.Document("$mcp"),
+            completion_module.CompleteEvent(),
+        )
+    )
+    environment = list(
+        completer.get_completions(
+            document_module.Document("${HOME"),
+            completion_module.CompleteEvent(),
+        )
+    )
+
+    assert mcp_like == []
+    assert environment == []

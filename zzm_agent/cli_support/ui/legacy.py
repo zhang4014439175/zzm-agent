@@ -217,14 +217,29 @@ def _pin_completion_menu_position(prompt_session: Any, left: int = 5) -> None:
 
 
 class SlashCommandCompleter(Completer):
-    """Prompt-toolkit completer that keeps slash command selection styling explicit."""
+    """为斜杠命令和 ``$Skill`` 提供同一套前缀模糊补全菜单。
 
-    def __init__(self, commands_meta: dict[str, str]) -> None:
+    斜杠只匹配命令；美元前缀只读取已经发现的本地 Skill，不混入 MCP 工具。
+    Skill 候选来自运行时管理器的轻量目录，选择后替换当前 ``$`` 词元，正文仍由
+    正常任务执行链路按需加载。缺少 Skill 管理器时保持原有斜杠补全行为。
+    """
+
+    def __init__(
+        self,
+        commands_meta: dict[str, str],
+        skill_manager: Any | None = None,
+    ) -> None:
+        """保存命令和可选 Skill 目录；首次构造时只执行轻量元数据发现。"""
         self._commands_meta = commands_meta
+        self._skill_manager = skill_manager
+        if skill_manager is not None and not getattr(skill_manager, "catalog", None):
+            skill_manager.discover()
 
     def get_completions(self, document: Any, complete_event: Any) -> Iterable[Any]:
+        """根据光标前的活动前缀返回命令或 Skill 候选，不修改输入缓冲区。"""
         text_before_cursor = document.text_before_cursor
-        if not text_before_cursor.startswith("/"):
+        skill_token = _skill_token_before_cursor(text_before_cursor)
+        if not text_before_cursor.startswith("/") and skill_token is None:
             return
 
         try:
@@ -232,16 +247,38 @@ class SlashCommandCompleter(Completer):
         except ImportError as exc:
             raise RuntimeError("prompt_toolkit is required for slash completion.") from exc
 
-        query = text_before_cursor.strip().lower()
-        for command, description in self._commands_meta.items():
-            if not _slash_command_matches(query, command):
-                continue
+        if text_before_cursor.startswith("/"):
+            query = text_before_cursor.strip().lower()
+            for command, description in self._commands_meta.items():
+                if not _slash_command_matches(query, command):
+                    continue
+                yield Completion(
+                    text=command,
+                    start_position=-len(text_before_cursor),
+                    display=command,
+                    display_meta=description,
+                )
+            return
 
+        if self._skill_manager is None or skill_token is None:
+            return
+        query = skill_token[1:].casefold()
+        disabled = getattr(self._skill_manager, "disabled", set())
+        definitions = sorted(
+            getattr(self._skill_manager, "catalog", {}).values(),
+            key=lambda item: item.name.casefold(),
+        )
+        for definition in definitions:
+            if not definition.enabled or definition.name.casefold() in disabled:
+                continue
+            if not _skill_name_matches(query, definition.name):
+                continue
+            value = f"${definition.name}"
             yield Completion(
-                text=command,
-                start_position=-len(text_before_cursor),
-                display=command,
-                display_meta=description,
+                text=value,
+                start_position=-len(skill_token),
+                display=value,
+                display_meta=f"Skill · {definition.description}",
             )
 
 
@@ -252,6 +289,19 @@ def _slash_command_matches(query: str, command: str) -> bool:
     compact_query = query.lstrip("/").replace(" ", "")
     compact_command = command.lower().lstrip("/").replace(" ", "")
     return _is_prefix_subsequence(compact_query, compact_command)
+
+
+def _skill_token_before_cursor(text_before_cursor: str) -> str | None:
+    """返回光标前最后一个 ``$名称`` 词元；环境变量和普通金额不会跨空白匹配。"""
+    match = re.search(r"(?:^|\s)(\$[A-Za-z0-9_-]*)$", text_before_cursor)
+    return match.group(1) if match is not None else None
+
+
+def _skill_name_matches(query: str, name: str) -> bool:
+    """复用命令的首字符约束子序列匹配，空查询会展示全部可用 Skill。"""
+    compact_query = query.replace(" ", "")
+    compact_name = name.casefold().replace(" ", "")
+    return _is_prefix_subsequence(compact_query, compact_name)
 
 
 def _is_prefix_subsequence(needle: str, haystack: str) -> bool:
@@ -544,7 +594,7 @@ def build_prompt_session(workspace: str | Path, runtime: dict[str, Any] | None =
             "/exit": "退出当前会话",
             "/quit": "退出当前会话",
         }
-        completer = SlashCommandCompleter(commands_meta)
+        completer = SlashCommandCompleter(commands_meta, runtime.get("skills"))
         
         def get_bottom_toolbar():
             return build_bottom_toolbar(runtime)
@@ -558,6 +608,11 @@ def build_prompt_session(workspace: str | Path, runtime: dict[str, Any] | None =
             @kb.add("/")
             def _(event: Any) -> None:
                 event.current_buffer.insert_text("/")
+                event.current_buffer.start_completion(select_first=False)
+
+            @kb.add("$")
+            def _(event: Any) -> None:
+                event.current_buffer.insert_text("$")
                 event.current_buffer.start_completion(select_first=False)
         except ImportError:
             kb = None
