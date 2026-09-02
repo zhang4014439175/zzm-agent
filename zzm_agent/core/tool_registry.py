@@ -173,6 +173,9 @@ class ToolRegistry:
                 "namespace": context.namespace,
                 "group": group or context.group,
                 "examples": list(examples or []),
+                "source": "local",
+                "server_name": "",
+                "lazy_schema": False,
                 "timeout_seconds": (
                     max(0.001, float(timeout_seconds)) if timeout_seconds is not None else None
                 ),
@@ -253,13 +256,18 @@ class ToolRegistry:
         risk_level: str = "medium",
         group: str = "MCP",
         timeout_seconds: float | None = None,
+        source: str = "external",
+        server_name: str = "",
+        lazy_schema: bool = False,
     ) -> None:
         """注册由外部服务实现的工具，并仍让它走统一的校验与执行入口。
 
         外部服务已经提供 JSON Schema，不能再从 Python 函数签名推断；本方法保留
         该 Schema，同时把调用包装为普通注册工具。这样参数校验、取消检查、超时
         记录和调用方的权限策略仍以同一份工具元数据为准。重复名称会失败，避免
-        外部服务悄悄覆盖本地工具。
+        外部服务悄悄覆盖本地工具。``source``、``server_name`` 和
+        ``lazy_schema`` 只服务于目录发现与按需暴露，不会降低风险等级或授予执行
+        权限；省略它们时保持旧版外部工具立即暴露的兼容行为。
         """
         if name in self.tools:
             raise ValueError(f"Tool already registered: {name}")
@@ -282,6 +290,9 @@ class ToolRegistry:
             "namespace": "",
             "group": group,
             "examples": [],
+            "source": source.strip().casefold() or "external",
+            "server_name": server_name.strip(),
+            "lazy_schema": bool(lazy_schema),
             "timeout_seconds": max(0.001, float(timeout_seconds)) if timeout_seconds is not None else None,
         }
 

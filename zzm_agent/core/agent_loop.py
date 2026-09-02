@@ -45,6 +45,7 @@ from zzm_agent.core.state import (
 )
 from zzm_agent.core.tool_results import ToolResult
 from zzm_agent.core.tool_coordinator import ToolCallCoordinator, ToolExecutionOutcome
+from zzm_agent.core.tool_exposure import ToolExposureManager
 from zzm_agent.memory.token_counter import TokenCounter
 
 if TYPE_CHECKING:
@@ -110,6 +111,7 @@ class AgentLoop:
         on_tool_error: ToolEventCallback | None = None,
         prompt_manager: "PromptManager | None" = None,
         skill_manager: Any | None = None,
+        tool_exposure_manager: ToolExposureManager | None = None,
         cancellation_controller: CancellationController | None = None,
         hook_registry: HookRegistry | None = None,
         max_stop_hook_attempts: int = 1,
@@ -136,6 +138,8 @@ class AgentLoop:
             on_tool_start/on_tool_end/on_tool_error: 工具生命周期事件回调。
             prompt_manager: 按当前任务和历史动态组装系统提示词的可选组件。
             skill_manager: 按请求发现并渐进加载本地 Skill 的可选组件。
+            tool_exposure_manager: 按任务、Skill 与搜索结果控制模型可见 Schema；
+                未提供且 Registry 支持元数据时自动创建。
             cancellation_controller: 负责 Turn、Task 和工具调用取消传播的控制器。
             hook_registry/max_stop_hook_attempts: 生命周期 Hook 及停止检查重试上限。
             empty_final_retries: 模型空内容且无工具调用时的有限恢复次数。
@@ -194,6 +198,13 @@ class AgentLoop:
         self.last_message_store: ConversationMessageStore | None = None
         self.permission_state = PermissionState()
         self.token_counter = TokenCounter(model=model)
+        registry_tools = getattr(self.registry, "tools", None)
+        self.tool_exposure_manager = tool_exposure_manager
+        if self.tool_exposure_manager is None and isinstance(registry_tools, dict):
+            self.tool_exposure_manager = ToolExposureManager(
+                self.registry,
+                token_counter=self._estimate_text_tokens,
+            )
         self.cancellation_controller = cancellation_controller
         self.last_cancellation_token: CancellationToken | None = None
         self.hook_registry = hook_registry or HookRegistry()
@@ -230,6 +241,7 @@ class AgentLoop:
             max_output_tokens=self.max_tokens,
             supports_prompt_cache=self.model_adapter.capabilities.supports_prompt_cache,
             skill_manager=self.skill_manager,
+            tool_exposure_manager=self.tool_exposure_manager,
         )
 
     def _build_tool_call_record(
@@ -262,12 +274,18 @@ class AgentLoop:
         return records
 
     def _resolve_text_tool_name(self, name: str) -> str | None:
-        """Map text-emitted tool names to registered native tool names."""
+        """把文本工具名映射到本轮已暴露工具，阻止兼容路径绕过按需目录。"""
         normalized = name.strip()
         alias = _TEXT_TOOL_NAME_ALIASES.get(normalized.lower())
-        if alias is not None:
+        if alias is not None and (
+            self.tool_exposure_manager is None
+            or self.tool_exposure_manager.is_exposed(alias)
+        ):
             return alias
-        if normalized in self.registry.tools:
+        if normalized in self.registry.tools and (
+            self.tool_exposure_manager is None
+            or self.tool_exposure_manager.is_exposed(normalized)
+        ):
             return normalized
         return None
 
@@ -956,6 +974,10 @@ class AgentLoop:
             turn_state.skill_discovery_state = (
                 prepared_context.skill_state.to_record()
             )
+        if prepared_context.tool_exposure_state is not None:
+            turn_state.tool_exposure_state = (
+                prepared_context.tool_exposure_state.to_record()
+            )
         turn_state.start()
         loop_state = turn_state.start_loop()
         self.last_turn_state = turn_state
@@ -1157,6 +1179,14 @@ class AgentLoop:
                 return cancel_current_turn(task_token.reason or "cancelled")
             if tool_iterations >= self.max_tool_iterations:
                 return yield_current_turn("segment_tool_iteration_limit")
+
+            tools, tool_schema_tokens = (
+                self.context_preparation_service.current_tool_schemas()
+            )
+            if self.tool_exposure_manager is not None:
+                exposure_record = self.tool_exposure_manager.state.to_record()
+                turn_state.tool_exposure_state = exposure_record
+                self.last_context_window["tool_exposure_state"] = exposure_record
 
             model_context_messages = message_store.prepare_model_context()
             estimate_messages = getattr(
@@ -1474,6 +1504,13 @@ class AgentLoop:
                     # Parse arguments and call the tool through the registry
                     name = tc["function"]["name"]
                     args = json.loads(tc["function"]["arguments"])
+                    if (
+                        self.tool_exposure_manager is not None
+                        and not self.tool_exposure_manager.is_exposed(name)
+                    ):
+                        raise KeyError(
+                            f"Tool schema is not exposed in this turn: {name}"
+                        )
                     risk_level = self.registry.get_tool_meta(name).get("risk_level", "low")
                     before_tool = self._run_hook_until_decision(
                         HookContext(

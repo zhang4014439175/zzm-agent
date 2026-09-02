@@ -63,7 +63,7 @@ def _build_working_footer(runtime: dict[str, Any] | None) -> Any | None:
     context_used = getattr(last_usage, "prompt_tokens", 0) or 0
 
     footer = Text(" 💻 ", style="#777777")
-    footer.append(str(workspace_path), style="dim #ABB2BF")
+    footer.append(str(workspace_path), style="dim")
     footer.append(" │ 🤖 Model: ", style="#777777")
     footer.append(str(getattr(loop, "model", "")), style="bold #56B6C2")
     footer.append(" │ 🧠 Context: ", style="#777777")

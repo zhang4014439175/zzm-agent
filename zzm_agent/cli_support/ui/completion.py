@@ -5,6 +5,7 @@ from zzm_agent.cli_support.ui.legacy import (
     SlashCommandCompleter,
     SlashCommandLexer,
     _is_prefix_subsequence,
+    _mcp_token_before_cursor,
     _pin_completion_menu_position,
     _skill_name_matches,
     _skill_token_before_cursor,
@@ -15,6 +16,7 @@ __all__ = [
     "PROMPT_COMPLETION_MENU_RESERVED_LINES",
     "SlashCommandCompleter",
     "SlashCommandLexer",
+    "_mcp_token_before_cursor",
     "_skill_name_matches",
     "_skill_token_before_cursor",
 ]

@@ -6,6 +6,7 @@ from inspect import signature
 from typing import Any, Callable
 
 from zzm_agent.core.runtime_messages import ConversationMessageStore
+from zzm_agent.core.tool_exposure import ToolExposureState
 from zzm_agent.skills import SkillDiscoveryState
 
 
@@ -20,6 +21,7 @@ class PreparedContext:
     tool_schema_tokens: int
     output_reserve_tokens: int
     skill_state: SkillDiscoveryState | None = None
+    tool_exposure_state: ToolExposureState | None = None
 
 
 class ContextPreparationService:
@@ -37,8 +39,13 @@ class ContextPreparationService:
         max_output_tokens: int | None,
         supports_prompt_cache: bool,
         skill_manager: Any | None = None,
+        tool_exposure_manager: Any | None = None,
     ) -> None:
-        """保存上下文来源和预算依赖；Skill 管理器缺失时保持旧上下文行为。"""
+        """保存上下文来源和预算依赖；可选管理器缺失时保持旧上下文行为。
+
+        ``tool_exposure_manager`` 只决定哪些 Schema 发给模型，不替代 Registry 的
+        参数校验和权限入口；不传入时继续使用注册表的完整 Schema 列表。
+        """
         self.store = store
         self.registry = registry
         self.system_prompt = system_prompt
@@ -48,6 +55,7 @@ class ContextPreparationService:
         self.max_output_tokens = max_output_tokens
         self.supports_prompt_cache = supports_prompt_cache
         self.skill_manager = skill_manager
+        self.tool_exposure_manager = tool_exposure_manager
 
     def build_system_prompt(self, user_input: str) -> str:
         """按原优先级构建系统提示；没有 PromptManager 时返回静态提示。"""
@@ -79,7 +87,20 @@ class ContextPreparationService:
             self.token_counter(str(message.get("content") or ""))
             for message in skill_messages
         )
-        tools = self.registry.get_schemas()
+        tool_exposure_state = None
+        if self.tool_exposure_manager is not None:
+            allowed_tools = (
+                self.skill_manager.active_allowed_tools()
+                if self.skill_manager is not None
+                else ()
+            )
+            tool_exposure_state = self.tool_exposure_manager.prepare_for_turn(
+                user_input,
+                allowed_tools=allowed_tools,
+            )
+            tools = self.tool_exposure_manager.get_schemas()
+        else:
+            tools = self.registry.get_schemas()
         tool_schema_tokens = self.token_counter(
             json.dumps(tools, ensure_ascii=False, sort_keys=True, default=str)
         ) if tools else 0
@@ -129,6 +150,21 @@ class ContextPreparationService:
                 for name in sorted(skill_state.activated)
             )
             compression["skill_discovery_state"] = skill_state.to_record()
+        if tool_exposure_state is not None:
+            compression["tool_exposure_state"] = tool_exposure_state.to_record()
+            compression.setdefault("budget_breakdown", {})["tool_schemas"] = (
+                tool_exposure_state.exposed_schema_tokens
+            )
+            compression.setdefault("context_sources", []).extend(
+                {
+                    "source": "tool_schema",
+                    "name": name,
+                    "reason": tool_exposure_state.activation_reasons.get(
+                        name, "always_exposed"
+                    ),
+                }
+                for name in sorted(tool_exposure_state.exposed)
+            )
         message_store = ConversationMessageStore.begin_turn(
             persisted_messages=self.store.load_history(),
             model_context_messages=messages,
@@ -147,4 +183,22 @@ class ContextPreparationService:
             tool_schema_tokens=tool_schema_tokens,
             output_reserve_tokens=output_reserve_tokens,
             skill_state=skill_state,
+            tool_exposure_state=tool_exposure_state,
         )
+
+    def current_tool_schemas(self) -> tuple[list[dict[str, Any]], int]:
+        """返回循环下一次模型调用应使用的最新 Schema 与估算成本。
+
+        模型执行 ``tool_search`` 后，暴露集合会在同一 Segment 内变化；AgentLoop
+        每轮通过此入口刷新请求，确保新工具从下一次调用起可见。未配置暴露管理器
+        时仍返回完整注册表目录。
+        """
+        tools = (
+            self.tool_exposure_manager.get_schemas()
+            if self.tool_exposure_manager is not None
+            else self.registry.get_schemas()
+        )
+        tokens = self.token_counter(
+            json.dumps(tools, ensure_ascii=False, sort_keys=True, default=str)
+        ) if tools else 0
+        return tools, tokens

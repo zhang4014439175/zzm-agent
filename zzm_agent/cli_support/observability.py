@@ -129,7 +129,7 @@ class CliObserver:
         table.add_column("Completion (生成)", justify="right")
         table.add_column("Total (总计)", justify="right")
         table.add_column("Cost (估算费用)", justify="right", style="bold #98C379")
-        table.add_column("Source (来源)", style="dim #ABB2BF")
+        table.add_column("Source (来源)", style="dim")
 
         table.add_row(
             "Turn",

@@ -1829,6 +1829,138 @@ def test_handle_slash_evolve_diff_apply_and_rollback(tmp_path):
     console = DummyConsole()
 
     assert handle_slash("/evolve diff", DummyRegistry(), store, optimizer, console) is True
+    store = MemoryStore(path=tmp_path / "memory.json", max_history=50, session_id="alpha")
+    store.remember_fact("User prefers concise answers.")
+    store.remember_fact("Project language is Python.")
+    console = DummyConsole()
+
+    handled = handle_slash("/semantic", DummyRegistry(), store, DummyOptimizer(), console)
+
+    assert handled is True
+    assert any("2 long-term memories" in line for line in console.lines)
+    assert any("Project language is Python." in line for line in console.lines)
+    assert any("User prefers concise answers." in line for line in console.lines)
+
+
+def test_handle_slash_search_lists_memory_matches(tmp_path):
+    store = MemoryStore(path=tmp_path / "memory.json", max_history=50, session_id="alpha")
+    store.remember_fact("Project language is Python.")
+    store.append(
+        [
+            {"role": "user", "content": "What should we build?"},
+            {"role": "assistant", "content": "Build the Python CLI first."},
+        ]
+    )
+    store.create_session(make_current=True)
+    console = DummyConsole()
+
+    handled = handle_slash("/search python", DummyRegistry(), store, DummyOptimizer(), console)
+
+    assert handled is True
+    assert any("Memory matches for 'python'" in line for line in console.lines)
+    assert any("Project language is Python." in line for line in console.lines)
+    assert any("Python CLI first" in line for line in console.lines)
+
+
+def test_handle_slash_reload_reports_plugin_changes(tmp_path):
+    plugin_dir = tmp_path / "plugins"
+    plugin_dir.mkdir()
+    plugin_file = plugin_dir / "demo.py"
+    plugin_file.write_text(
+        "from zzm_agent.core.tool_registry import tool\n\n"
+        '@tool(description="first version")\n'
+        "def alpha(text: str) -> str:\n"
+        "    return text\n",
+        encoding="utf-8",
+    )
+
+    registry = ToolRegistry()
+    registry.configure_plugin_dirs([plugin_dir])
+    registry.load_configured_plugins()
+
+    plugin_file.write_text(
+        "from zzm_agent.core.tool_registry import tool\n\n"
+        '@tool(description="second version")\n'
+        "def alpha(text: str) -> str:\n"
+        "    return text\n\n"
+        '@tool(description="new tool")\n'
+        "def beta() -> str:\n"
+        '    return "ok"\n',
+        encoding="utf-8",
+    )
+
+    console = DummyConsole()
+    store = MemoryStore(path=tmp_path / "memory.json", max_history=50, session_id="alpha")
+
+    handled = handle_slash("/reload", registry, store, DummyOptimizer(), console)
+
+    assert handled is True
+    assert any("Plugins reloaded." in line for line in console.lines)
+    assert any("added" in line and "beta" in line for line in console.lines)
+    assert any("updated" in line and "alpha" in line for line in console.lines)
+
+
+def test_tools_command_reflects_updated_plugin_description_after_reload(tmp_path):
+    plugin_dir = tmp_path / "plugins"
+    plugin_dir.mkdir()
+    plugin_file = plugin_dir / "demo.py"
+    plugin_file.write_text(
+        "from zzm_agent.core.tool_registry import tool\n\n"
+        '@tool(description="first version")\n'
+        "def alpha(text: str) -> str:\n"
+        "    return text\n",
+        encoding="utf-8",
+    )
+
+    registry = ToolRegistry()
+    registry.configure_plugin_dirs([plugin_dir])
+    registry.load_configured_plugins()
+
+    plugin_file.write_text(
+        "from zzm_agent.core.tool_registry import tool\n\n"
+        '@tool(description="updated version")\n'
+        "def alpha(text: str) -> str:\n"
+        "    return text\n",
+        encoding="utf-8",
+    )
+
+    store = MemoryStore(path=tmp_path / "memory.json", max_history=50, session_id="alpha")
+    console = DummyConsole()
+
+    assert handle_slash("/reload", registry, store, DummyOptimizer(), console) is True
+    console.lines.clear()
+
+    assert handle_slash("/tools", registry, store, DummyOptimizer(), console) is True
+    assert any("updated version" in line for line in console.lines)
+
+
+def test_handle_slash_evolve_run_generates_candidate(tmp_path):
+    store = MemoryStore(path=tmp_path / "memory.json", max_history=50, session_id="alpha")
+    store.append([{"role": "user", "content": "help"}])
+    optimizer = DummyOptimizer()
+    optimizer.candidate = {
+        "id": "candidate-1",
+        "candidate_prompt": "new prompt",
+        "rationale": "better boundaries",
+    }
+    console = DummyConsole()
+
+    handled = handle_slash("/evolve run", DummyRegistry(), store, optimizer, console)
+
+    assert handled is True
+    assert any("candidate-1" in line for line in console.lines)
+    assert any("better boundaries" in line for line in console.lines)
+
+
+def test_handle_slash_evolve_diff_apply_and_rollback(tmp_path):
+    store = MemoryStore(path=tmp_path / "memory.json", max_history=50, session_id="alpha")
+    optimizer = DummyOptimizer()
+    optimizer.diff_text = "--- current\n+++ candidate\n-new\n+old\n"
+    optimizer.applied = {"id": "candidate-1"}
+    optimizer.restored = {"id": "prompt-1"}
+    console = DummyConsole()
+
+    assert handle_slash("/evolve diff", DummyRegistry(), store, optimizer, console) is True
     assert any("+++ candidate" in line for line in console.lines)
 
     assert handle_slash("/evolve apply", DummyRegistry(), store, optimizer, console) is True
@@ -1836,4 +1968,3 @@ def test_handle_slash_evolve_diff_apply_and_rollback(tmp_path):
 
     assert handle_slash("/evolve rollback", DummyRegistry(), store, optimizer, console) is True
     assert any("prompt-1" in line for line in console.lines)
-

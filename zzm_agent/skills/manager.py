@@ -196,6 +196,27 @@ class SkillManager:
             ),
         }]
 
+    def active_allowed_tools(self) -> tuple[str, ...]:
+        """汇总本轮已激活 Skill 声明的工具名，并按首次出现顺序去重。
+
+        该声明只用于帮助工具暴露层选择候选，不代表执行授权。不存在、被禁用或
+        因预算未激活的 Skill 不会贡献工具；真正调用仍必须通过 Registry 参数
+        校验和权限策略。
+        """
+        names: list[str] = []
+        seen: set[str] = set()
+        activated = {name.casefold() for name in self.state.activated}
+        for key, definition in self.catalog.items():
+            if key not in activated:
+                continue
+            for name in definition.allowed_tools:
+                normalized = name.casefold()
+                if normalized in seen:
+                    continue
+                seen.add(normalized)
+                names.append(name)
+        return tuple(names)
+
     def _select(self, user_input: str) -> list[tuple[str, str]]:
         """按显式、固定、隐式顺序去重候选，并保留每项首次激活原因。"""
         selected: dict[str, str] = {}

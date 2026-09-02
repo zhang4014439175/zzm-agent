@@ -3,9 +3,28 @@ from __future__ import annotations
 import argparse
 import json
 import os
+import sys
 from getpass import getpass
 from pathlib import Path
 from typing import Any
+
+import warnings
+
+if hasattr(sys.stdout, "reconfigure"):
+    try:
+        sys.stdout.reconfigure(encoding="utf-8")
+    except Exception as exc:
+        warnings.warn(f"stdout reconfigure failed: {exc!r}", stacklevel=2)
+if hasattr(sys.stderr, "reconfigure"):
+    try:
+        sys.stderr.reconfigure(encoding="utf-8")
+    except Exception as exc:
+        warnings.warn(f"stderr reconfigure failed: {exc!r}", stacklevel=2)
+if hasattr(sys.stdin, "reconfigure"):
+    try:
+        sys.stdin.reconfigure(encoding="utf-8")
+    except Exception as exc:
+        warnings.warn(f"stdin reconfigure failed: {exc!r}", stacklevel=2)
 
 from zzm_agent.constants import TOOL_EVENTS_PATH, ZZM_AGENT_DIR
 from zzm_agent.cli_support.observability import CliObserver
@@ -837,6 +856,7 @@ def build_runtime(args: argparse.Namespace, cfg: dict[str, Any]) -> dict[str, An
         "query_engine": query_engine,
         "prompt_manager": prompt_manager,
         "skills": skill_manager,
+        "tool_exposure": loop.tool_exposure_manager,
         "observer": observer,
         "change_sets": change_sets,
         "model_context_limit_source": context_limit.source,

@@ -178,6 +178,7 @@ class StdioMCPClient:
             parameters=dict(tool.get("inputSchema") or {}),
             handler=lambda **arguments: self.call_tool(remote_name, arguments),
             risk_level="medium", group="MCP", timeout_seconds=self.connection.timeout_seconds,
+            source="mcp", server_name=self.connection.name, lazy_schema=True,
         )
         self.connection.tools.append(local_name)
 

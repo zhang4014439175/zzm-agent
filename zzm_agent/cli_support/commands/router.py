@@ -127,8 +127,8 @@ def handle_slash(
                 table = Table(show_header=True, header_style="bold #61AFEF", box=box.ROUNDED, border_style="#3B4252", padding=(0, 2))
                 table.add_column("状态", justify="center", width=8)
                 table.add_column("会话 ID", style="bold #56B6C2")
-                table.add_column("会话名称 (Name)", style="white")
-                table.add_column("最后活跃时间 (Updated At)", style="dim #ABB2BF")
+                table.add_column("会话名称 (Name)", style="default")
+                table.add_column("最后活跃时间 (Updated At)", style="dim")
 
                 for session in sessions:
                     is_active = session["id"] == store.session_id
@@ -198,7 +198,7 @@ def handle_slash(
                 table = Table(show_header=True, header_style="bold #61AFEF", box=box.ROUNDED, border_style="#3B4252", padding=(0, 2))
                 table.add_column("工具名称 (Tool Name)", style="bold #56B6C2", no_wrap=True)
                 table.add_column("风险评级 (Risk)", justify="center", width=12)
-                table.add_column("工具用途描述 (Description)", style="white")
+                table.add_column("工具用途描述 (Description)", style="default")
 
                 for schema in schemas:
                     function_meta = schema["function"]
@@ -321,8 +321,8 @@ def handle_slash(
                     padding=(0, 2),
                 )
                 table.add_column("配置项", style="bold #56B6C2")
-                table.add_column("当前值", style="white")
-                table.add_column("来源", style="dim #ABB2BF")
+                table.add_column("当前值", style="default")
+                table.add_column("来源", style="dim")
                 for key, value, source in rows:
                     table.add_row(key, value, source)
                 console.print(table)
@@ -514,11 +514,11 @@ def handle_slash(
                     msg_text = Text()
                     if role == "user":
                         msg_text.append("👤 User\n", style="bold #98C379")
-                        msg_text.append(content_preview, style="white")
+                        msg_text.append(content_preview, style="default")
                         border_style = "#98C379"
                     elif role == "assistant":
                         msg_text.append("🤖 Assistant\n", style="bold #56B6C2")
-                        msg_text.append(content_preview, style="white")
+                        msg_text.append(content_preview, style="default")
                         border_style = "#56B6C2"
                     else:
                         msg_text.append(f"⚙️ {role.capitalize()}\n", style="bold #E5C07B")
@@ -803,7 +803,7 @@ def handle_slash(
                     enabled = entry.get("enabled", True)
                     status = "enabled" if enabled else "disabled"
                     content.append(f"  {index}. ", style="bold #E5C07B")
-                    content.append(f"• {fact}", style="white")
+                    content.append(f"• {fact}", style="default")
                     content.append(f"  [{status}, source={source}]\n", style="dim")
                 content.rstrip()
                 

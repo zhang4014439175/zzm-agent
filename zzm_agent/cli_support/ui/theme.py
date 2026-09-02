@@ -5,7 +5,8 @@ from zzm_agent.cli_support.ui.legacy import (
     _install_markdown_code_style_patch,
     _is_light_terminal_background,
     _windows_console_background_color,
+    get_theme_palette,
     build_console,
 )
 
-__all__ = ["build_console"]
+__all__ = ["build_console", "get_theme_palette"]

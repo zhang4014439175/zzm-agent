@@ -28,6 +28,37 @@ def get_workspace_runtime() -> WorkspaceRuntime:
     return _WORKSPACE_RUNTIMES[key]
 
 
+def _decode_subprocess_output(raw: bytes) -> str:
+    """Decode process output with fallback encodings for cross-platform stability."""
+    if not raw:
+        return ""
+
+    # 1. Try UTF-8 without replacement first
+    try:
+        return raw.decode("utf-8")
+    except UnicodeDecodeError:
+        pass
+
+    # 2. Try Windows system preferred encoding (e.g. GBK/CP936)
+    import locale
+
+    try:
+        preferred = locale.getpreferredencoding(False)
+        if preferred and preferred.lower() not in {"utf-8", "utf8"}:
+            return raw.decode(preferred)
+    except (UnicodeDecodeError, LookupError):
+        pass
+
+    if sys.platform == "win32":
+        for enc in ("gbk", "cp936", "utf-16-le", "utf-16"):
+            try:
+                return raw.decode(enc)
+            except (UnicodeDecodeError, LookupError):
+                pass
+
+    return raw.decode("utf-8", errors="replace")
+
+
 @tool(
     description=(
         "在工作区内执行命令并返回 stdout、stderr 和退出码。"
@@ -81,9 +112,8 @@ def run_shell(command: str, timeout: int = 30, cwd: str = "") -> str:
             cwd=str(work_dir),
         )
 
-        # Decode stdout and stderr with 'replace' to avoid surrogate characters
-        stdout = (result.stdout or b"").decode("utf-8", errors="replace")
-        stderr = (result.stderr or b"").decode("utf-8", errors="replace")
+        stdout = _decode_subprocess_output(result.stdout or b"")
+        stderr = _decode_subprocess_output(result.stderr or b"")
 
         parts = []
         if stdout.strip():
@@ -108,7 +138,6 @@ def run_shell(command: str, timeout: int = 30, cwd: str = "") -> str:
         return f"Error: Command timed out after {timeout_sec} seconds."
     except Exception as e:
         return f"Error executing command: {e}"
-
 
 @tool(
     description=(

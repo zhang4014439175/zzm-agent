@@ -2,8 +2,20 @@ from __future__ import annotations
 
 import os
 import re
+import sys
 from pathlib import Path
 from typing import Any, Iterable
+
+if hasattr(sys.stdout, "reconfigure"):
+    try:
+        sys.stdout.reconfigure(encoding="utf-8")
+    except Exception:
+        pass
+if hasattr(sys.stderr, "reconfigure"):
+    try:
+        sys.stderr.reconfigure(encoding="utf-8")
+    except Exception:
+        pass
 
 from zzm_agent.constants import ZZM_AGENT_DIR
 from zzm_agent.core.local_tool_renderers import (
@@ -25,50 +37,309 @@ PROMPT_COMPLETION_MENU_RESERVED_LINES = 1
 MAX_VISIBLE_REASONING_CHARS = 240
 
 try:
-    from rich.markdown import CodeBlock, Heading
+    from rich.markdown import CodeBlock, Heading, Markdown, MarkdownElement, TextElement
 except ImportError:
     CodeBlock = None
     Heading = None
+    Markdown = None
+    MarkdownElement = object
+    TextElement = object
+
+
+class TableCellElement(TextElement):
+    """A cell in a markdown table (th or td)."""
+
+    @classmethod
+    def create(cls, markdown: Any, token: Any) -> TableCellElement:
+        return cls(is_header=(getattr(token, "type", "") == "th_open"))
+
+    def __init__(self, is_header: bool = False) -> None:
+        super().__init__()
+        self.is_header = is_header
+
+
+class TableRowElement(MarkdownElement):
+    """A row in a markdown table."""
+
+    def __init__(self) -> None:
+        self.cells: list[TableCellElement] = []
+
+    def on_child_close(self, context: Any, child: MarkdownElement) -> bool:
+        if isinstance(child, TableCellElement):
+            self.cells.append(child)
+        return False
+
+
+class TableSectionElement(MarkdownElement):
+    """A thead or tbody in a markdown table."""
+
+    def __init__(self) -> None:
+        self.rows: list[TableRowElement] = []
+
+    def on_child_close(self, context: Any, child: MarkdownElement) -> bool:
+        if isinstance(child, TableRowElement):
+            self.rows.append(child)
+        return False
+
+
+class TableElement(MarkdownElement):
+    """A table element."""
+
+    new_line: bool = True
+
+    def __init__(self) -> None:
+        self.sections: list[TableSectionElement] = []
+        self.rows: list[TableRowElement] = []
+
+    def on_child_close(self, context: Any, child: MarkdownElement) -> bool:
+        if isinstance(child, TableSectionElement):
+            self.sections.append(child)
+        elif isinstance(child, TableRowElement):
+            self.rows.append(child)
+        return False
+
+    def __rich_console__(self, console: Any, options: Any) -> Any:
+        from rich import box
+        from rich.table import Table
+
+        headers: list[str] = []
+        body: list[list[str]] = []
+        for section in self.sections:
+            for row in section.rows:
+                texts = [cell.text.plain for cell in row.cells]
+                if any(getattr(cell, "is_header", False) for cell in row.cells):
+                    headers = texts
+                else:
+                    body.append(texts)
+        for row in self.rows:
+            texts = [cell.text.plain for cell in row.cells]
+            if any(getattr(cell, "is_header", False) for cell in row.cells):
+                headers = texts
+            else:
+                body.append(texts)
+        num_cols = max(len(headers), max((len(r) for r in body), default=0))
+        if not num_cols:
+            return
+
+        is_light = _is_light_terminal_background()
+        header_style = "bold #0969DA" if is_light else "bold #61AFEF"
+        border_style = "dim #D0D7DE" if is_light else "dim #3B4252"
+
+        table = Table(
+            box=box.ROUNDED,
+            show_header=bool(headers),
+            header_style=header_style,
+            border_style=border_style,
+            padding=(0, 1),
+        )
+        if headers:
+            for header in headers:
+                table.add_column(header)
+        else:
+            for _ in range(num_cols):
+                table.add_column()
+        for row_cells in body:
+            while len(row_cells) < num_cols:
+                row_cells.append("")
+            table.add_row(*row_cells[:num_cols])
+        yield table
+
+
+try:
+    from pygments.style import Style as PygmentsStyle
+    from pygments.token import (
+        Comment,
+        Error,
+        Generic,
+        Keyword,
+        Name,
+        Number,
+        Operator,
+        Punctuation,
+        String,
+        Text,
+        Token,
+    )
+
+    class ZzmLightCodeStyle(PygmentsStyle):
+        """High contrast, pitch-black base syntax style for light/white terminals."""
+
+        default_style = "#000000"
+        background_color = "#FFFFFF"
+        highlight_color = "#E8EAEC"
+        styles = {
+            Token: "#000000",
+            Text: "#000000",
+            Comment: "italic #6E7781",
+            Comment.Preproc: "bold #6E7781",
+            Comment.Special: "bold italic #6E7781",
+            Keyword: "bold #0550AE",
+            Keyword.Constant: "bold #0550AE",
+            Keyword.Declaration: "bold #0550AE",
+            Keyword.Namespace: "bold #0550AE",
+            Keyword.Pseudo: "bold #0550AE",
+            Keyword.Reserved: "bold #0550AE",
+            Keyword.Type: "bold #953800",
+            Name: "#000000",
+            Name.Attribute: "bold #116329",
+            Name.Builtin: "bold #0550AE",
+            Name.Builtin.Pseudo: "bold #0550AE",
+            Name.Class: "bold #953800",
+            Name.Constant: "bold #0550AE",
+            Name.Decorator: "bold #8250DF",
+            Name.Entity: "bold #8250DF",
+            Name.Exception: "bold #CF222E",
+            Name.Function: "bold #8250DF",
+            Name.Property: "bold #0550AE",
+            Name.Label: "bold #0550AE",
+            Name.Namespace: "bold #0550AE",
+            Name.Other: "#000000",
+            Name.Tag: "bold #116329",
+            Name.Variable: "#000000",
+            Name.Variable.Class: "#000000",
+            Name.Variable.Global: "#000000",
+            Name.Variable.Instance: "#000000",
+            Number: "#0550AE",
+            Operator: "#0550AE",
+            Operator.Word: "bold #0550AE",
+            Punctuation: "#000000",
+            String: "#116329",
+            String.Doc: "italic #6E7781",
+            String.Escape: "bold #0550AE",
+            String.Regex: "bold #116329",
+            String.Symbol: "bold #0550AE",
+            Generic.Heading: "bold #0550AE",
+            Generic.Subheading: "bold #0550AE",
+            Generic.Deleted: "#CF222E",
+            Generic.Inserted: "#116329",
+            Generic.Error: "#CF222E",
+            Generic.Emph: "italic",
+            Generic.Strong: "bold",
+            Generic.Prompt: "bold #0550AE",
+            Generic.Output: "#000000",
+            Generic.Traceback: "#CF222E",
+            Error: "bold #CF222E",
+        }
+except ImportError:
+    ZzmLightCodeStyle = "tango"
+
+
+class ZzmCodeBlockElement(CodeBlock):
+    """Custom code block renderer with card panels and high-contrast theme."""
+
+    def __rich_console__(self, console: Any, options: Any) -> Any:
+        """渲染不依赖固定白色前景的代码卡片，并把边框样式限制在边框本身。
+
+        深色方案使用 Rich 的 ANSI 自适应主题，使纯文本命令继承终端默认前景；
+        即使某些 Windows Terminal 无法正确报告背景，白底也不会再收到 Monokai
+        的固定近白色文本。浅色探测成功时仍使用明确的深色高对比语法主题。
+        """
+        from rich import box
+        from rich.panel import Panel
+        from rich.syntax import Syntax
+
+        is_light = _is_light_terminal_background()
+        code = str(self.text).rstrip()
+        lexer_name = self.lexer_name or "text"
+        syntax_theme = ZzmLightCodeStyle if is_light else "ansi_dark"
+        border_style = "dim #D0D7DE" if is_light else "dim #3B4252"
+        syntax = Syntax(
+            code,
+            lexer_name,
+            theme=syntax_theme,
+            word_wrap=True,
+            padding=(0, 1),
+            background_color="default",
+        )
+        title = f"[dim]{lexer_name}[/dim]" if lexer_name and lexer_name != "text" else None
+        yield Panel(
+            syntax,
+            title=title,
+            title_align="right",
+            box=box.ROUNDED,
+            border_style=border_style,
+            padding=(0, 0),
+        )
+
+
+class ZzmHeadingElement(Heading):
+    """Custom heading renderer with left alignment and panel containers for H1."""
+
+    def __rich_console__(self, console: Any, options: Any) -> Any:
+        from rich import box
+        from rich.panel import Panel
+        from rich.text import Text
+
+        is_light = _is_light_terminal_background()
+        border_style = "dim #D0D7DE" if is_light else "dim #3B4252"
+        text = self.text
+        text.justify = "left"
+        if self.tag == "h1":
+            yield Panel(
+                text,
+                box=box.ROUNDED,
+                style=border_style,
+            )
+        else:
+            yield Text("")
+            yield text
+
+
+try:
+    from rich.markdown import ListItem
+except ImportError:
+    ListItem = object
+
+
+class ZzmListItemElement(ListItem):
+    """Safe list item that never crashes on non-UTF-8 console encoding."""
+
+    def render_bullet(self, console: Any, options: Any) -> Any:
+        try:
+            yield from super().render_bullet(console, options)
+        except UnicodeEncodeError:
+            from rich.segment import Segment
+
+            indent = " " * (self.level * 2)
+            yield Segment(f"{indent}* ")
+            yield from console.render(self.elements, options)
+
+
+class ZzmMarkdown(Markdown):
+    """GFM-enabled Markdown renderer with custom elements and zero monkeypatching."""
+
+    elements = {
+        **getattr(Markdown, "elements", {}),
+        "code_block": ZzmCodeBlockElement,
+        "fence": ZzmCodeBlockElement,
+        "heading_open": ZzmHeadingElement,
+        "list_item_open": ZzmListItemElement,
+        "table_open": TableElement,
+        "thead_open": TableSectionElement,
+        "tbody_open": TableSectionElement,
+        "tr_open": TableRowElement,
+        "th_open": TableCellElement,
+        "td_open": TableCellElement,
+    }
+
+    def __init__(self, markup: str, **kwargs: Any) -> None:
+        super().__init__(markup, **kwargs)
+        try:
+            from markdown_it import MarkdownIt
+
+            self.parsed = (
+                MarkdownIt("gfm-like")
+                .enable("table")
+                .enable("strikethrough")
+                .parse(markup)
+            )
+        except ImportError:
+            pass
 
 
 def _install_markdown_code_style_patch() -> None:
-    if CodeBlock is not None and not getattr(CodeBlock, "_zzm_agent_no_background", False):
-        def render_code_block(self: Any, console: Any, options: Any) -> Any:
-            from rich.syntax import Syntax
-
-            code = str(self.text).rstrip()
-            yield Syntax(
-                code,
-                self.lexer_name,
-                theme="ansi_light",
-                word_wrap=True,
-                padding=0,
-                background_color="default",
-            )
-
-        CodeBlock.__rich_console__ = render_code_block
-        CodeBlock._zzm_agent_no_background = True
-
-    if Heading is not None and not getattr(Heading, "_zzm_agent_left_align", False):
-        def render_heading(self: Any, console: Any, options: Any) -> Any:
-            text = self.text
-            text.justify = "left"
-            if self.tag == "h1":
-                from rich.panel import Panel
-                from rich import box
-                yield Panel(
-                    text,
-                    box=box.HEAVY,
-                    style="markdown.h1.border",
-                )
-            else:
-                from rich.text import Text
-                if self.tag == "h2":
-                    yield Text("")
-                yield text
-
-        Heading.__rich_console__ = render_heading
-        Heading._zzm_agent_left_align = True
+    """Backward compatibility hook for test runners and plugins."""
+    pass
 
 
 def _compact_reasoning_for_display(text: str) -> str:
@@ -97,6 +368,7 @@ def _install_completion_menu_highlight_patch() -> None:
 
     original_item_fragments = menus._get_menu_item_fragments
     original_meta_fragments = menus.CompletionsMenuControl._get_menu_item_meta_fragments
+
     def get_menu_item_fragments(
         completion: Any,
         is_current_completion: bool,
@@ -126,11 +398,16 @@ def _install_completion_menu_highlight_patch() -> None:
 
     menus._get_menu_item_fragments = get_menu_item_fragments
     menus.CompletionsMenuControl._get_menu_item_meta_fragments = get_menu_item_meta_fragments
-
     menus._zzm_agent_completion_patch = True
 
 
 def _is_light_terminal_background() -> bool:
+    """按显式覆盖、终端自身信息、最后才是系统主题判断浅色背景。
+
+    Windows 的应用主题不等于终端 Profile：用户可能使用深色系统界面和白色终端。
+    因此 ``COLORFGBG`` 与控制台缓冲区颜色必须优先于注册表主题，否则会错误选择
+    Monokai 的浅色文字并在白底上失去对比度。无法探测时仍保守回退系统设置。
+    """
     theme = os.environ.get("ZZM_AGENT_TERMINAL_THEME", "").strip().lower()
     if theme in {"light", "white"}:
         return True
@@ -150,7 +427,54 @@ def _is_light_terminal_background() -> bool:
     if background is not None:
         return background in {7, 15}
 
+    if os.name == "nt":
+        try:
+            import winreg
+
+            key = winreg.OpenKey(
+                winreg.HKEY_CURRENT_USER,
+                r"Software\Microsoft\Windows\CurrentVersion\Themes\Personalize",
+            )
+            val, _ = winreg.QueryValueEx(key, "AppsUseLightTheme")
+            if val == 1:
+                return True
+            if val == 0:
+                return False
+        except Exception:
+            pass
+
     return False
+
+
+def get_theme_palette() -> dict[str, str]:
+    """Return an adaptive high-contrast color palette based on terminal background."""
+    is_light = _is_light_terminal_background()
+    if is_light:
+        return {
+            "primary": "#0969DA",       # Deep Royal Blue
+            "secondary": "#0550AE",     # Deep Indigo
+            "accent": "#8250DF",        # Deep Purple
+            "warning": "#9A6700",       # Deep Warm Amber
+            "success": "#1A7F37",       # Deep Forest Green
+            "danger": "#CF222E",        # Deep Red
+            "text": "default",          # Standard terminal text (Pure Black in light mode)
+            "text_dim": "#57606A",      # High-contrast Slate Grey
+            "border": "#D0D7DE",        # Crisp light border
+            "syntax_theme": "tango",    # Tango pure-contrast code theme
+        }
+    else:
+        return {
+            "primary": "#61AFEF",
+            "secondary": "#56B6C2",
+            "accent": "#C678DD",
+            "warning": "#E5C07B",
+            "success": "#98C379",
+            "danger": "#E06C75",
+            "text": "default",
+            "text_dim": "#ABB2BF",
+            "border": "#3B4252",
+            "syntax_theme": "monokai",
+        }
 
 
 def _windows_console_background_color() -> int | None:
@@ -217,9 +541,10 @@ def _pin_completion_menu_position(prompt_session: Any, left: int = 5) -> None:
 
 
 class SlashCommandCompleter(Completer):
-    """为斜杠命令和 ``$Skill`` 提供同一套前缀模糊补全菜单。
+    """为斜杠命令、``$Skill`` 和 ``@mcp:`` 提供前缀模糊补全菜单。
 
     斜杠只匹配命令；美元前缀只读取已经发现的本地 Skill，不混入 MCP 工具。
+    MCP 使用独立前缀读取延迟工具轻量目录，选择候选只插入标识，不执行工具。
     Skill 候选来自运行时管理器的轻量目录，选择后替换当前 ``$`` 词元，正文仍由
     正常任务执行链路按需加载。缺少 Skill 管理器时保持原有斜杠补全行为。
     """
@@ -228,24 +553,47 @@ class SlashCommandCompleter(Completer):
         self,
         commands_meta: dict[str, str],
         skill_manager: Any | None = None,
+        tool_exposure_manager: Any | None = None,
     ) -> None:
-        """保存命令和可选 Skill 目录；首次构造时只执行轻量元数据发现。"""
+        """保存命令、Skill 与 MCP 轻量目录；构造阶段不读取正文或执行工具。"""
         self._commands_meta = commands_meta
         self._skill_manager = skill_manager
+        self._tool_exposure_manager = tool_exposure_manager
         if skill_manager is not None and not getattr(skill_manager, "catalog", None):
             skill_manager.discover()
 
     def get_completions(self, document: Any, complete_event: Any) -> Iterable[Any]:
-        """根据光标前的活动前缀返回命令或 Skill 候选，不修改输入缓冲区。"""
+        """根据活动前缀返回命令、Skill 或 MCP 候选，不修改输入缓冲区。"""
         text_before_cursor = document.text_before_cursor
         skill_token = _skill_token_before_cursor(text_before_cursor)
-        if not text_before_cursor.startswith("/") and skill_token is None:
+        mcp_token = _mcp_token_before_cursor(text_before_cursor)
+        if (
+            not text_before_cursor.startswith("/")
+            and skill_token is None
+            and mcp_token is None
+        ):
             return
 
         try:
             from prompt_toolkit.completion import Completion
         except ImportError as exc:
             raise RuntimeError("prompt_toolkit is required for slash completion.") from exc
+
+        if mcp_token is not None:
+            if self._tool_exposure_manager is None:
+                return
+            query = mcp_token[len("@mcp:"):]
+            for candidate in self._tool_exposure_manager.completion_candidates(query):
+                value = candidate["insert_text"]
+                yield Completion(
+                    text=value,
+                    start_position=-len(mcp_token),
+                    display=value,
+                    display_meta=(
+                        f"MCP · {candidate['server']} · {candidate['description']}"
+                    ),
+                )
+            return
 
         if text_before_cursor.startswith("/"):
             query = text_before_cursor.strip().lower()
@@ -297,6 +645,12 @@ def _skill_token_before_cursor(text_before_cursor: str) -> str | None:
     return match.group(1) if match is not None else None
 
 
+def _mcp_token_before_cursor(text_before_cursor: str) -> str | None:
+    """返回光标前完整 ``@mcp:查询`` 词元，其他 @ 提及不会触发工具菜单。"""
+    match = re.search(r"(?:^|\s)(@mcp:[A-Za-z0-9_.-]*)$", text_before_cursor, re.IGNORECASE)
+    return match.group(1) if match is not None else None
+
+
 def _skill_name_matches(query: str, name: str) -> bool:
     """复用命令的首字符约束子序列匹配，空查询会展示全部可用 Skill。"""
     compact_query = query.replace(" ", "")
@@ -331,24 +685,45 @@ def build_console():
         raise RuntimeError("Rich is required to run the CLI interface.") from exc
 
     _install_markdown_code_style_patch()
-    return Console(
-        highlight=False,
-        theme=Theme(
+    p = get_theme_palette()
+    is_light = _is_light_terminal_background()
+    if is_light:
+        theme = Theme(
             {
-                "markdown.h1": "bold #61AFEF",
-                "markdown.h2": "bold #56B6C2",
-                "markdown.h3": "bold #E5C07B",
-                "markdown.h4": "bold #C678DD",
-                "markdown.strong": "bold #98C379",
+                "markdown.h1": "bold #0969DA",
+                "markdown.h2": "bold #8250DF",
+                "markdown.h3": "bold #9A6700",
+                "markdown.h4": "bold #1A7F37",
+                "markdown.strong": "bold #1A7F37",
                 "markdown.em": "italic",
-                "markdown.code": "bold #56B6C2",
+                "markdown.code": "bold #0550AE",
                 "markdown.code_block": "dim",
                 "markdown.block_quote": "dim italic",
-                "markdown.hr": "dim #3B4252",
-                "markdown.link": "underline #61AFEF",
+                "markdown.hr": "dim #D0D7DE",
+                "markdown.link": "underline #0969DA",
                 "markdown.link_url": "dim underline",
             }
-        ),
+        )
+    else:
+        theme = Theme(
+            {
+                "markdown.h1": f"bold {p['primary']}",
+                "markdown.h2": f"bold {p['secondary']}",
+                "markdown.h3": f"bold {p['warning']}",
+                "markdown.h4": f"bold {p['accent']}",
+                "markdown.strong": f"bold {p['success']}",
+                "markdown.em": "italic",
+                "markdown.code": f"bold {p['secondary']}",
+                "markdown.code_block": "none",
+                "markdown.block_quote": f"dim italic {p['text_dim']}",
+                "markdown.hr": f"dim {p['border']}",
+                "markdown.link": f"underline {p['primary']}",
+                "markdown.link_url": "dim underline",
+            }
+        )
+    return Console(
+        highlight=False,
+        theme=theme,
     )
 
 
@@ -384,23 +759,24 @@ def render_notification(console: Any, message: str, level: str = "system") -> No
         console.print(f"[{level.upper()}] {message}")
         return
 
+    p = get_theme_palette()
     icon_mapping = {
-        "success": ("✔ SUCCESS", "#98C379"),
-        "warning": ("⚠ WARNING", "#E5C07B"),
-        "error": ("✘ ERROR", "#CF222E"),
-        "system": ("⚡ SYSTEM", "#56B6C2"),
+        "success": ("✔ SUCCESS", p["success"]),
+        "warning": ("⚠ WARNING", p["warning"]),
+        "error": ("✘ ERROR", p["danger"]),
+        "system": ("⚡ SYSTEM", p["secondary"]),
     }
     
-    icon_text, color = icon_mapping.get(level, ("⚡ SYSTEM", "#56B6C2"))
+    icon_text, color = icon_mapping.get(level, ("⚡ SYSTEM", p["secondary"]))
     
     styled_message = Text()
     styled_message.append(f"{icon_text} ", style=f"bold {color}")
-    styled_message.append("│ ", style="dim #3B4252")
+    styled_message.append("│ ", style=f"dim {p['border']}")
     styled_message.append(message, style="default")
     
     panel = Panel(
         styled_message,
-        border_style="#3B4252",
+        border_style=p["border"],
         padding=(0, 1),
         expand=False,
     )
@@ -417,27 +793,26 @@ def render_error_card(console: Any, exc: Exception, runtime: dict[str, Any] | No
         console.print(f"[red]Error: {exc}[/red]")
         return
 
-    # Extract clean error message
+    p = get_theme_palette()
     from zzm_agent.cli_support.repl import format_runtime_exception
     clean_msg = format_runtime_exception(exc, runtime)
     lower_msg = clean_msg.lower()
 
-    # Determine diagnosis and solutions
-    title = "[bold #CF222E]✘ 执行遭遇错误 (Execution Error)[/]"
+    title = f"[bold {p['danger']}]✘ 执行遭遇错误 (Execution Error)[/]"
     diagnosis = "系统在执行当前指令或请求大语言模型时发生异常。"
     steps = []
 
     if "404" in lower_msg or "not found" in lower_msg:
         diagnosis = "API 接口地址 (Base URL) 或模型名称可能配置错误 (HTTP 404)。"
         steps = [
-            "1. 检查 `config.yaml` 中的 [bold #61AFEF]model.base_url[/] 是否正确。",
+            f"1. 检查 `config.yaml` 中的 [bold {p['primary']}]model.base_url[/] 是否正确。",
             "2. 检查使用的模型名是否在服务提供商支持的列表里（可使用 `/models` 确认）。",
             "3. 如果使用的是本地模型，请确保如 Ollama 或 LocalAI 服务已经正常启动。"
         ]
     elif "401" in lower_msg or "unauthorized" in lower_msg or "api key" in lower_msg or "api_key" in lower_msg:
         diagnosis = "鉴权失败，大语言模型 API Key 无效或未配置 (HTTP 401)。"
         steps = [
-            "1. 确认已在根目录的 [bold #61AFEF].env[/] 文件中配置了正确的 API Key。",
+            f"1. 确认已在根目录的 [bold {p['primary']}].env[/] 文件中配置了正确的 API Key。",
             "2. 检查环境变量或配置中的密钥是否过期或被撤销。"
         ]
     elif "connection" in lower_msg or "connect" in lower_msg or "timeout" in lower_msg or "dns" in lower_msg:
@@ -455,17 +830,17 @@ def render_error_card(console: Any, exc: Exception, runtime: dict[str, Any] | No
     else:
         steps = [
             "1. 详细阅读下方给出的具体错误详细信息。",
-            "2. 若属于本地代码运行异常，可以使用 [bold #61AFEF]--debug[/] 参数启动以打印完整堆栈。",
+            f"2. 若属于本地代码运行异常，可以使用 [bold {p['primary']}]--debug[/] 参数启动以打印完整堆栈。",
             "3. 如有必要，请尝试使用 `/new` 开启一个干净的会话或者使用 `/reload` 重载插件。"
         ]
 
     content = Text()
-    content.append("🔍 故障分析: ", style="bold #E5C07B")
-    content.append(f"{diagnosis}\n\n", style="default")
-    content.append("📄 原始错误说明: ", style="bold #CF222E")
-    content.append(f"{clean_msg}\n\n", style="dim")
+    content.append("故障分析: ", style=f"bold {p['warning']}")
+    content.append(diagnosis + "\n\n", style="default")
+    content.append("原始错误说明: ", style=f"bold {p['danger']}")
+    content.append(clean_msg + "\n\n", style=f"dim {p['text_dim']}")
     
-    content.append("🛠️ 推荐排查与修复步骤:\n", style="bold #98C379")
+    content.append("推荐排查与修复步骤:\n", style=f"bold {p['success']}")
     for step in steps:
         content.append(f"  {step}\n")
     content.rstrip()
@@ -475,10 +850,10 @@ def render_error_card(console: Any, exc: Exception, runtime: dict[str, Any] | No
             content,
             title=title,
             title_align="left",
-            border_style="#CF222E",
+            border_style=p["danger"],
             box=box.ROUNDED,
             padding=(1, 2),
-            expand=False
+            expand=False,
         )
     )
 
@@ -530,6 +905,7 @@ def build_prompt_session(workspace: str | Path, runtime: dict[str, Any] | None =
     history_path = Path(workspace) / ZZM_AGENT_DIR / "repl_history.txt"
     history_path.parent.mkdir(parents=True, exist_ok=True)
     _install_completion_menu_highlight_patch()
+    palette = get_theme_palette()
     style = Style.from_dict({
         "prompt": "ansicyan bold",
         "bottom-toolbar": "noreverse bg:default fg:default",
@@ -538,12 +914,12 @@ def build_prompt_session(workspace: str | Path, runtime: dict[str, Any] | None =
         "bottom-toolbar.context": "noreverse ansimagenta bold",
         "bottom-toolbar.session": "noreverse ansiyellow bold",
         "bottom-toolbar.text": "noreverse",
-        "prompt-command": "ansicyan bold",
+        "prompt-command": f"{palette['secondary']} bold",
         "completion-menu": "bg:default fg:default",
         "completion-menu.completion": "noreverse bg:default #666666",
-        "completion-menu.completion.current": "noreverse bg:default fg:ansicyan bold",
+        "completion-menu.completion.current": f"noreverse bg:default {palette['primary']} bold",
         "completion-menu.meta.completion": "noreverse bg:default #8a8a8a",
-        "completion-menu.meta.completion.current": "noreverse bg:default fg:ansicyan bold",
+        "completion-menu.meta.completion.current": f"noreverse bg:default {palette['primary']} bold",
         "scrollbar.background": "bg:default",
         "scrollbar.button": "bg:default",
         "scrollbar.arrow": "bg:default",
@@ -594,7 +970,11 @@ def build_prompt_session(workspace: str | Path, runtime: dict[str, Any] | None =
             "/exit": "退出当前会话",
             "/quit": "退出当前会话",
         }
-        completer = SlashCommandCompleter(commands_meta, runtime.get("skills"))
+        completer = SlashCommandCompleter(
+            commands_meta,
+            runtime.get("skills"),
+            runtime.get("tool_exposure"),
+        )
         
         def get_bottom_toolbar():
             return build_bottom_toolbar(runtime)
@@ -614,20 +994,29 @@ def build_prompt_session(workspace: str | Path, runtime: dict[str, Any] | None =
             def _(event: Any) -> None:
                 event.current_buffer.insert_text("$")
                 event.current_buffer.start_completion(select_first=False)
+
+            @kb.add("@")
+            def _(event: Any) -> None:
+                """插入 @ 并启动补全；只有继续输入 ``mcp:`` 后才展示候选。"""
+                event.current_buffer.insert_text("@")
+                event.current_buffer.start_completion(select_first=False)
         except ImportError:
             kb = None
  
-    prompt_session = PromptSession(
-        history=FileHistory(str(history_path)),
-        style=style,
-        completer=completer,
-        lexer=SlashCommandLexer() if completer else None,
-        bottom_toolbar=bottom_toolbar,
-        key_bindings=kb,
-        complete_while_typing=True,
-        reserve_space_for_menu=6,
-    )
-    return prompt_session
+    try:
+        prompt_session = PromptSession(
+            history=FileHistory(str(history_path)),
+            style=style,
+            completer=completer,
+            lexer=SlashCommandLexer() if completer else None,
+            bottom_toolbar=bottom_toolbar,
+            key_bindings=kb,
+            complete_while_typing=True,
+            reserve_space_for_menu=6,
+        )
+        return prompt_session
+    except Exception:
+        return None
 
 
 def read_repl_input(console: Any, prompt_session: Any | None) -> str:
@@ -667,9 +1056,7 @@ def render_reply(console: Any, reply: str) -> None:
         reply: Final assistant reply text to render.
     """
     try:
-        from rich.markdown import Markdown
-        # Render markdown directly using Rich
-        md = Markdown(reply)
+        md = ZzmMarkdown(reply)
         console.print(md)
     except Exception:
         # Fallback to plain print
@@ -767,9 +1154,26 @@ class MarkdownStreamRenderer:
         self._buffer = ""
 
     def _split_ready_block(self, text: str) -> tuple[str, str]:
+        # Count ``` fences that appear at line starts
+        fences = re.findall(r"(?m)^\s*```", text)
+        if len(fences) % 2 != 0:
+            # We are inside an unclosed code block, do not split inside the block
+            last_fence_idx = text.rfind("```")
+            boundary_before_fence = text[:last_fence_idx].rfind("\n\n")
+            if boundary_before_fence == -1:
+                return "", text
+            split_at = boundary_before_fence + 2
+            return text[:split_at], text[split_at:]
+
         boundary = text.rfind("\n\n")
         if boundary == -1:
             return "", text
+
+        prefix = text[:boundary]
+        lines = [line.strip() for line in prefix.splitlines() if line.strip()]
+        if lines and lines[-1].startswith("|"):
+            return "", text
+
         split_at = boundary + 2
         return text[:split_at], text[split_at:]
 
@@ -1016,7 +1420,9 @@ class TerminalRenderer(PlainTextRenderer):
             return
         try:
             from rich.rule import Rule
-            self.console.print(Rule(style="dim #3B4252"))
+            is_light = _is_light_terminal_background()
+            border_style = "dim #D0D7DE" if is_light else "dim #3B4252"
+            self.console.print(Rule(style=border_style))
         except Exception:
             self.console.print("---")
         self._separator_printed = True
@@ -1156,11 +1562,13 @@ Available Commands:
         console.print(help_text)
         return
 
+    palette = get_theme_palette()
+
     # Categorize commands into logical tables
     # 1. Session Management
     t_session = Table(show_header=False, box=None, padding=(0, 1))
-    t_session.add_column("Command", style="bold #56B6C2", width=24)
-    t_session.add_column("Desc", style="white")
+    t_session.add_column("Command", style=f"bold {palette['secondary']}", width=24)
+    t_session.add_column("Desc", style="default")
     t_session.add_row("/new", "开启一轮全新的对话会话")
     t_session.add_row("/sessions", "列出所有已知的历史会话")
     t_session.add_row("/session <id>", "切换到指定的历史会话")
@@ -1168,8 +1576,8 @@ Available Commands:
 
     # 2. Model & Output
     t_model = Table(show_header=False, box=None, padding=(0, 1))
-    t_model.add_column("Command", style="bold #56B6C2", width=24)
-    t_model.add_column("Desc", style="white")
+    t_model.add_column("Command", style=f"bold {palette['secondary']}", width=24)
+    t_model.add_column("Desc", style="default")
     t_model.add_row("/models", "列出当前 base URL 可用模型")
     t_model.add_row("/model [id]", "查看或切换当前模型")
     t_model.add_row("/config", "显示当前生效配置和来源")
@@ -1177,8 +1585,8 @@ Available Commands:
 
     # 3. Memory & Facts
     t_memory = Table(show_header=False, box=None, padding=(0, 1))
-    t_memory.add_column("Command", style="bold #56B6C2", width=24)
-    t_memory.add_column("Desc", style="white")
+    t_memory.add_column("Command", style=f"bold {palette['secondary']}", width=24)
+    t_memory.add_column("Desc", style="default")
     t_memory.add_row("/memory", "显示最近消息历史与压缩状态")
     t_memory.add_row("/instructions", "显示当前加载的 AGENTS.md / ZZM.md 指令")
     t_memory.add_row("/status", "显示会话、模型、Token 和运行状态")
@@ -1199,8 +1607,8 @@ Available Commands:
 
     # 4. Prompt Evolution
     t_evolve = Table(show_header=False, box=None, padding=(0, 1))
-    t_evolve.add_column("Command", style="bold #56B6C2", width=24)
-    t_evolve.add_column("Desc", style="white")
+    t_evolve.add_column("Command", style=f"bold {palette['secondary']}", width=24)
+    t_evolve.add_column("Desc", style="default")
     t_evolve.add_row("/evolve run", "基于当前会话优化并生成提示词")
     t_evolve.add_row("/evolve diff", "查看新提示词与旧版本的差异")
     t_evolve.add_row("/evolve apply", "应用刚刚生成的新提示词")
@@ -1208,36 +1616,36 @@ Available Commands:
 
     # 5. Tools & System
     t_system = Table(show_header=False, box=None, padding=(0, 1))
-    t_system.add_column("Command", style="bold #56B6C2", width=24)
-    t_system.add_column("Desc", style="white")
+    t_system.add_column("Command", style=f"bold {palette['secondary']}", width=24)
+    t_system.add_column("Desc", style="default")
     t_system.add_row("/tools", "列出所有注册的工具及其描述")
     t_system.add_row("/reload", "重新加载本地工具插件")
     t_system.add_row("/help", "显示本帮助信息")
 
 
     help_group = Group(
-        "[bold #61AFEF]会话管理 (Session Management)[/]",
+        f"[bold {palette['primary']}]会话管理 (Session Management)[/]",
         t_session,
         "",
-        "[bold #56B6C2]模型与控制 (Model & Output Control)[/]",
+        f"[bold {palette['secondary']}]模型与控制 (Model & Output Control)[/]",
         t_model,
         "",
-        "[bold #E5C07B]记忆与事实 (Memory & Facts Knowledge)[/]",
+        f"[bold {palette['warning']}]记忆与事实 (Memory & Facts Knowledge)[/]",
         t_memory,
         "",
-        "[bold #C678DD]提示词优化 (Prompt Evolution)[/]",
+        f"[bold {palette['accent']}]提示词优化 (Prompt Evolution)[/]",
         t_evolve,
         "",
-        "[bold #98C379]工具与系统 (Tools & System Debug)[/]",
+        f"[bold {palette['success']}]工具与系统 (Tools & System Debug)[/]",
         t_system,
     )
 
     console.print(
         Panel(
             help_group,
-            title="[bold #61AFEF]zzm-agent 控制台命令面板[/bold #61AFEF]",
+            title=f"[bold {palette['primary']}]zzm-agent 控制台命令面板[/]",
             title_align="left",
-            border_style="#3B4252",
+            border_style=palette["border"],
             box=box.ROUNDED,
             padding=(1, 2),
             expand=False,
@@ -1271,11 +1679,11 @@ def render_welcome(console: Any, session_id: str, model: str, workspace: str, to
         "███████ ███████  █   █   █  █ █▄▄█ █▄▄▄ █  █  █ "
     )
     logo = Text(logo_text, style="bold #56B6C2")
-    subtitle = Text("agentic coding console", style="italic dim #ABB2BF")
+    subtitle = Text("agentic coding console", style="italic dim")
     
     # Info Table with emojis and custom colors
     info_table = Table.grid(padding=(0, 2))
-    info_table.add_column(style="dim #ABB2BF", justify="right")
+    info_table.add_column(style="dim", justify="right")
     info_table.add_column(style="#DCDCAA")
     
     info_table.add_row("session", f"[#98C379]{session_id}[/]  ")
