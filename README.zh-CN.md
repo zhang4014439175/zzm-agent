@@ -281,6 +281,12 @@ agent:
     - "zzm_agent/plugins"
 ```
 
+插件目录也可以包含带 `plugin.yaml`、`plugin.yml` 或 `plugin.json` 的子目录。Manifest
+可一起声明 Python 工具入口、Skill 根目录、stdio MCP Server 和权限需求；通过
+`plugins.<插件名>.enabled` 可以在导入代码和启动 MCP 前启用或禁用整个插件。权限字段
+只用于声明和审计，不会绕过工具确认或 Workspace 沙箱。完整格式见
+[`docs/9.4-plugin-manifest.md`](docs/9.4-plugin-manifest.md)。
+
 | 风险级别 | 含义 |
 | --- | --- |
 | `low` | 通常是安全检查或只读操作。 |

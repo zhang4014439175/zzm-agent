@@ -1,7 +1,6 @@
 import importlib.util
 import hashlib
 import inspect
-import json
 import re
 import sys
 import traceback
@@ -12,6 +11,12 @@ from pathlib import Path
 from typing import Any, Callable, Iterator
 
 from zzm_agent.core.plugin import BasePlugin, PluginContext
+from zzm_agent.core.plugin_manifest import (
+    PluginManifest,
+    PluginManifestError,
+    find_plugin_manifest,
+    load_plugin_manifest,
+)
 
 # Mapping from Python types to JSON Schema types
 _TYPE_MAP = {
@@ -63,6 +68,7 @@ class _RegistrationContext:
     group: str = ""
     default_risk_level: str | None = None
     config: dict[str, Any] = field(default_factory=dict)
+    permissions: dict[str, Any] = field(default_factory=dict)
 
 
 class ToolRegistry:
@@ -79,6 +85,8 @@ class ToolRegistry:
         self.plugin_dirs: list[Path] = []
         self.plugin_config: dict[str, Any] = {}
         self.plugin_errors: list[PluginLoadError] = []
+        self.plugin_manifests: dict[str, PluginManifest] = {}
+        self._plugin_status: dict[str, tuple[bool, str]] = {}
         self._plugin_instances: list[BasePlugin] = []
         self._registration_context_stack: list[_RegistrationContext] = []
         self._cleanup_callbacks: dict[str, list[Callable[..., None]]] = {}
@@ -179,6 +187,7 @@ class ToolRegistry:
                 "timeout_seconds": (
                     max(0.001, float(timeout_seconds)) if timeout_seconds is not None else None
                 ),
+                "plugin_permissions": dict(context.permissions),
             }
             return fn
         return decorator
@@ -470,6 +479,8 @@ class ToolRegistry:
         self.shutdown_plugins()
         self.tools = reloaded.tools
         self.plugin_errors = reloaded.plugin_errors
+        self.plugin_manifests = reloaded.plugin_manifests
+        self._plugin_status = reloaded._plugin_status
         self._plugin_instances = reloaded._plugin_instances
         set_active_registry(self)
 
@@ -487,8 +498,12 @@ class ToolRegistry:
         if not path.exists():
             return
 
-        manifest_path = path / "plugin.json"
-        if manifest_path.exists():
+        try:
+            manifest_path = find_plugin_manifest(path)
+        except PluginManifestError as exc:
+            self._record_plugin_error(path.name, str(path), exc)
+            return
+        if manifest_path is not None:
             self._load_manifest_plugin(path, manifest_path)
             return
 
@@ -497,6 +512,16 @@ class ToolRegistry:
             if py_file.name.startswith("_"):
                 continue
             self._load_legacy_module_plugin(py_file)
+        for child in sorted(path.iterdir(), key=lambda item: item.name.casefold()):
+            if not child.is_dir() or child.name.startswith("."):
+                continue
+            try:
+                child_manifest = find_plugin_manifest(child)
+            except PluginManifestError as exc:
+                self._record_plugin_error(child.name, str(child), exc)
+                continue
+            if child_manifest is not None:
+                self._load_manifest_plugin(child, child_manifest)
 
     def shutdown_plugins(self) -> None:
         """Call shutdown hooks for lifecycle-aware plugin instances."""
@@ -523,6 +548,44 @@ class ToolRegistry:
             for error in self.plugin_errors
         ]
 
+    def get_plugin_states(self) -> list[dict[str, Any]]:
+        """返回按名称排序的 Manifest 插件状态，不暴露插件私有配置。
+
+        状态覆盖已加载、Manifest 默认禁用、配置禁用和加载失败；旧式单文件插件
+        没有 Manifest 元数据，因此继续只通过工具列表和错误列表呈现。
+        """
+        records: list[dict[str, Any]] = []
+        for key, manifest in sorted(self.plugin_manifests.items()):
+            enabled, status = self._plugin_status.get(key, (manifest.enabled, "discovered"))
+            records.append(manifest.to_record(enabled=enabled, status=status))
+        return records
+
+    def get_plugin_skill_dirs(self) -> list[Path]:
+        """汇总已启用且成功加载插件贡献的 Skill 根目录，并保持发现顺序去重。"""
+        result: list[Path] = []
+        seen: set[Path] = set()
+        for key, manifest in self.plugin_manifests.items():
+            if self._plugin_status.get(key) != (True, "loaded"):
+                continue
+            for directory in manifest.skill_directories:
+                if directory not in seen:
+                    seen.add(directory)
+                    result.append(directory)
+        return result
+
+    def get_plugin_mcp_servers(self) -> list[dict[str, Any]]:
+        """汇总已启用插件声明的 MCP 配置副本，供统一 stdio 加载器连接。
+
+        返回副本防止启动层修改 Manifest；服务获得的 ``plugin_name`` 只用于来源
+        诊断，连接和工具调用仍复用 MCP Client 的中风险权限策略。
+        """
+        servers: list[dict[str, Any]] = []
+        for key, manifest in self.plugin_manifests.items():
+            if self._plugin_status.get(key) != (True, "loaded"):
+                continue
+            servers.extend(dict(item) for item in manifest.mcp_servers)
+        return servers
+
     def _load_legacy_module_plugin(self, py_file: Path) -> None:
         """Load a decorator-only plugin module, isolating any import failure."""
         context = _RegistrationContext(plugin_name=py_file.stem)
@@ -535,61 +598,71 @@ class ToolRegistry:
             self._record_plugin_error(py_file.stem, str(py_file), exc)
 
     def _load_manifest_plugin(self, root: Path, manifest_path: Path) -> None:
-        """Load one manifest-backed plugin package."""
+        """验证并装配一个 Manifest 插件，失败时原子回滚其工具贡献。
+
+        配置中的 ``plugins.<config_key>.enabled`` 可覆盖清单默认值。禁用插件不会
+        导入 Python、启动 MCP 或暴露 Skill；权限声明仅写入上下文和工具元数据。
+        """
         previous_tools = set(self.tools)
+        manifest: PluginManifest | None = None
+        manifest_registered = False
         try:
-            manifest = json.loads(manifest_path.read_text(encoding="utf-8"))
-            if not isinstance(manifest, dict):
-                raise ValueError("plugin.json must contain a JSON object")
-
-            plugin_name = str(manifest.get("name") or root.name)
-            version = str(manifest.get("version") or "0.0.0")
-            entry = str(manifest.get("entry") or "__init__.py")
-            namespace = str(manifest.get("namespace") or "")
-            group = str(manifest.get("group") or "")
-            default_risk_level = manifest.get("risk_level")
-            if default_risk_level is not None:
-                default_risk_level = str(default_risk_level)
-            config_key = str(manifest.get("config_key") or plugin_name)
-            config = self.plugin_config.get(config_key, {})
+            manifest = load_plugin_manifest(manifest_path)
+            key = manifest.name.casefold()
+            if key in self.plugin_manifests:
+                raise PluginManifestError(f"duplicate plugin name: {manifest.name}")
+            self.plugin_manifests[key] = manifest
+            manifest_registered = True
+            config = self.plugin_config.get(manifest.config_key, {})
             if not isinstance(config, dict):
-                raise ValueError(f"Plugin config for {config_key!r} must be a mapping")
-
-            entry_path = (root / entry).resolve()
-            if not entry_path.is_relative_to(root.resolve()):
-                raise ValueError("Plugin entry must stay inside the plugin directory")
-            if not entry_path.exists():
-                raise FileNotFoundError(f"Plugin entry not found: {entry}")
+                raise ValueError(f"Plugin config for {manifest.config_key!r} must be a mapping")
+            configured_enabled = config.get("enabled")
+            if configured_enabled is not None and not isinstance(configured_enabled, bool):
+                raise ValueError(f"Plugin enabled override for {manifest.name!r} must be boolean")
+            enabled = manifest.enabled if configured_enabled is None else configured_enabled
+            if not enabled:
+                reason = "disabled_by_config" if configured_enabled is False else "disabled_by_manifest"
+                self._plugin_status[key] = (False, reason)
+                return
 
             reg_context = _RegistrationContext(
-                namespace=namespace,
-                plugin_name=plugin_name,
-                plugin_version=version,
-                group=group,
-                default_risk_level=default_risk_level,
+                namespace=manifest.namespace,
+                plugin_name=manifest.name,
+                plugin_version=manifest.version,
+                group=manifest.group,
+                default_risk_level=manifest.default_risk_level,
                 config=config,
+                permissions=manifest.permissions,
             )
             with self._registration_context(reg_context):
-                module = self._exec_plugin_module(entry_path)
+                if manifest.entry is None:
+                    self._plugin_status[key] = (True, "loaded")
+                    return
+                module = self._exec_plugin_module(manifest.entry)
                 plugin = self._get_module_plugin(module)
                 if plugin is None:
+                    self._plugin_status[key] = (True, "loaded")
                     return
 
                 context = PluginContext(
-                    name=plugin_name,
-                    version=version,
+                    name=manifest.name,
+                    version=manifest.version,
                     root=root,
                     config=config,
-                    manifest=manifest,
-                    namespace=namespace,
-                    group=group,
-                    default_risk_level=default_risk_level,
+                    manifest=manifest.raw,
+                    namespace=manifest.namespace,
+                    group=manifest.group,
+                    default_risk_level=manifest.default_risk_level,
+                    permissions=manifest.permissions,
                 )
                 plugin.initialize(context)
                 plugin.register_tools(self)
                 self._plugin_instances.append(plugin)
+                self._plugin_status[key] = (True, "loaded")
         except Exception as exc:
             self._rollback_partial_plugin_tools(previous_tools)
+            if manifest is not None and manifest_registered:
+                self._plugin_status[manifest.name.casefold()] = (False, "load_failed")
             self._record_plugin_error(root.name, str(manifest_path), exc)
 
     def _rollback_partial_plugin_tools(self, previous_tools: set[str]) -> None:

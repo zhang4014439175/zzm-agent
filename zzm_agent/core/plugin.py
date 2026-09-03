@@ -10,7 +10,11 @@ if TYPE_CHECKING:
 
 @dataclass(frozen=True)
 class PluginContext:
-    """Runtime context passed to lifecycle-aware plugins."""
+    """传给具备生命周期钩子的插件的只读运行时上下文。
+
+    ``permissions`` 仅复述 Manifest 中的能力声明，方便插件和诊断层展示；它不会
+    授予文件、网络、进程或密钥访问权，实际操作仍由宿主的工具权限链路控制。
+    """
 
     name: str
     version: str
@@ -20,6 +24,7 @@ class PluginContext:
     namespace: str = ""
     group: str = ""
     default_risk_level: str | None = None
+    permissions: dict[str, Any] = field(default_factory=dict)
 
 
 class BasePlugin:

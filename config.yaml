@@ -33,6 +33,9 @@ agent:
   plugin_dirs:
     - "zzm_agent/plugins"
 
+# Manifest 插件的运行时配置；enabled 可覆盖插件包中的默认启停值。
+plugins: {}
+
 # 最小 MCP 接入：每项用本地命令启动一个 stdio 服务；未配置时不会启动外部服务。
 mcp:
   servers: []

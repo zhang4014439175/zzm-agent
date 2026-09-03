@@ -160,6 +160,11 @@ def _default_config_text() -> str:
         "  plugin_dirs:\n"
         f'    - "{plugin_dir}"\n'
         "\n"
+        "plugins: {}\n"
+        "\n"
+        "mcp:\n"
+        "  servers: []\n"
+        "\n"
         "ui:\n"
         '  response_language: "auto"\n'
         '  default_locale_language: "zh-CN"\n'
@@ -444,6 +449,36 @@ def _resolve_plugin_dirs(cfg: dict[str, Any]) -> list[Path]:
     return resolved_dirs
 
 
+def _resolve_skill_dirs(cfg: dict[str, Any], registry: ToolRegistry) -> list[Path]:
+    """合并应用配置与已加载插件贡献的 Skill 根目录。
+
+    相对配置路径以配置文件目录为基准，插件路径已经由 Manifest 校验并限定在包
+    内。结果按首次出现顺序去重；被禁用或加载失败的插件不会贡献搜索路径。
+    """
+    skills_cfg = cfg.get("skills", {})
+    config_dir = Path(cfg.get("_config_dir") or Path.cwd()).resolve()
+    directories: list[Path] = []
+    seen: set[Path] = set()
+    raw_directories = skills_cfg.get(
+        "directories", [".zzm_agent/skills", "~/.zzm_agent/skills"]
+    )
+    if not isinstance(raw_directories, list):
+        raw_directories = []
+    for raw_path in raw_directories:
+        skill_path = Path(str(raw_path)).expanduser()
+        if not skill_path.is_absolute():
+            skill_path = config_dir / skill_path
+        resolved = skill_path.resolve()
+        if resolved not in seen:
+            seen.add(resolved)
+            directories.append(resolved)
+    for resolved in registry.get_plugin_skill_dirs():
+        if resolved not in seen:
+            seen.add(resolved)
+            directories.append(resolved)
+    return directories
+
+
 def build_tool_confirmation_callback(console: Any):
     """Return an interactive approval callback for tools that require it."""
     always_approved: set[str] = set()
@@ -646,7 +681,10 @@ def _load_mcp_servers(registry: ToolRegistry, cfg: dict[str, Any]) -> None:
     ``registry.mcp_errors`` 供命令层展示。HTTP 等传输不在本阶段解析。
     """
     mcp_cfg = cfg.get("mcp", {})
-    servers = mcp_cfg.get("servers", []) if isinstance(mcp_cfg, dict) else []
+    configured = mcp_cfg.get("servers", []) if isinstance(mcp_cfg, dict) else []
+    servers = list(configured) if isinstance(configured, list) else []
+    servers.extend(registry.get_plugin_mcp_servers())
+    seen_names: set[str] = set()
     for raw in servers if isinstance(servers, list) else []:
         if not isinstance(raw, dict) or raw.get("enabled", True) is False:
             continue
@@ -655,6 +693,11 @@ def _load_mcp_servers(registry: ToolRegistry, cfg: dict[str, Any]) -> None:
         if not isinstance(name, str) or not isinstance(command, list) or not all(isinstance(x, str) for x in command):
             registry.mcp_errors.append("Invalid MCP server configuration")
             continue
+        normalized_name = name.casefold()
+        if normalized_name in seen_names:
+            registry.mcp_errors.append(f"Duplicate MCP server name: {name}")
+            continue
+        seen_names.add(normalized_name)
         try:
             timeout_seconds = float(raw.get("timeout_seconds", 15))
             if timeout_seconds <= 0:
@@ -779,15 +822,7 @@ def build_runtime(args: argparse.Namespace, cfg: dict[str, Any]) -> dict[str, An
         registry=registry,
     )
     skills_cfg = cfg.get("skills", {})
-    config_dir = Path(cfg.get("_config_dir") or workspace_root)
-    skill_directories: list[Path] = []
-    for raw_path in skills_cfg.get(
-        "directories", [".zzm_agent/skills", "~/.zzm_agent/skills"]
-    ):
-        skill_path = Path(str(raw_path)).expanduser()
-        if not skill_path.is_absolute():
-            skill_path = config_dir / skill_path
-        skill_directories.append(skill_path.resolve())
+    skill_directories = _resolve_skill_dirs(cfg, registry)
     skill_manager = SkillManager(
         skill_directories,
         disabled={str(item) for item in skills_cfg.get("disabled", [])},

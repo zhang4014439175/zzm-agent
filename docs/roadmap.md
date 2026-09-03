@@ -186,7 +186,7 @@ flowchart TD
 
 ## 执行进度总览
 
-> **当前下一任务：9.4 `[核心最小版]` Plugin Manifest。**
+> **当前下一任务：9.5 `[核心最小版]` MCP / Skill / Plugin Renderer。**
 
 ### 当前能力基线
 
@@ -296,7 +296,8 @@ flowchart TD
 - [x] 9.2 `[核心]` Skills 模块化与发现状态：支持本地 Skill 格式、显式触发、渐进加载、SkillDiscoveryState、资源预算和禁用策略
 - [x] 9.3 `[核心]` 工具 Schema 按需装载与 Tool Search：根据任务、Skill、MCP Server 和执行阶段延迟暴露工具，减少固定 Schema 成本；MCP 工具使用独立的 `@mcp:` 前缀模糊搜索，不混入 `$Skill` 菜单
   - 完成：MCP Schema 默认延迟暴露，可由任务、Skill、显式 `@mcp:`、模型 `tool_search` 和续段阶段启用；状态记录 Schema Token 节省，目标调用仍经过权限网关。说明见 docs/9.3-tool-schema-search.md。
-- [ ] 9.4 `[核心最小版]` Plugin Manifest：支持本地插件描述、Skills/MCP 配置打包、权限声明、启用和禁用
+- [x] 9.4 `[核心最小版]` Plugin Manifest：支持本地插件描述、Skills/MCP 配置打包、权限声明、启用和禁用
+  - 完成：支持 YAML/JSON Manifest、父目录包发现、旧式 Python 插件兼容、配置覆盖启停、包内路径校验、权限声明状态，以及 Skills/stdio MCP 统一装配。说明见 docs/9.4-plugin-manifest.md。
 - [ ] 9.5 `[核心最小版]` MCP / Skill / Plugin Renderer：展示来源、连接状态、激活原因、权限请求和远程错误
 - [ ] P4 核心阶段验收：一个本地 Skill 和一个真实 stdio MCP Server 可端到端使用，且不能绕过核心权限和 Workspace 边界
 - [ ] P4 可选扩展 A — MCP 多传输：在 stdio 验收后分别增加 Streamable HTTP、SSE 和 WebSocket，统一连接状态、请求取消、流式结果、断线语义和 Transport 无关测试

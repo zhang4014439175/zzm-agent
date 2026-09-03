@@ -280,6 +280,13 @@ agent:
     - "zzm_agent/plugins"
 ```
 
+Plugin directories may also contain child packages with `plugin.yaml`, `plugin.yml`, or
+`plugin.json`. A manifest can bundle a Python tool entry, Skill roots, stdio MCP servers,
+and permission declarations. Set `plugins.<name>.enabled` to enable or disable the whole
+package before code import and MCP startup. Permission entries are declarations for audit;
+they never bypass tool approval or the workspace sandbox. See
+[`docs/9.4-plugin-manifest.md`](docs/9.4-plugin-manifest.md) for the complete format.
+
 | Risk level | Meaning |
 | --- | --- |
 | `low` | Usually safe inspection or read-only work. |
